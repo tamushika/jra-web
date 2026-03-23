@@ -202,6 +202,16 @@ button {
     border: 1px solid var(--border-color);
 }
 
+.grade-tooltip-target {
+    position: relative;
+    cursor: help;
+    color: #ff9999;
+    font-weight: bold;
+}
+.grade-tooltip-target:hover {
+    z-index: 999;
+}
+
 .tooltip-text {
     visibility: hidden;
     width: 250px;
