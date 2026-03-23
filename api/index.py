@@ -12,6 +12,9 @@ from bs4 import BeautifulSoup
 import google.generativeai as genai
 
 # Local imports
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import analysis
 
 app = Flask(__name__, static_folder='../', static_url_path='/')
