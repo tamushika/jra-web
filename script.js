@@ -1,4 +1,7 @@
 let globalHorsesData = [];
+let raceCache = {}; // ◎がいるレースのハッシュマップ
+
+
 
 document.addEventListener('DOMContentLoaded', () => {
     // Tab Switching
@@ -57,8 +60,10 @@ async function startScraping() {
         // Populate Horse Table
         renderHorsesTable(globalHorsesData);
         
-        // Populate Matrix Table (Mock building logic as matrix feature requires full day URLs)
-        // Usually we fetch all links from JRA page
+        // Cache double circle status
+        raceCache[url] = data.has_double_circle;
+        
+        // Populate Matrix Table
         renderMatrix(data.matrix_data, data.venue);
         
         // Update Ultra Text
@@ -109,9 +114,20 @@ function renderHorsesTable(horses) {
         ];
         
         tr.appendChild(tdWaku);
-        cols.forEach(val => {
+        cols.forEach((val, idx) => {
             const td = document.createElement('td');
             td.textContent = val;
+            
+            if (idx === 1 && val === '◎') {
+                td.classList.add('grade-tooltip-target');
+                const tooltipSpan = document.createElement('span');
+                tooltipSpan.className = 'tooltip-text';
+                tooltipSpan.innerHTML = h.ultra_details && h.ultra_details.length > 0 
+                    ? h.ultra_details.join('<br>') 
+                    : '詳細データなし';
+                td.appendChild(tooltipSpan);
+            }
+            
             if(val === h.name) td.style.textAlign = 'left';
             tr.appendChild(td);
         });
@@ -150,6 +166,9 @@ function renderMatrix(matrixData, currentVenue) {
             venueData.races.forEach(raceItem => {
                 const btn = document.createElement('button');
                 btn.className = 'r-btn';
+                if (raceCache[raceItem.url]) {
+                    btn.classList.add('has-star');
+                }
                 btn.textContent = `${raceItem.r}R`;
                 btn.onclick = () => {
                     document.getElementById('urlInput').value = raceItem.url;
