@@ -202,14 +202,6 @@ button {
     border: 1px solid var(--border-color);
 }
 
-/* Tooltip for Grade Column */
-.grade-tooltip-target {
-    position: relative;
-    cursor: help;
-    color: #ff9999;
-    font-weight: bold;
-}
-
 .tooltip-text {
     visibility: hidden;
     width: 250px;
@@ -220,9 +212,9 @@ button {
     padding: 8px;
     position: absolute;
     z-index: 1000;
-    bottom: 125%;
-    left: 50%;
-    transform: translateX(-50%);
+    top: 100%;
+    left: 0;
+    margin-top: 8px;
     opacity: 0;
     transition: opacity 0.2s;
     font-size: 11px;
@@ -236,12 +228,12 @@ button {
 .tooltip-text::after {
     content: "";
     position: absolute;
-    top: 100%;
-    left: 50%;
+    bottom: 100%;
+    left: 15px;
     margin-left: -5px;
     border-width: 5px;
     border-style: solid;
-    border-color: rgba(30, 30, 30, 0.95) transparent transparent transparent;
+    border-color: transparent transparent rgba(30, 30, 30, 0.95) transparent;
 }
 
 .grade-tooltip-target:hover .tooltip-text {

@@ -1,5 +1,6 @@
 let globalHorsesData = [];
 let raceCache = {}; // ◎がいるレースのハッシュマップ
+let apiCache = {}; // { URL: { mode: "詳細", data: {...} } }
 
 
 
