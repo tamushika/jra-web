@@ -400,6 +400,9 @@ def scrape():
 @app.route('/api/ai_predict', methods=['POST'])
 def ai_predict():
     data = request.json or {}
+    if data.get('password') != 'oso18':
+        return jsonify({"error": "パスワードが間違っています。AI予想の実行権限がありません。"}), 401
+        
     api_key = data.get('api_key') or os.environ.get("GEMINI_API_KEY")
     if not api_key: return jsonify({"error": "GEMINI_API_KEY is missing."}), 400
     

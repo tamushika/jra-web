@@ -34,9 +34,14 @@ async function startScraping() {
         return;
     }
 
+    const cached = apiCache[url];
+    if (cached && (mode === '簡易' || cached.mode === '詳細')) {
+        applyScrapeData(cached.data, url, cached.mode);
+        return;
+    }
+
     showLoading("JRAデータを解析中... (APIリクエスト中)");
     try {
-        // Vercel deployment route /api/scrape
         const response = await fetch('/api/scrape', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -46,53 +51,55 @@ async function startScraping() {
         const data = await response.json();
         if(data.error) throw new Error(data.error);
         
-        // Update UI
-        document.getElementById('raceInfo').textContent = data.race_info;
-        document.getElementById('babaInfo').textContent = data.baba_info || "馬場情報：未取得";
+        apiCache[url] = { mode: mode, data: data };
+        applyScrapeData(data, url, mode);
         
-        // Criteria
-        const criteriaList = document.getElementById('criteriaList');
-        criteriaList.innerHTML = data.criteria_lines.length > 0 
-            ? data.criteria_lines.join('<br>') 
-            : "該当なし";
-
-        globalHorsesData = data.horses || [];
-        
-        // Populate Horse Table
-        renderHorsesTable(globalHorsesData);
-        
-        // Cache double circle status
-        raceCache[url] = data.has_double_circle;
-        
-        // Populate Matrix Table
-        renderMatrix(data.matrix_data, data.venue);
-        
-        // Update Ultra Text
-        let ultraText = "";
-        globalHorsesData.forEach(h => {
-            if(h.ultra_details && h.ultra_details.length > 0) {
-                ultraText += `【${h.num}番 ${h.name}】\n`;
-                h.ultra_details.forEach(d => { ultraText += `    ∟ ${d}\n` });
-                ultraText += `\n`;
-            }
-        });
-        document.getElementById('ultraDetails').textContent = ultraText || "ウルトラ判定に該当する馬はいません。";
-
-        // Update History Select dropdown
-        const select = document.getElementById('historyHorseSelect');
-        select.innerHTML = '<option value="">-- 馬を選択 --</option>';
-        globalHorsesData.forEach(h => {
-            const opt = document.createElement('option');
-            opt.value = h.num;
-            opt.textContent = `${h.num} ${h.name}`;
-            select.appendChild(opt);
-        });
-        
-        hideLoading();
     } catch(err) {
         console.error(err);
-        hideLoading();
         alert("エラーが発生しました: " + err.message);
+    } finally {
+        hideLoading();
+    }
+}
+
+function applyScrapeData(data, url, mode) {
+    document.getElementById('raceInfo').textContent = `${data.race_info} (${mode})`;
+    document.getElementById('babaInfo').textContent = data.baba_info || "馬場情報：未取得";
+    
+    const criteriaList = document.getElementById('criteriaList');
+    criteriaList.innerHTML = data.criteria_lines.length > 0 
+        ? data.criteria_lines.join('<br>') 
+        : "該当なし";
+
+    globalHorsesData = data.horses || [];
+    renderHorsesTable(globalHorsesData);
+    
+    raceCache[url] = data.has_double_circle;
+    renderMatrix(data.matrix_data, data.venue);
+    
+    let ultraText = "";
+    globalHorsesData.forEach(h => {
+        if(h.ultra_details && h.ultra_details.length > 0) {
+            ultraText += `【${h.num}番 ${h.name}】\n`;
+            h.ultra_details.forEach(d => { ultraText += `    ∟ ${d}\n` });
+            ultraText += `\n`;
+        }
+    });
+    document.getElementById('ultraDetails').textContent = ultraText || "ウルトラ判定に該当する馬はいません。";
+
+    const select = document.getElementById('historyHorseSelect');
+    select.innerHTML = '<option value="">-- 馬を選択 --</option>';
+    globalHorsesData.forEach(h => {
+        const opt = document.createElement('option');
+        opt.value = h.num;
+        opt.textContent = `${h.num} ${h.name}`;
+        select.appendChild(opt);
+    });
+    
+    document.getElementById('historyTbody').innerHTML = '';
+    if (globalHorsesData.length > 0) {
+        select.value = globalHorsesData[0].num;
+        updateHistoryTable();
     }
 }
 
@@ -245,10 +252,11 @@ async function runAiPrediction() {
     });
     
     try {
+        const pwd = document.getElementById('aiPassword') ? document.getElementById('aiPassword').value : "";
         const res = await fetch('/api/ai_predict', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prompt: prompt })
+            body: JSON.stringify({ prompt: prompt, password: pwd })
         });
         const data = await res.json();
         
