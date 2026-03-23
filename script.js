@@ -66,6 +66,11 @@ function applyScrapeData(data, url, mode) {
     document.getElementById('raceInfo').textContent = `${data.race_info} (${mode})`;
     document.getElementById('babaInfo').textContent = data.baba_info || "馬場情報：未取得";
     
+    const criteriaTitle = document.getElementById('criteriaTitle');
+    if (criteriaTitle) {
+        criteriaTitle.textContent = `【${data.venue}${data.race_type}${data.dist_val}mの好走条件】`;
+    }
+    
     const criteriaList = document.getElementById('criteriaList');
     criteriaList.innerHTML = data.criteria_lines.length > 0 
         ? data.criteria_lines.join('<br>') 
@@ -239,8 +244,8 @@ async function runAiPrediction() {
     const babaInfo = document.getElementById('babaInfo').textContent;
     
     let prompt = `以下の競馬のレース情報と出走馬データをもとに、プロの競馬予想家としてAIレース予想を行ってください。\n`;
-    prompt += `予想は以下の5つのファクターに分けて詳細に分析し、最後にそれらを統合した「総合予想（印と買い目、見解）」を出力してください。\n`;
-    prompt += `1. 血統\n2. レース展開\n3. コース適正\n4. 調教・外厩・調整\n5. 馬場適正\n\n`;
+    prompt += `予想は以下の4つのファクターに分けて詳細に分析し、最後にそれらを統合した「総合予想（印と買い目、見解）」を出力してください。\n`;
+    prompt += `1. 血統\n2. レース展開\n3. コース適正\n4. 馬場適正\n\n`;
     prompt += `■ レース情報\n${raceInfo}\n\n`;
     prompt += `■ 当日の馬場情報（参考）\n${babaInfo}\n\n`;
     prompt += `■ 出走馬データ\n`;
