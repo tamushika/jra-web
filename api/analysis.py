@@ -54,21 +54,24 @@ def load_csv_criteria(venue_name, base_dir):
 def load_course_feature(venue, race_type, distance, base_dir):
     """
     指定された会場・条件のコース特徴テキストを読み込む
-    パス例: .venv/DATA/京都/芝1200.txt
+    パス例: DATA/京都/芝1200.txt
     """
-    # このスクリプトの場所を基準にする
     current_script_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    # ファイル名を構築 (例: 芝1200.txt)
     filename = f"{race_type}{distance}.txt"
     
-    # フルパスを作成
-    file_path = os.path.join(current_script_dir, ".venv", "DATA", venue, filename)
+    paths_to_check = [
+        os.path.join(current_script_dir, "DATA", venue, filename),
+        os.path.join(current_script_dir, ".venv", "DATA", venue, filename),
+        os.path.join(base_dir, "DATA", venue, filename)
+    ]
     
-    # デバッグ用：探しているパスを表示（必要に応じて削除してください）
-    # print(f"DEBUG: 特徴ファイル検索 -> {file_path}")
+    file_path = None
+    for p in paths_to_check:
+        if os.path.exists(p):
+            file_path = p
+            break
 
-    if not os.path.exists(file_path):
+    if not file_path:
         return f"【情報】{venue} {race_type}{distance}m の特徴データは登録されていません。"
 
     try:
