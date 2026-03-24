@@ -285,12 +285,12 @@ def build_matrix_data(soup):
             if href in seen_urls: continue
             
             date_text = ""
-            m_date = re.search(r'(\d{4})(\d{2})(\d{2})[a-zA-Z0-9/]*$', href)
-            if m_date:
+            matches = re.findall(r'(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])', href)
+            if matches:
                 try:
-                    y, mo, d = int(m_date.group(1)), int(m_date.group(2)), int(m_date.group(3))
-                    wd = ["月", "火", "水", "木", "金", "土", "日"][datetime(y, mo, d).weekday()]
-                    date_text = f"{mo}/{d}({wd}) "
+                    y, mo, d = matches[-1]
+                    wd = ["月", "火", "水", "木", "金", "土", "日"][datetime(int(y), int(mo), int(d)).weekday()]
+                    date_text = f"{int(mo)}/{int(d)}({wd}) "
                 except: pass
                 
             text = date_text + a.get_text(strip=True)
