@@ -277,10 +277,22 @@ def build_matrix_data(soup):
     venue_links = []
     
     for ul in nav_lists:
+        date_text = ""
+        prev_date_elem = ul.find_previous("div", class_=lambda c: c and ("date" in c or "date_line" in c))
+        if prev_date_elem:
+            raw_date = prev_date_elem.get_text(strip=True)
+            m = re.search(r'(\d{1,2})月\s*(\d{1,2})日\s*[（(]([^）)]+)[）)]', raw_date)
+            if m: date_text = f"{m.group(1)}/{m.group(2)}({m.group(3)}) "
+        else:
+            prev_date_str = ul.find_previous(string=re.compile(r'\d{1,2}月\s*\d{1,2}日\s*[（(]'))
+            if prev_date_str:
+                m = re.search(r'(\d{1,2})月\s*(\d{1,2})日\s*[（(]([^）)]+)[）)]', prev_date_str)
+                if m: date_text = f"{m.group(1)}/{m.group(2)}({m.group(3)}) "
+                
         for a in ul.find_all("a", href=True):
             href = urljoin("https://www.jra.go.jp/JRADB/", a['href'])
             if href in seen_urls: continue
-            text = a.get_text(strip=True)
+            text = date_text + a.get_text(strip=True)
             seen_urls.add(href)
             venue_links.append((text, href))
             
@@ -380,10 +392,20 @@ def scrape():
         # Feature Course Memo
         feature_text = analysis.load_course_feature(venue, race_type, dist_val, base_dir)
 
+        # Course record extraction
+        course_record_text = ""
+        record_elem = soup.find(string=re.compile(r'コースレコード'))
+        if record_elem and record_elem.parent:
+            course_record_text = record_elem.parent.get_text(separator=' ', strip=True)
+            if course_record_text == "コースレコード" and record_elem.parent.parent:
+                course_record_text = record_elem.parent.parent.get_text(separator=' ', strip=True)
+            course_record_text = re.sub(r'\s+', ' ', course_record_text)
+
         return jsonify({
             "success": True,
             "race_info": race_label,
             "baba_info": baba_info,
+            "course_record": course_record_text,
             "criteria_lines": criteria_lines,
             "feature_text": feature_text,
             "matrix_data": matrix,

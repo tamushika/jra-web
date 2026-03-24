@@ -85,7 +85,12 @@ async function startScraping() {
 
 function applyScrapeData(data, url, mode) {
     document.getElementById('raceInfo').textContent = `${data.race_info} (${mode})`;
-    document.getElementById('babaInfo').textContent = data.baba_info || "馬場情報：未取得";
+    
+    let babaHtml = data.baba_info || "馬場情報：未取得";
+    if (data.course_record) {
+        babaHtml += `<br><span style="color:#e0e0e0; font-size:12px; font-weight:normal;">${data.course_record}</span>`;
+    }
+    document.getElementById('babaInfo').innerHTML = babaHtml;
     
     const criteriaTitle = document.getElementById('criteriaTitle');
     if (criteriaTitle) {
