@@ -21,6 +21,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Main Actions
     document.getElementById('searchBtn').addEventListener('click', startScraping);
+    document.getElementById('getUrlBtn').addEventListener('click', async () => {
+        const btn = document.getElementById('getUrlBtn');
+        btn.disabled = true;
+        btn.textContent = "取得中...";
+        try {
+            const day = new Date().getDay();
+            const response = await fetch(`/api/latest_url?day=${day}`);
+            const data = await response.json();
+            if (data.error) throw new Error(data.error);
+            if (data.url) {
+                document.getElementById('urlInput').value = data.url;
+                alert("最新のURLを取得しました。\n" + data.url);
+            }
+        } catch(err) {
+            alert("URL取得エラー: " + err.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = "最新URL取得";
+        }
+    });
+
     document.getElementById('historyHorseSelect').addEventListener('change', updateHistoryTable);
     document.getElementById('runAiBtn').addEventListener('click', runAiPrediction);
 });
@@ -111,6 +132,59 @@ function applyScrapeData(data, url, mode) {
         select.value = globalHorsesData[0].num;
         updateHistoryTable();
     }
+    
+    // Fetch Wind Data
+    fetchWindData(data.venue);
+}
+
+const COURSE_DIRECTION = {
+    "札幌": { lat: 43.075, lon: 141.275, dir: 110 },
+    "函館": { lat: 41.791, lon: 140.781, dir: 320 },
+    "福島": { lat: 37.766, lon: 140.457, dir: 160 },
+    "新潟": { lat: 37.954, lon: 139.172, dir: 250 },
+    "中山": { lat: 35.733, lon: 139.957, dir: 140 },
+    "東京": { lat: 35.662, lon: 139.485, dir: 290 },
+    "中京": { lat: 35.068, lon: 136.988, dir: 310 },
+    "京都": { lat: 34.908, lon: 135.722, dir: 160 },
+    "阪神": { lat: 34.779, lon: 135.361, dir: 70 },
+    "小倉": { lat: 33.834, lon: 130.875, dir: 340 }
+};
+
+function checkWindEffect(windDir, courseDir) {
+    let diff = Math.abs(windDir - courseDir);
+    if (diff > 180) diff = 360 - diff;
+    
+    if (diff <= 45) {
+        return "【向かい風】 ゴール前直線が向かい風です。逃げ・先行馬が有利になります。";
+    } else if (diff >= 135) {
+        return "【追い風】 ゴール前直線が追い風です。差し・追込馬が有利になります。";
+    } else {
+        return "【横風】 ゴール前直線は横風です。内外で影響が変わる可能性があります。";
+    }
+}
+
+async function fetchWindData(venue) {
+    const windDisplay = document.getElementById('windDataDisplay');
+    if (!windDisplay) return;
+    
+    const course = COURSE_DIRECTION[venue];
+    if (!course) {
+        windDisplay.textContent = `風データ: ${venue}の緯度経度情報がありません`;
+        return;
+    }
+    
+    windDisplay.textContent = "風データを取得中...";
+    try {
+        const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${course.lat}&longitude=${course.lon}&current_weather=true`);
+        const result = await res.json();
+        if (result.current_weather) {
+            const w = result.current_weather;
+            const effectText = checkWindEffect(w.winddirection, course.dir);
+            windDisplay.innerHTML = `<strong>リアルタイム風力データ (${venue}):</strong> 風速 ${w.windspeed}m/s, 風向 ${w.winddirection}°<br><span style="color:#ffcc00; font-weight:bold;">${effectText}</span>`;
+        }
+    } catch(e) {
+        windDisplay.textContent = "風データの取得に失敗しました。";
+    }
 }
 
 function renderHorsesTable(horses) {
@@ -184,9 +258,15 @@ function renderMatrix(matrixData, currentVenue) {
             venueData.races.forEach(raceItem => {
                 const btn = document.createElement('button');
                 btn.className = 'r-btn';
-                if (raceCache[raceItem.url]) {
-                    btn.classList.add('has-star');
+                
+                if (raceCache.hasOwnProperty(raceItem.url)) {
+                    if (raceCache[raceItem.url]) {
+                        btn.classList.add('has-star');
+                    } else {
+                        btn.classList.add('visited-no-star');
+                    }
                 }
+                
                 btn.textContent = `${raceItem.r}R`;
                 btn.onclick = () => {
                     document.getElementById('urlInput').value = raceItem.url;

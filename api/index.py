@@ -397,6 +397,40 @@ def scrape():
         import traceback
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
+@app.route('/api/latest_url', methods=['GET'])
+def latest_url():
+    day = request.args.get('day', type=int)
+    try:
+        if day in [1, 2, 3, 4]:
+            res = requests.get('https://www.jra.go.jp/', headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+            res.encoding = 'shift_jis'
+            soup = BeautifulSoup(res.text, "html.parser")
+            result_link = soup.find('a', string=re.compile(r"レース結果"))
+            if result_link:
+                res_url = urljoin("https://www.jra.go.jp/", result_link['href'])
+                r2 = requests.get(res_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+                r2.encoding = 'shift_jis'
+                soup2 = BeautifulSoup(r2.text, "html.parser")
+                a = soup2.find("a", href=re.compile(r'CNAME=pw01sde|CNAME=pw01dde'))
+                if a: return jsonify({"url": urljoin("https://www.jra.go.jp/JRADB/", a['href'])})
+        else:
+            res = requests.get('https://www.jra.go.jp/keiba/thisweek/', headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+            res.encoding = 'shift_jis'
+            soup = BeautifulSoup(res.text, "html.parser")
+            a = soup.find("a", href=re.compile(r'CNAME=pw01sde|CNAME=pw01dde'))
+            if a: return jsonify({"url": urljoin("https://www.jra.go.jp/JRADB/", a['href'])})
+            
+        res = requests.get('https://www.jra.go.jp/', headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+        res.encoding = 'shift_jis'
+        soup = BeautifulSoup(res.text, "html.parser")
+        for a in soup.find_all("a", href=True):
+            if 'accessS.html' in a['href'] or 'accessD.html' in a['href']:
+                return jsonify({"url": urljoin("https://www.jra.go.jp/", a['href'])})
+                
+        return jsonify({"error": "最新のURLが見つかりませんでした。"}), 404
+    except Exception as e:
+        return jsonify({"error": f"URL取得エラー: {str(e)}"}), 500
+
 @app.route('/api/ai_predict', methods=['POST'])
 def ai_predict():
     data = request.json or {}

@@ -21,7 +21,7 @@
                         <option value="詳細">詳細分析</option>
                     </select>
                     <button id="searchBtn" class="primary-btn">解析開始</button>
-                    <button id="getUrlBtn" class="secondary-btn">最新URL取得 (未実装)</button>
+                    <button id="getUrlBtn" class="secondary-btn">最新URL取得</button>
                 </div>
                 <div class="status-panel">
                     <div id="raceInfo" class="race-label">【待機中】URLを入力して解析開始を押してください。</div>
@@ -104,6 +104,9 @@
             </div>
 
             <div class="tab-content" id="tab-course">
+                <div id="windDataDisplay" style="background: rgba(0,0,0,0.3); padding: 10px; border-radius: 6px; margin-bottom: 10px; border: 1px solid var(--border-color); font-size: 13px; line-height: 1.5;">
+                    風データ待機中...
+                </div>
                 <pre class="log-area" id="courseFeatureText">このコースの過去傾向・特徴データがありません。</pre>
             </div>
 
