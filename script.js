@@ -91,6 +91,11 @@ function applyScrapeData(data, url, mode) {
         }
     });
     document.getElementById('ultraDetails').textContent = ultraText || "ウルトラ判定に該当する馬はいません。";
+    
+    const courseFeatureElem = document.getElementById('courseFeatureText');
+    if (courseFeatureElem) {
+        courseFeatureElem.textContent = data.feature_text || "このコースの過去傾向・特徴データがありません。";
+    }
 
     const select = document.getElementById('historyHorseSelect');
     select.innerHTML = '<option value="">-- 馬を選択 --</option>';
