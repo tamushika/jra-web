@@ -280,21 +280,19 @@ def build_matrix_data(soup):
     venue_links = []
     
     for ul in nav_lists:
-        date_text = ""
-        prev_date_elem = ul.find_previous("div", class_=lambda c: c and ("date" in c or "date_line" in c))
-        if prev_date_elem:
-            raw_date = prev_date_elem.get_text(strip=True)
-            m = re.search(r'(\d{1,2})月\s*(\d{1,2})日\s*[（(]([^）)]+)[）)]', raw_date)
-            if m: date_text = f"{m.group(1)}/{m.group(2)}({m.group(3)}) "
-        else:
-            prev_date_str = ul.find_previous(string=re.compile(r'\d{1,2}月\s*\d{1,2}日\s*[（(]'))
-            if prev_date_str:
-                m = re.search(r'(\d{1,2})月\s*(\d{1,2})日\s*[（(]([^）)]+)[）)]', prev_date_str)
-                if m: date_text = f"{m.group(1)}/{m.group(2)}({m.group(3)}) "
-                
         for a in ul.find_all("a", href=True):
             href = urljoin("https://www.jra.go.jp/JRADB/", a['href'])
             if href in seen_urls: continue
+            
+            date_text = ""
+            m_date = re.search(r'(\d{4})(\d{2})(\d{2})[a-zA-Z0-9/]*$', href)
+            if m_date:
+                try:
+                    y, mo, d = int(m_date.group(1)), int(m_date.group(2)), int(m_date.group(3))
+                    wd = ["月", "火", "水", "木", "金", "土", "日"][datetime(y, mo, d).weekday()]
+                    date_text = f"{mo}/{d}({wd}) "
+                except: pass
+                
             text = date_text + a.get_text(strip=True)
             seen_urls.add(href)
             venue_links.append((text, href))
@@ -398,12 +396,24 @@ def scrape():
 
         # Course record extraction
         course_record_text = ""
-        record_elem = soup.find(string=re.compile(r'コースレコード'))
-        if record_elem and record_elem.parent:
-            course_record_text = record_elem.parent.get_text(separator=' ', strip=True)
-            if course_record_text == "コースレコード" and record_elem.parent.parent:
-                course_record_text = record_elem.parent.parent.get_text(separator=' ', strip=True)
-            course_record_text = re.sub(r'\s+', ' ', course_record_text)
+        record_elem = soup.find("div", class_=re.compile("record"))
+        if record_elem and "コースレコード" in record_elem.get_text():
+            course_record_text = record_elem.get_text(separator=' ', strip=True)
+        else:
+            r_str = soup.find(string=re.compile(r'コースレコード'))
+            if r_str:
+                r_parent = r_str.find_parent(class_=re.compile("record"))
+                if r_parent:
+                    course_record_text = r_parent.get_text(separator=' ', strip=True)
+                else:
+                    course_record_text = r_str.parent.get_text(separator=' ', strip=True)
+                    if course_record_text == "コースレコード" and r_str.parent.parent:
+                        course_record_text = r_str.parent.parent.get_text(separator=' ', strip=True)
+        
+        course_record_text = re.sub(r'\s+', ' ', course_record_text).strip()
+        if course_record_text == "コースレコード":
+            cr_m = re.search(r'コースレコード[\s\S]{0,30}?(\d{1,2}:\d{2}\.\d)', soup.get_text(separator=' '))
+            if cr_m: course_record_text = "コースレコード " + cr_m.group(1)
 
         return jsonify({
             "success": True,
