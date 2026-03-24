@@ -215,9 +215,12 @@ def parse_horse_row(row, url, curr_date_fmt, mode):
         h_cell = cells[2+off].get_text(" ", strip=True)
         name = h_cell.split()[0]
         
-        sire = re.search(r'父：\s*([^\s]+)', h_cell).group(1) if "父" in h_cell else "-"
-        dam = re.search(r'母：\s*([^\s]+)', h_cell).group(1) if "母" in h_cell else "-"
-        bms = re.search(r'母の父：\s*([^ \)]+)', h_cell).group(1) if "母の父" in h_cell else "-"
+        sire_m = re.search(r'父：\s*([^\s]+)', h_cell)
+        sire = sire_m.group(1) if "父" in h_cell and sire_m else "-"
+        dam_m = re.search(r'母：\s*([^\s]+)', h_cell)
+        dam = dam_m.group(1) if "母" in h_cell and dam_m else "-"
+        bms_m = re.search(r'母の父：\s*([^ \)]+)', h_cell)
+        bms = bms_m.group(1) if "母の父" in h_cell and bms_m else "-"
         
         jock_raw = cells[3+off].get_text(" ", strip=True).split()
         sex_age, kg = jock_raw[0], jock_raw[1]
@@ -333,7 +336,8 @@ def scrape():
         race_num_m = re.search(r'(\d+)\s*レース', page_text)
         race_idx = int(race_num_m.group(1)) if race_num_m else 1
 
-        dist_val = int(re.search(r'(\d,?\d{2,3})メートル', page_text).group(1).replace(",", ""))
+        dist_match = re.search(r'(\d,?\d{2,3})メートル', page_text)
+        dist_val = int(dist_match.group(1).replace(",", "")) if dist_match else 0
         race_type = "ダート" if "ダート" in page_text else "芝"
         
         race_name_tag = soup.find(class_="race_name")
