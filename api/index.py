@@ -437,31 +437,30 @@ def scrape():
 def latest_url():
     day = request.args.get('day', type=int)
     try:
+        # Javascript getDay(): 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
         if day in [1, 2, 3, 4]:
-            res = requests.get('https://www.jra.go.jp/', headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-            res.encoding = 'shift_jis'
-            soup = BeautifulSoup(res.text, "html.parser")
-            result_link = soup.find('a', string=re.compile(r"レース結果"))
-            if result_link:
-                res_url = urljoin("https://www.jra.go.jp/", result_link['href'])
-                r2 = requests.get(res_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-                r2.encoding = 'shift_jis'
-                soup2 = BeautifulSoup(r2.text, "html.parser")
-                a = soup2.find("a", href=re.compile(r'CNAME=pw01sde|CNAME=pw01dde'))
-                if a: return jsonify({"url": urljoin("https://www.jra.go.jp/JRADB/", a['href'])})
+            return jsonify({"error": "出馬表が公開されていないため、取得に失敗しました。"}), 400
         else:
+            # 金・土・日の場合、JRAの今週の重賞ページから出馬表を探す
             res = requests.get('https://www.jra.go.jp/keiba/thisweek/', headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
             res.encoding = 'shift_jis'
             soup = BeautifulSoup(res.text, "html.parser")
-            a = soup.find("a", href=re.compile(r'CNAME=pw01sde|CNAME=pw01dde'))
-            if a: return jsonify({"url": urljoin("https://www.jra.go.jp/JRADB/", a['href'])})
             
-        res = requests.get('https://www.jra.go.jp/', headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-        res.encoding = 'shift_jis'
-        soup = BeautifulSoup(res.text, "html.parser")
-        for a in soup.find_all("a", href=True):
-            if 'accessS.html' in a['href'] or 'accessD.html' in a['href']:
-                return jsonify({"url": urljoin("https://www.jra.go.jp/", a['href'])})
+            # /keiba/thisweek/YYYY/MMDD_X/horse.html のような重賞ページを探す
+            horse_link = soup.find("a", href=re.compile(r'/keiba/thisweek/\d{4}/\d{4}_\d+/horse\.html'))
+            if horse_link:
+                horse_url = urljoin("https://www.jra.go.jp/", horse_link['href'])
+                r2 = requests.get(horse_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+                r2.encoding = 'shift_jis'
+                soup2 = BeautifulSoup(r2.text, "html.parser")
+                a = soup2.find("a", href=re.compile(r'CNAME=pw01dde'))
+                if a: 
+                    return jsonify({"url": urljoin("https://www.jra.go.jp/JRADB/", a['href'])})
+            
+            # 万が一horse.htmlが見つからなかった場合のフォールバック（トップから直接アクセスDを探す）
+            for a in soup.find_all("a", href=True):
+                if 'accessD.html' in a['href']:
+                    return jsonify({"url": urljoin("https://www.jra.go.jp/", a['href'])})
                 
         return jsonify({"error": "最新のURLが見つかりませんでした。"}), 404
     except Exception as e:
