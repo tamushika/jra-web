@@ -150,17 +150,43 @@ const COURSE_DIRECTION = {
     "小倉": { lat: 33.834, lon: 130.875, dir: 340 }
 };
 
-function checkWindEffect(windDir, courseDir) {
+function getWindDirectionString(deg) {
+    const directions = ["北", "北北東", "北東", "東北東", "東", "東南東", "南東", "南南東", "南", "南南西", "南西", "西南西", "西", "西北西", "北西", "北北西", "北"];
+    return directions[Math.round(deg / 22.5)];
+}
+
+function getWindSpeedTerm(speed) {
+    if (speed < 0.3) return "静穏";
+    if (speed < 10) return "微風";
+    if (speed < 15) return "やや強い風";
+    if (speed < 20) return "強い風";
+    if (speed < 30) return "非常に強い風";
+    return "猛烈な風";
+}
+
+function checkWindEffectHtml(windDir, courseDir) {
     let diff = Math.abs(windDir - courseDir);
     if (diff > 180) diff = 360 - diff;
     
+    let straightWind = "";
+    let backstretchWind = "";
+    let effect = "";
+    
     if (diff <= 45) {
-        return "【向かい風】 ゴール前直線が向かい風です。逃げ・先行馬が有利になります。";
+        straightWind = "向かい風";
+        backstretchWind = "追い風";
+        effect = "直線が向かい風となるため、逃げ・先行馬が有利になる傾向があります。";
     } else if (diff >= 135) {
-        return "【追い風】 ゴール前直線が追い風です。差し・追込馬が有利になります。";
+        straightWind = "追い風";
+        backstretchWind = "向かい風";
+        effect = "直線が追い風となるため、差し・追込馬が有利になる傾向があります。";
     } else {
-        return "【横風】 ゴール前直線は横風です。内外で影響が変わる可能性があります。";
+        straightWind = "横風";
+        backstretchWind = "横風";
+        effect = "直線は横風となるため、内外で影響が変わる可能性があります。";
     }
+    
+    return `向こう正面は${backstretchWind}、直線は${straightWind}となります。<br><span style="color:#ffcc00; font-weight:bold;">${effect}</span>`;
 }
 
 async function fetchWindData(venue) {
@@ -179,8 +205,11 @@ async function fetchWindData(venue) {
         const result = await res.json();
         if (result.current_weather) {
             const w = result.current_weather;
-            const effectText = checkWindEffect(w.winddirection, course.dir);
-            windDisplay.innerHTML = `<strong>リアルタイム風力データ (${venue}):</strong> 風速 ${w.windspeed}m/s, 風向 ${w.winddirection}°<br><span style="color:#ffcc00; font-weight:bold;">${effectText}</span>`;
+            const dirStr = getWindDirectionString(w.winddirection);
+            const speedTerm = getWindSpeedTerm(w.windspeed);
+            const effectHtml = checkWindEffectHtml(w.winddirection, course.dir);
+            
+            windDisplay.innerHTML = `<strong>リアルタイム風力データ (${venue}):</strong> ${dirStr}からの風 (${w.winddirection}°), ${speedTerm} (${w.windspeed}m/s)<br>${effectHtml}`;
         }
     } catch(e) {
         windDisplay.textContent = "風データの取得に失敗しました。";
