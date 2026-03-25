@@ -118,9 +118,22 @@ function applyScrapeData(data, url, mode) {
     });
     document.getElementById('ultraDetails').textContent = ultraText || "ウルトラ判定に該当する馬はいません。";
     
+    document.getElementById('harabValue').textContent = data.harab_index || "-";
+
     const courseFeatureElem = document.getElementById('courseFeatureText');
     if (courseFeatureElem) {
         courseFeatureElem.textContent = data.feature_text || "このコースの過去傾向・特徴データがありません。";
+    }
+
+    const courseImage = document.getElementById('courseLayoutImage');
+    const vEnMap = {"札幌":"sapporo", "函館":"hakodate", "福島":"fukushima", "新潟":"niigata", "東京":"tokyo", "中山":"nakayama", "中京":"chukyo", "京都":"kyoto", "阪神":"hanshin", "小倉":"kokura"};
+    const tEnMap = {"芝":"turf", "ダート":"dirt", "障害":"jump"};
+    if (courseImage && vEnMap[data.venue] && tEnMap[data.race_type]) {
+        const vEn = vEnMap[data.venue];
+        const tEn = tEnMap[data.race_type];
+        courseImage.src = `/assets/images/courses/${vEn}_${tEn}_${data.dist_val}.png`;
+        courseImage.onerror = () => { courseImage.style.display = 'none'; };
+        courseImage.onload = () => { courseImage.style.display = 'block'; };
     }
 
     const select = document.getElementById('historyHorseSelect');

@@ -393,6 +393,17 @@ def scrape():
 
         # Feature Course Memo
         feature_text = analysis.load_course_feature(venue, race_type, dist_val, base_dir)
+        
+        harab_index = "-"
+        if feature_text:
+            harab_m = re.search(r'【波乱指数】([0-9.]+)', feature_text)
+            if harab_m:
+                harab_index = harab_m.group(1)
+                feature_text = feature_text.replace(harab_m.group(0), "").strip()
+            
+            first_line_m = re.match(r'^(.*?[芝ダ障害]\d+m\s*)\n', feature_text)
+            if first_line_m:
+                feature_text = feature_text[len(first_line_m.group(0)):].strip()
 
         # Course record extraction
         course_record_text = ""
@@ -421,6 +432,7 @@ def scrape():
             "baba_info": baba_info,
             "course_record": course_record_text,
             "criteria_lines": criteria_lines,
+            "harab_index": harab_index,
             "feature_text": feature_text,
             "matrix_data": matrix,
             "horses": horses_out,

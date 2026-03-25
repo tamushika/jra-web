@@ -104,10 +104,22 @@
             </div>
 
             <div class="tab-content" id="tab-course">
-                <div id="windDataDisplay" style="background: rgba(0,0,0,0.3); padding: 10px; border-radius: 6px; margin-bottom: 10px; border: 1px solid var(--border-color); font-size: 13px; line-height: 1.5;">
-                    風データ待機中...
+                <div class="split-pane">
+                    <div class="left-pane" style="flex: 2;">
+                        <div class="info-panel" style="display:flex; justify-content:space-between; align-items:center;">
+                            <div id="windDataDisplay" class="wind-info">風データ待機中...</div>
+                            <div class="harab-info">
+                                <span class="harab-label">波乱指数</span>
+                                <span id="harabValue" class="harab-val">-</span>
+                            </div>
+                        </div>
+                        <div class="feature-content" id="courseFeatureText">このコースの過去傾向・特徴データがありません。</div>
+                    </div>
+                    <div class="right-pane course-img-container" style="flex: 1; display:flex; flex-direction:column; align-items:center; justify-content:center; border: 1px solid var(--border-color); border-radius: 8px; background: rgba(0,0,0,0.2); padding: 10px;">
+                        <h4 style="margin-top:0; font-size:12px; color:var(--text-sub);">コースレイアウト</h4>
+                        <img id="courseLayoutImage" src="" alt="コースレイアウト画像" style="max-width: 100%; max-height: 250px; display: none;" />
+                    </div>
                 </div>
-                <pre class="log-area" id="courseFeatureText">このコースの過去傾向・特徴データがありません。</pre>
             </div>
 
             <div class="tab-content" id="tab-ai">

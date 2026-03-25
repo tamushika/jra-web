@@ -249,6 +249,31 @@ button {
     border-color: transparent transparent rgba(30, 30, 30, 0.95) transparent;
 }
 
+.split-pane {
+    display: flex;
+    gap: 16px;
+    align-items: stretch;
+}
+
+.harab-info {
+    display: flex;
+    align-items: center;
+    background: rgba(220, 53, 69, 0.15);
+    border: 1px solid rgba(220, 53, 69, 0.4);
+    border-radius: 6px;
+    padding: 4px 12px;
+}
+.harab-label {
+    font-size: 11px;
+    color: #ffb3b3;
+    margin-right: 8px;
+}
+.harab-val {
+    font-size: 18px;
+    font-weight: bold;
+    color: #ff6b6b;
+}
+
 .grade-tooltip-target:hover .tooltip-text {
     visibility: visible;
     opacity: 1;
