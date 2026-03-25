@@ -122,7 +122,9 @@ function applyScrapeData(data, url, mode) {
 
     const courseFeatureElem = document.getElementById('courseFeatureText');
     if (courseFeatureElem) {
-        courseFeatureElem.textContent = data.feature_text || "このコースの過去傾向・特徴データがありません。";
+        const title = `<h4 style="margin-top:0; margin-bottom: 8px; font-size: 14px; border-bottom: 1px solid var(--border-color); padding-bottom: 6px;">${data.venue} ${data.race_type}${data.dist_val}m コース解説</h4>`;
+        const bodyContent = data.feature_text || "このコースの過去傾向・特徴データがありません。";
+        courseFeatureElem.innerHTML = title + `<div style="white-space: pre-wrap; line-height: 1.6;">${bodyContent}</div>`;
     }
 
     const courseImage = document.getElementById('courseLayoutImage');
