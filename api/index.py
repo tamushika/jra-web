@@ -396,9 +396,9 @@ def scrape():
         
         harab_index = "-"
         if feature_text:
-            harab_m = re.search(r'【波乱指数】([0-9.]+)', feature_text)
+            harab_m = re.search(r'【?波乱指数】?[:：\s]*([^\n]+)', feature_text)
             if harab_m:
-                harab_index = harab_m.group(1)
+                harab_index = harab_m.group(1).strip()
                 feature_text = feature_text.replace(harab_m.group(0), "").strip()
             
             first_line_m = re.match(r'^(.*?[芝ダ障害]\d+m\s*)\n', feature_text)
@@ -426,11 +426,21 @@ def scrape():
             cr_m = re.search(r'コースレコード[\s\S]{0,30}?(\d{1,2}:\d{2}\.\d)', soup.get_text(separator=' '))
             if cr_m: course_record_text = "コースレコード " + cr_m.group(1)
 
+        course_image = ""
+        try:
+            import json
+            with open(os.path.join(base_dir, 'jra_images.json'), 'r', encoding='utf-8') as f:
+                img_map = json.load(f)
+                key = f"{race_type}{dist_val}"
+                course_image = img_map.get(venue, {}).get(key, "")
+        except: pass
+
         return jsonify({
             "success": True,
             "race_info": race_label,
             "baba_info": baba_info,
             "course_record": course_record_text,
+            "course_image": course_image,
             "criteria_lines": criteria_lines,
             "harab_index": harab_index,
             "feature_text": feature_text,

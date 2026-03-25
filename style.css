@@ -249,6 +249,19 @@ button {
     border-color: transparent transparent rgba(30, 30, 30, 0.95) transparent;
 }
 
+.info-panel {
+    background: rgba(0,0,0,0.3);
+    padding: 10px 14px;
+    border-radius: 6px;
+    margin-bottom: 12px;
+    border: 1px solid var(--border-color);
+    line-height: 1.5;
+}
+.wind-info {
+    font-size: 13px;
+    flex: 1;
+}
+
 .split-pane {
     display: flex;
     gap: 16px;
