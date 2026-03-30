@@ -285,6 +285,19 @@ def check_condition(cond, h, r, sire_lineage, mawari_map):
             raw_hist = h['hist'][0]['raw'] if h['hist'] else ""
             prev_venue = re.sub(r'\d+回|\d+日', '', raw_hist.split()[1]) if len(raw_hist.split()) > 1 else ""
             curr_venue = r.get('venue', "")
+
+            if "同コース" in cond:
+                prev_course = h['hist'][0].get('course', "")
+                actual_dist_m = re.search(r'(\d+)', prev_course)
+                # 競馬場チェック
+                if prev_venue != curr_venue: return False
+                # 距離チェック
+                if not actual_dist_m or int(actual_dist_m.group(1)) != r.get('dist', 0): return False
+                # 芝/ダート チェック
+                prev_type = "芝" if "芝" in prev_course else "ダート" if "ダ" in prev_course else ""
+                if prev_type != r.get('type', ""): return False
+                return True
+
             if "同競馬場" in cond and prev_venue != curr_venue: return False
             if "別競馬場" in cond and prev_venue == curr_venue: return False
             if "中央場所" in cond and prev_venue not in ["中山", "東京", "京都", "阪神"]: return False
@@ -294,7 +307,7 @@ def check_condition(cond, h, r, sire_lineage, mawari_map):
                 target_dist_m = re.search(r'(\d+)', cond)
                 if actual_dist_m:
                     actual = int(actual_dist_m.group(1))
-                    target = int(target_dist_m.group(1)) if target_dist_m else r['dist']
+                    target = int(target_dist_m.group(1)) if target_dist_m else r.get('dist', 0)
                     if "同距離超" in cond and actual <= target: return False
                     if "同距離以上" in cond and actual < target: return False
                     if "同距離" in cond and "以上" not in cond and "超" not in cond and actual != target: return False
