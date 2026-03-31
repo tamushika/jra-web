@@ -1,7 +1,7 @@
 let globalHorsesData = [];
 let raceCache = {}; // ◎がいるレースのハッシュマップ
 let apiCache = {}; // { URL: { mode: "詳細", data: {...} } }
-let currentRaceContext = { venue: "", track_type: "", distance: 0, condition: "" };
+let currentRaceContext = { venue: "", track_type: "", distance: 0, condition: "", race_class: "" };
 
 document.addEventListener('DOMContentLoaded', () => {
     // Tab Switching
@@ -47,6 +47,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // Past Data Analysis
     const pastDataBtn = document.getElementById('runPastDataBtn');
     if(pastDataBtn) pastDataBtn.addEventListener('click', fetchPastData);
+    
+    const classCheck = document.getElementById('matchClassCheckbox');
+    if(classCheck) classCheck.addEventListener('change', () => {
+        const pmContainer = document.getElementById('pastDataResultsContainer');
+        if (pmContainer && pmContainer.style.display !== 'none') {
+            fetchPastData();
+        }
+    });
 });
 
 async function startScraping() {
@@ -166,9 +174,14 @@ function applyScrapeData(data, url, mode) {
     currentRaceContext.venue = data.venue;
     currentRaceContext.track_type = data.race_type;
     currentRaceContext.distance = data.dist_val;
+    currentRaceContext.race_class = data.race_class || "不明";
+    
     let bText = document.getElementById('babaInfo').textContent;
     let m = bText.match(new RegExp(data.race_type + "[:：]\\s*([^\\s\\(]+)"));
     currentRaceContext.condition = m ? m[1] : "良";
+    
+    const dClass = document.getElementById('displayRaceClass');
+    if (dClass) dClass.textContent = `[${currentRaceContext.race_class}]`;
     
     // Reset past data state if any
     const pmContainer = document.getElementById('pastDataResultsContainer');
@@ -455,17 +468,24 @@ async function fetchPastData() {
     document.getElementById('pastDataResultsContainer').style.display = 'none';
 
     try {
-        const url = `/api/past_data?place=${encodeURIComponent(currentRaceContext.venue)}&track_type=${encodeURIComponent(currentRaceContext.track_type)}&distance=${currentRaceContext.distance}&condition=${encodeURIComponent(currentRaceContext.condition)}`;
+        const matchClass = document.getElementById('matchClassCheckbox').checked;
+        let url = `/api/past_data?place=${encodeURIComponent(currentRaceContext.venue)}&track_type=${encodeURIComponent(currentRaceContext.track_type)}&distance=${currentRaceContext.distance}&condition=${encodeURIComponent(currentRaceContext.condition)}`;
+        if (matchClass && currentRaceContext.race_class) {
+            url += `&race_class=${encodeURIComponent(currentRaceContext.race_class)}`;
+        }
+        
         const res = await fetch(url);
         const data = await res.json();
         if(data.error) throw new Error(data.error);
 
+        const classLabel = matchClass ? ` ${currentRaceContext.race_class}` : "";
+
         // Rendering exact match
-        document.getElementById('exactMatchStatus').textContent = `${currentRaceContext.venue} ${currentRaceContext.track_type} ${currentRaceContext.distance}m [${currentRaceContext.condition}]`;
+        document.getElementById('exactMatchStatus').textContent = `${currentRaceContext.venue} ${currentRaceContext.track_type} ${currentRaceContext.distance}m [${currentRaceContext.condition}]${classLabel}`;
         renderPastDataStats(data.exact_match, 'exact');
 
         // Rendering all conditions
-        document.getElementById('allMatchStatus').textContent = `${currentRaceContext.venue} ${currentRaceContext.track_type} ${currentRaceContext.distance}m [全天候]`;
+        document.getElementById('allMatchStatus').textContent = `${currentRaceContext.venue} ${currentRaceContext.track_type} ${currentRaceContext.distance}m [全天候]${classLabel}`;
         renderPastDataStats(data.all_conditions, 'all');
 
         document.getElementById('pastDataResultsContainer').style.display = 'flex';

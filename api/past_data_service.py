@@ -162,7 +162,7 @@ def analyze_races(rows):
         'avg_agari': f"{avg_agari:.1f}" if avg_agari else "-"
     }
 
-def get_past_data(base_dir, place, track_type, distance, condition):
+def get_past_data(base_dir, place, track_type, distance, condition, race_class=None):
     conn = get_db_connection(base_dir)
     if not conn:
         return {"error": "Database not found"}
@@ -175,16 +175,26 @@ def get_past_data(base_dir, place, track_type, distance, condition):
         FROM races
         WHERE place = ? AND track_type = ? AND distance = ? AND condition = ?
     '''
-    cursor.execute(query_exact, (place, track_type, distance, condition))
-    rows_exact = [dict(row) for row in cursor.fetchall()]
-
+    params_exact = [place, track_type, distance, condition]
+    
     # 馬場状態不問
     query_all = '''
         SELECT rank, horse_number, corner_4, jockey, time, agari_3f
         FROM races
         WHERE place = ? AND track_type = ? AND distance = ?
     '''
-    cursor.execute(query_all, (place, track_type, distance))
+    params_all = [place, track_type, distance]
+
+    if race_class and race_class != "null":
+        query_exact += " AND race_class = ?"
+        params_exact.append(race_class)
+        query_all += " AND race_class = ?"
+        params_all.append(race_class)
+
+    cursor.execute(query_exact, tuple(params_exact))
+    rows_exact = [dict(row) for row in cursor.fetchall()]
+
+    cursor.execute(query_all, tuple(params_all))
     rows_all = [dict(row) for row in cursor.fetchall()]
 
     conn.close()

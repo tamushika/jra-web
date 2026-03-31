@@ -343,6 +343,20 @@ def scrape():
         race_name = race_name_tag.get_text(strip=True) if race_name_tag else "レース名不明"
         race_label = f"【{venue} {race_idx}R】{race_type}{dist_val}m　{race_name}"
 
+        def get_race_class(name):
+            name_str = str(name).upper()
+            if "G1" in name_str or "G2" in name_str or "G3" in name_str: return "重賞"
+            if "JG1" in name_str or "JG2" in name_str or "JG3" in name_str: return "重賞"
+            if "(L)" in name_str or "オープ" in name_str or "OP" in name_str: return "オープン"
+            if "3勝" in name_str or "３勝" in name_str: return "3勝クラス"
+            if "2勝" in name_str or "２勝" in name_str: return "2勝クラス"
+            if "1勝" in name_str or "１勝" in name_str: return "1勝クラス"
+            if "未勝利" in name_str: return "未勝利"
+            if "新馬" in name_str: return "新馬"
+            return "オープン"
+        
+        race_class = get_race_class(race_name)
+
         baba_info = fetch_baba_info(venue)
         matrix = build_matrix_data(soup)
 
@@ -439,6 +453,10 @@ def scrape():
         return jsonify({
             "success": True,
             "race_info": race_label,
+            "venue": venue,
+            "race_type": race_type,
+            "dist_val": dist_val,
+            "race_class": race_class,
             "baba_info": baba_info,
             "course_record": course_record_text,
             "course_image": course_image,
@@ -448,7 +466,6 @@ def scrape():
             "matrix_data": matrix,
             "horses": horses_out,
             "has_double_circle": has_double_circle,
-            "venue": venue,
             "race_type": race_type,
             "dist_val": dist_val,
         })
@@ -490,18 +507,20 @@ def latest_url():
         return jsonify({"error": f"URL取得エラー: {str(e)}"}), 500
 
 @app.route('/api/past_data', methods=['GET'])
-def past_data():
+def get_past_data_api():
     place = request.args.get('place')
     track_type = request.args.get('track_type')
-    distance = request.args.get('distance', type=int)
+    distance = request.args.get('distance')
     condition = request.args.get('condition')
-    
-    if not all([place, track_type, distance, condition]):
-        return jsonify({"error": "必須パラメータが不足しています。(place, track_type, distance, condition)"}), 400
+    race_class = request.args.get('race_class')
 
-    base_dir = get_base_dir()
+    if not all([place, track_type, distance, condition]):
+        return jsonify({"error": "Missing parameters"}), 400
+
     try:
-        result = past_data_service.get_past_data(base_dir, place, track_type, distance, condition)
+        from past_data_service import get_past_data
+        base_dir = get_base_dir()
+        result = get_past_data(base_dir, place, track_type, distance, condition, race_class)
         return jsonify(result)
     except Exception as e:
         import traceback

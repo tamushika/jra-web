@@ -19,7 +19,7 @@ def build_database():
     print(f"Loaded {len(df)} rows. Processing...")
 
     # 必要なカラムの抽出とリネーム
-    # ['日付', '開催', '着順', '芝・ダ', '距離', '馬場状態', '馬番', '4角', '騎手', '走破タイム', '上り3F', '人気', '単勝配当']
+    # ['日付', '開催', '着順', '芝・ダ', '距離', '馬場状態', '馬番', '4角', '騎手', '走破タイム', '上り3F', '人気', '単勝配当', 'レース名']
     cols_to_keep = {
         '日付': 'date',
         '開催': 'kaisai',
@@ -33,7 +33,8 @@ def build_database():
         '走破タイム': 'time',
         '上り3F': 'agari_3f',
         '人気': 'popularity',
-        '単勝配当': 'odds'
+        '単勝配当': 'odds',
+        'レース名': 'race_name'
     }
 
     # 存在するカラムだけを抽出
@@ -63,6 +64,33 @@ def build_database():
     # 距離を数値に変換（変換できないものはNaN）
     keep_df['distance'] = pd.to_numeric(keep_df['distance'], errors='coerce')
 
+    # クラス分類
+    def parse_race_class(name):
+        if pd.isna(name): return "不明"
+        
+        name_str = str(name).upper()
+        # 重賞
+        if "G1" in name_str or "G2" in name_str or "G3" in name_str: return "重賞"
+        if "JG1" in name_str or "JG2" in name_str or "JG3" in name_str: return "重賞"
+        
+        # オープン (L, OPなど)
+        if "(L)" in name_str or "オープ" in name_str or "OP" in name_str: return "オープン"
+        
+        # 条件戦
+        if "3勝" in name_str or "３勝" in name_str: return "3勝クラス"
+        if "2勝" in name_str or "２勝" in name_str: return "2勝クラス"
+        if "1勝" in name_str or "１勝" in name_str: return "1勝クラス"
+        
+        # 未勝利 / 新馬
+        if "未勝利" in name_str: return "未勝利"
+        if "新馬" in name_str: return "新馬"
+        
+        # 特殊なレース名などでクラス明記がない場合（例：特別戦など）を「オープン」として扱うケースもあるが、
+        # ここでは安全に判定できなければオープンとする
+        return "オープン"
+
+    keep_df['race_class'] = keep_df['race_name'].apply(parse_race_class)
+
     # 着順を数値に（'１' -> 1, '取消' -> NaN）
     import re
     def parse_rank(rank_str):
@@ -83,8 +111,10 @@ def build_database():
     
     # インデックスの作成 (検索を高速化するため)
     cursor = conn.cursor()
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_race_search ON races(place, track_type, distance, condition)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_race_search_nocond ON races(place, track_type, distance)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_race_search ON races(place, track_type, distance, condition, race_class)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_race_search_nocond_class ON races(place, track_type, distance, race_class)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_race_search_noclass ON races(place, track_type, distance, condition)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_race_search_nocond_noclass ON races(place, track_type, distance)')
     conn.commit()
     conn.close()
 
