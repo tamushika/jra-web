@@ -510,8 +510,10 @@ function renderPastDataStats(stats, prefix) {
     if(!stats) {
          document.getElementById(prefix+'Entries').textContent = "0";
          if(document.getElementById(prefix+'UmabanTbody')) document.getElementById(prefix+'UmabanTbody').innerHTML = '<tr><td colspan="3">データなし</td></tr>';
+         if(document.getElementById(prefix+'WakuTbody')) document.getElementById(prefix+'WakuTbody').innerHTML = '<tr><td colspan="3">データなし</td></tr>';
          if(document.getElementById(prefix+'KyakuTbody')) document.getElementById(prefix+'KyakuTbody').innerHTML = '<tr><td colspan="3">データなし</td></tr>';
          if(document.getElementById(prefix+'JockeyTbody')) document.getElementById(prefix+'JockeyTbody').innerHTML = '<tr><td colspan="3">データなし</td></tr>';
+         if(document.getElementById(prefix+'WeightTbody')) document.getElementById(prefix+'WeightTbody').innerHTML = '<tr><td colspan="3">データなし</td></tr>';
          return;
     }
     
@@ -519,11 +521,18 @@ function renderPastDataStats(stats, prefix) {
     document.getElementById(prefix+'AvgTime').textContent = stats.avg_time;
     document.getElementById(prefix+'AvgAgari').textContent = stats.avg_agari;
 
-    const buildTrs = (arr, cols) => arr.length > 0 
+    const buildTrs = (arr, cols) => (arr && arr.length > 0) 
         ? arr.map(item => `<tr>${cols.map(c => `<td>${item[c]}</td>`).join('')}</tr>`).join('')
         : '<tr><td colspan="3">データなし</td></tr>';
     
     document.getElementById(prefix+'UmabanTbody').innerHTML = buildTrs(stats.umaban, ['name', 'win_rate', 'top3_rate']);
+    
+    const wakuEl = document.getElementById(prefix+'WakuTbody');
+    if (wakuEl && stats.waku) wakuEl.innerHTML = buildTrs(stats.waku, ['name', 'win_rate', 'top3_rate']);
+
     document.getElementById(prefix+'KyakuTbody').innerHTML = buildTrs(stats.kyakushitsu, ['name', 'win_rate', 'top3_rate']);
     document.getElementById(prefix+'JockeyTbody').innerHTML = buildTrs(stats.jockey, ['name', 'win_rate', 'top3_rate']);
+    
+    const weightEl = document.getElementById(prefix+'WeightTbody');
+    if (weightEl && stats.weight) weightEl.innerHTML = buildTrs(stats.weight, ['name', 'win_rate', 'top3_rate']);
 }

@@ -5,7 +5,7 @@ import os
 # パスの設定
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(BASE_DIR, 'csv', 'data_2020-2025.csv')
-DB_PATH = os.path.join(BASE_DIR, 'past_data.db')
+DB_PATH = os.path.join(BASE_DIR, 'past_data_v2.db')
 
 def build_database():
     print(f"Loading CSV from {CSV_PATH}...")
@@ -18,8 +18,7 @@ def build_database():
 
     print(f"Loaded {len(df)} rows. Processing...")
 
-    # 必要なカラムの抽出とリネーム
-    # ['日付', '開催', '着順', '芝・ダ', '距離', '馬場状態', '馬番', '4角', '騎手', '走破タイム', '上り3F', '人気', '単勝配当', 'レース名', '馬体重']
+    # ['日付', '開催', '着順', '芝・ダ', '距離', '馬場状態', '馬番', '4角', '騎手', '走破タイム', '上り3F', '人気', '単勝配当', 'レース名', '馬体重', '頭数']
     cols_to_keep = {
         '日付': 'date',
         '開催': 'kaisai',
@@ -35,7 +34,8 @@ def build_database():
         '人気': 'popularity',
         '単勝配当': 'odds',
         'レース名': 'race_name',
-        '馬体重': 'weight'
+        '馬体重': 'weight',
+        '頭数': 'total_horses'
     }
 
     # 存在するカラムだけを抽出
@@ -62,8 +62,10 @@ def build_database():
     # 芝・ダ のフォーマット統一 ('ダ' -> 'ダート')
     keep_df['track_type'] = keep_df['track_type'].replace({'ダ': 'ダート'})
 
-    # 距離を数値に変換（変換できないものはNaN）
+    # 距離と頭数を数値に変換
     keep_df['distance'] = pd.to_numeric(keep_df['distance'], errors='coerce')
+    if 'total_horses' in keep_df.columns:
+        keep_df['total_horses'] = pd.to_numeric(keep_df['total_horses'], errors='coerce')
 
     # 馬体重をパース（"458" などの整数部分を取り出し）
     def parse_weight(val):

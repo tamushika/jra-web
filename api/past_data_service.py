@@ -5,16 +5,16 @@ import zipfile
 
 def get_db_connection(base_dir):
     # Check for Vercel /tmp or local fallback
-    db_path = os.path.join('/tmp', 'past_data.db') if os.environ.get('VERCEL') else os.path.join(base_dir, 'past_data.db')
+    db_path = os.path.join('/tmp', 'past_data_v2.db') if os.environ.get('VERCEL') else os.path.join(base_dir, 'past_data_v2.db')
     
     if not os.path.exists(db_path):
         # 展開元ZIPのパス
-        zip_path = os.path.join(base_dir, 'past_data.zip')
+        zip_path = os.path.join(base_dir, 'past_data_v2.zip')
         if os.path.exists(zip_path):
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 # /tmp に展開するか、localならbase_dirに展開
                 extract_path = '/tmp' if os.environ.get('VERCEL') else base_dir
-                zip_ref.extract('past_data.db', extract_path)
+                zip_ref.extract('past_data_v2.db', extract_path)
         else:
             return None
 
@@ -41,6 +41,36 @@ def format_time(seconds):
     s = seconds % 60
     return f"{m}:{s:04.1f}" if m > 0 else f"{s:04.1f}"
 
+# 枠連の計算ロジック
+def calculate_waku(umaban, head_count):
+    if not umaban or not head_count: return None
+    try:
+        u = int(umaban)
+        h = int(head_count)
+    except:
+        return None
+        
+    if h <= 8: return u
+    
+    waku_sizes = [1] * 8
+    rem = h - 8
+    
+    for i in range(8, 0, -1):
+        if rem > 0:
+            waku_sizes[i-1] += 1
+            rem -= 1
+        if rem > 0 and i > 1:
+            waku_sizes[i-1] += 1
+            rem -= 1
+            
+    current_u = 1
+    for waku in range(1, 9):
+        size = waku_sizes[waku-1]
+        if current_u <= u < current_u + size:
+            return waku
+        current_u += size
+    return None
+
 def analyze_races(rows):
     if not rows:
         return None
@@ -50,6 +80,9 @@ def analyze_races(rows):
     # 枠番(馬番) Stats
     # format: {horse_number: {'runs': 0, 'wins': 0, 'top3': 0}}
     umaban_stats = {}
+    
+    # 枠別 Stats (1〜8)
+    waku_stats = {str(i): {'runs': 0, 'wins': 0, 'top3': 0} for i in range(1, 9)}
     
     # 脚質 Stats
     kyaku_stats = {'逃げ/先行(1-3番手)': {'runs': 0, 'wins': 0, 'top3': 0},
@@ -87,6 +120,16 @@ def analyze_races(rows):
             umaban_stats[umaban]['runs'] += 1
             umaban_stats[umaban]['wins'] += is_win
             umaban_stats[umaban]['top3'] += is_top3
+
+        # 枠番
+        total_horses = r.get('total_horses')
+        waku = calculate_waku(r['horse_number'], total_horses)
+        if waku:
+            w = str(waku)
+            if w in waku_stats:
+                waku_stats[w]['runs'] += 1
+                waku_stats[w]['wins'] += is_win
+                waku_stats[w]['top3'] += is_top3
 
         # 脚質
         c4 = r['corner_4']
@@ -165,6 +208,24 @@ def analyze_races(rows):
         return sorted(arr, key=lambda x: x['win_rate_val'], reverse=True)
 
     umaban_arr = format_stats(umaban_stats)
+    
+    # 枠別は0回でも全枠(1〜8)を返す
+    waku_arr = []
+    for i in range(1, 9):
+        w_str = str(i)
+        v = waku_stats[w_str]
+        r_w = v['runs']
+        win_rate = (v['wins'] / r_w * 100) if r_w > 0 else 0.0
+        top3_rate = (v['top3'] / r_w * 100) if r_w > 0 else 0.0
+        waku_arr.append({
+            'name': w_str,
+            'runs': r_w,
+            'wins': v['wins'],
+            'top3': v['top3'],
+            'win_rate': f"{win_rate:.1f}%",
+            'top3_rate': f"{top3_rate:.1f}%"
+        })
+
     # limit jockeys to those with at least some runs to avoid 1/1 100% win rate noise
     # let's just sort by wins first, then win_rate
     jockey_arr = format_stats(jockey_stats)
@@ -201,6 +262,7 @@ def analyze_races(rows):
         'exact_races': exact_races,
         'umaban': umaban_arr[:10],
         'umaban_all': sorted(umaban_arr, key=lambda x: int(x['name']) if x['name'].isdigit() else 99),
+        'waku': waku_arr,
         'jockey': jockey_arr,
         'kyakushitsu': kyaku_arr,
         'weight': weight_arr,
@@ -217,7 +279,7 @@ def get_past_data(base_dir, place, track_type, distance, condition=None, race_cl
     cursor = conn.cursor()
 
     query = '''
-        SELECT rank, horse_number, corner_4, jockey, time, agari_3f, weight
+        SELECT rank, horse_number, corner_4, jockey, time, agari_3f, weight, total_horses
         FROM races
         WHERE place = ? AND track_type = ? AND distance = ?
     '''
