@@ -1,8 +1,7 @@
 let globalHorsesData = [];
 let raceCache = {}; // ◎がいるレースのハッシュマップ
 let apiCache = {}; // { URL: { mode: "詳細", data: {...} } }
-
-
+let currentRaceContext = { venue: "", track_type: "", distance: 0, condition: "" };
 
 document.addEventListener('DOMContentLoaded', () => {
     // Tab Switching
@@ -44,6 +43,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('historyHorseSelect').addEventListener('change', updateHistoryTable);
     document.getElementById('runAiBtn').addEventListener('click', runAiPrediction);
+    
+    // Past Data Analysis
+    const pastDataBtn = document.getElementById('runPastDataBtn');
+    if(pastDataBtn) pastDataBtn.addEventListener('click', fetchPastData);
 });
 
 async function startScraping() {
@@ -158,6 +161,20 @@ function applyScrapeData(data, url, mode) {
         select.value = globalHorsesData[0].num;
         updateHistoryTable();
     }
+    
+    // Store context for past data analysis
+    currentRaceContext.venue = data.venue;
+    currentRaceContext.track_type = data.race_type;
+    currentRaceContext.distance = data.dist_val;
+    let bText = document.getElementById('babaInfo').textContent;
+    let m = bText.match(new RegExp(data.race_type + "[:：]\\s*([^\\s\\(]+)"));
+    currentRaceContext.condition = m ? m[1] : "良";
+    
+    // Reset past data state if any
+    const pmContainer = document.getElementById('pastDataResultsContainer');
+    if(pmContainer) pmContainer.style.display = 'none';
+    const pmStatus = document.getElementById('pastDataStatus');
+    if(pmStatus) pmStatus.textContent = '';
     
     // Fetch Wind Data
     fetchWindData(data.venue);
@@ -424,4 +441,60 @@ function showLoading(text) {
 }
 function hideLoading() {
     document.getElementById('loadingOverlay').classList.add('hidden');
+}
+
+async function fetchPastData() {
+    if(!currentRaceContext.venue) {
+        alert("レースデータがありません。先に解析を実行してください。");
+        return;
+    }
+    const btn = document.getElementById('runPastDataBtn');
+    const status = document.getElementById('pastDataStatus');
+    btn.disabled = true;
+    status.textContent = "データ集計中...";
+    document.getElementById('pastDataResultsContainer').style.display = 'none';
+
+    try {
+        const url = `/api/past_data?place=${encodeURIComponent(currentRaceContext.venue)}&track_type=${encodeURIComponent(currentRaceContext.track_type)}&distance=${currentRaceContext.distance}&condition=${encodeURIComponent(currentRaceContext.condition)}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if(data.error) throw new Error(data.error);
+
+        // Rendering exact match
+        document.getElementById('exactMatchStatus').textContent = `${currentRaceContext.venue} ${currentRaceContext.track_type} ${currentRaceContext.distance}m [${currentRaceContext.condition}]`;
+        renderPastDataStats(data.exact_match, 'exact');
+
+        // Rendering all conditions
+        document.getElementById('allMatchStatus').textContent = `${currentRaceContext.venue} ${currentRaceContext.track_type} ${currentRaceContext.distance}m [全天候]`;
+        renderPastDataStats(data.all_conditions, 'all');
+
+        document.getElementById('pastDataResultsContainer').style.display = 'flex';
+        status.textContent = "集計完了";
+    } catch(err) {
+        status.textContent = "エラー: " + err.message;
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function renderPastDataStats(stats, prefix) {
+    if(!stats) {
+         document.getElementById(prefix+'Entries').textContent = "0";
+         if(document.getElementById(prefix+'UmabanTbody')) document.getElementById(prefix+'UmabanTbody').innerHTML = '<tr><td colspan="3">データなし</td></tr>';
+         if(document.getElementById(prefix+'KyakuTbody')) document.getElementById(prefix+'KyakuTbody').innerHTML = '<tr><td colspan="3">データなし</td></tr>';
+         if(document.getElementById(prefix+'JockeyTbody')) document.getElementById(prefix+'JockeyTbody').innerHTML = '<tr><td colspan="3">データなし</td></tr>';
+         return;
+    }
+    
+    document.getElementById(prefix+'Entries').textContent = stats.total_entries + "件 (約" + stats.estimated_races + "レース)";
+    document.getElementById(prefix+'AvgTime').textContent = stats.avg_time;
+    document.getElementById(prefix+'AvgAgari').textContent = stats.avg_agari;
+
+    const buildTrs = (arr, cols) => arr.length > 0 
+        ? arr.map(item => `<tr>${cols.map(c => `<td>${item[c]}</td>`).join('')}</tr>`).join('')
+        : '<tr><td colspan="3">データなし</td></tr>';
+    
+    document.getElementById(prefix+'UmabanTbody').innerHTML = buildTrs(stats.umaban, ['name', 'win_rate', 'top3_rate']);
+    document.getElementById(prefix+'KyakuTbody').innerHTML = buildTrs(stats.kyakushitsu, ['name', 'win_rate', 'top3_rate']);
+    document.getElementById(prefix+'JockeyTbody').innerHTML = buildTrs(stats.jockey, ['name', 'win_rate', 'top3_rate']);
 }

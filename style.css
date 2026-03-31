@@ -409,3 +409,61 @@ tbody tr:hover { background: var(--row-hover); }
     margin-bottom: 15px;
 }
 @keyframes spin { 100% { transform: rotate(360deg); } }
+
+/* Past Data Analysis Styles */
+.section-title {
+    font-size: 16px;
+    margin-bottom: 15px;
+    color: var(--primary);
+    border-bottom: 1px solid var(--primary);
+    padding-bottom: 5px;
+}
+
+.highlight-box {
+    background: rgba(47, 129, 247, 0.1);
+    border: 1px solid rgba(47, 129, 247, 0.3);
+    border-radius: 6px;
+    padding: 10px;
+    color: #c9d1d9;
+}
+
+.stats-group {
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 15px;
+    margin-bottom: 15px;
+}
+
+.stats-group h4 {
+    margin-bottom: 10px;
+    font-size: 14px;
+    color: var(--text-main);
+}
+
+.small-table table {
+    font-size: 12px;
+}
+
+.small-table th, .small-table td {
+    padding: 6px 8px;
+}
+
+.summary-box {
+    background: rgba(255, 138, 0, 0.1);
+    border: 1px solid rgba(255, 138, 0, 0.3);
+    border-radius: 6px;
+    padding: 15px;
+    margin-top: 15px;
+}
+
+.summary-box p {
+    margin-bottom: 5px;
+    font-size: 14px;
+}
+
+.summary-box .small-text {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 10px;
+}

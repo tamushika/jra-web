@@ -16,6 +16,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import analysis
+import past_data_service
 
 app = Flask(__name__, static_folder='../', static_url_path='/')
 CORS(app)
@@ -487,6 +488,24 @@ def latest_url():
         return jsonify({"error": "最新のURLが見つかりませんでした。"}), 404
     except Exception as e:
         return jsonify({"error": f"URL取得エラー: {str(e)}"}), 500
+
+@app.route('/api/past_data', methods=['GET'])
+def past_data():
+    place = request.args.get('place')
+    track_type = request.args.get('track_type')
+    distance = request.args.get('distance', type=int)
+    condition = request.args.get('condition')
+    
+    if not all([place, track_type, distance, condition]):
+        return jsonify({"error": "必須パラメータが不足しています。(place, track_type, distance, condition)"}), 400
+
+    base_dir = get_base_dir()
+    try:
+        result = past_data_service.get_past_data(base_dir, place, track_type, distance, condition)
+        return jsonify(result)
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route('/api/ai_predict', methods=['POST'])
 def ai_predict():
