@@ -514,8 +514,8 @@ def get_past_data_api():
     condition = request.args.get('condition')
     race_class = request.args.get('race_class')
 
-    if not all([place, track_type, distance, condition]):
-        return jsonify({"error": "Missing parameters"}), 400
+    if not all([place, track_type, distance]):
+        return jsonify({"error": "Missing parameters (place, track_type, distance)"}), 400
 
     try:
         from past_data_service import get_past_data

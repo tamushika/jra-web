@@ -60,6 +60,14 @@ def analyze_races(rows):
     # 騎手 Stats
     jockey_stats = {}
     
+    # 馬体重 Stats
+    weight_buckets = [
+        "400kg以下", "400〜419kg", "420〜439kg", "440〜459kg", 
+        "460〜479kg", "480〜499kg", "500〜519kg", "520〜539kg", "540kg以上"
+    ]
+    weight_stats = {b: {'runs': 0, 'wins': 0, 'top3': 0} for b in weight_buckets}
+    weight_stats['不明'] = {'runs': 0, 'wins': 0, 'top3': 0}
+
     # タイム
     valid_times = []
     valid_agari = []
@@ -105,6 +113,28 @@ def analyze_races(rows):
             jockey_stats[jockey]['wins'] += is_win
             jockey_stats[jockey]['top3'] += is_top3
 
+        # 馬体重
+        w_val = r.get('weight')
+        w_key = '不明'
+        if w_val is not None and str(w_val) != 'nan':
+            try:
+                w_num = int(w_val)
+                if w_num <= 400: w_key = "400kg以下"
+                elif w_num < 420: w_key = "400〜419kg"
+                elif w_num < 440: w_key = "420〜439kg"
+                elif w_num < 460: w_key = "440〜459kg"
+                elif w_num < 480: w_key = "460〜479kg"
+                elif w_num < 500: w_key = "480〜499kg"
+                elif w_num < 520: w_key = "500〜519kg"
+                elif w_num < 540: w_key = "520〜539kg"
+                else: w_key = "540kg以上"
+            except:
+                pass
+        
+        weight_stats[w_key]['runs'] += 1
+        weight_stats[w_key]['wins'] += is_win
+        weight_stats[w_key]['top3'] += is_top3
+
         # タイム
         t_sec = parse_time(r['time'])
         if t_sec: valid_times.append(t_sec)
@@ -146,64 +176,68 @@ def analyze_races(rows):
     avg_time = sum(valid_times)/len(valid_times) if valid_times else None
     avg_agari = sum(valid_agari)/len(valid_agari) if valid_agari else None
 
+    # Sort weight stats specifically by bucket order
+    weight_arr = []
+    ordered_w_keys = weight_buckets + ['不明']
+    for k in ordered_w_keys:
+        v = weight_stats[k]
+        if v['runs'] > 0:
+            win_rate = (v['wins'] / v['runs']) * 100
+            top3_rate = (v['top3'] / v['runs']) * 100
+            weight_arr.append({
+                'name': k,
+                'runs': v['runs'],
+                'wins': v['wins'],
+                'top3': v['top3'],
+                'win_rate': f"{win_rate:.1f}%",
+                'top3_rate': f"{top3_rate:.1f}%"
+            })
+
     # Count actual number of unique races
-    # 着順1位の馬の数が、ほぼ正確なレース数になります（同着を除く）
     exact_races = sum([1 for r in rows if r['rank'] == 1])
 
     return {
         'total_entries': total_races,
         'exact_races': exact_races,
-        'umaban': umaban_arr[:10], # Top 10 by win rate
+        'umaban': umaban_arr[:10],
         'umaban_all': sorted(umaban_arr, key=lambda x: int(x['name']) if x['name'].isdigit() else 99),
         'jockey': jockey_arr,
         'kyakushitsu': kyaku_arr,
+        'weight': weight_arr,
         'avg_time': format_time(avg_time),
         'avg_time_sec': avg_time,
         'avg_agari': f"{avg_agari:.1f}" if avg_agari else "-"
     }
 
-def get_past_data(base_dir, place, track_type, distance, condition, race_class=None):
+def get_past_data(base_dir, place, track_type, distance, condition=None, race_class=None):
     conn = get_db_connection(base_dir)
     if not conn:
         return {"error": "Database not found"}
         
     cursor = conn.cursor()
 
-    # 馬場状態完全一致
-    query_exact = '''
-        SELECT rank, horse_number, corner_4, jockey, time, agari_3f
-        FROM races
-        WHERE place = ? AND track_type = ? AND distance = ? AND condition = ?
-    '''
-    params_exact = [place, track_type, distance, condition]
-    
-    # 馬場状態不問
-    query_all = '''
-        SELECT rank, horse_number, corner_4, jockey, time, agari_3f
+    query = '''
+        SELECT rank, horse_number, corner_4, jockey, time, agari_3f, weight
         FROM races
         WHERE place = ? AND track_type = ? AND distance = ?
     '''
-    params_all = [place, track_type, distance]
+    params = [place, track_type, distance]
 
-    if race_class and race_class != "null":
-        query_exact += " AND race_class = ?"
-        params_exact.append(race_class)
-        query_all += " AND race_class = ?"
-        params_all.append(race_class)
+    if condition and condition != "null" and condition != "":
+        query += " AND condition = ?"
+        params.append(condition)
 
-    cursor.execute(query_exact, tuple(params_exact))
-    rows_exact = [dict(row) for row in cursor.fetchall()]
+    if race_class and race_class != "null" and race_class != "":
+        query += " AND race_class = ?"
+        params.append(race_class)
 
-    cursor.execute(query_all, tuple(params_all))
-    rows_all = [dict(row) for row in cursor.fetchall()]
-
+    cursor.execute(query, tuple(params))
+    rows = [dict(row) for row in cursor.fetchall()]
     conn.close()
 
-    exact_res = analyze_races(rows_exact)
-    all_res = analyze_races(rows_all)
+    res = analyze_races(rows)
 
     return {
         "success": True,
-        "exact_match": exact_res,
-        "all_conditions": all_res
+        "results": res
     }

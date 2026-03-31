@@ -19,7 +19,7 @@ def build_database():
     print(f"Loaded {len(df)} rows. Processing...")
 
     # 必要なカラムの抽出とリネーム
-    # ['日付', '開催', '着順', '芝・ダ', '距離', '馬場状態', '馬番', '4角', '騎手', '走破タイム', '上り3F', '人気', '単勝配当', 'レース名']
+    # ['日付', '開催', '着順', '芝・ダ', '距離', '馬場状態', '馬番', '4角', '騎手', '走破タイム', '上り3F', '人気', '単勝配当', 'レース名', '馬体重']
     cols_to_keep = {
         '日付': 'date',
         '開催': 'kaisai',
@@ -34,7 +34,8 @@ def build_database():
         '上り3F': 'agari_3f',
         '人気': 'popularity',
         '単勝配当': 'odds',
-        'レース名': 'race_name'
+        'レース名': 'race_name',
+        '馬体重': 'weight'
     }
 
     # 存在するカラムだけを抽出
@@ -63,6 +64,16 @@ def build_database():
 
     # 距離を数値に変換（変換できないものはNaN）
     keep_df['distance'] = pd.to_numeric(keep_df['distance'], errors='coerce')
+
+    # 馬体重をパース（"458" などの整数部分を取り出し）
+    def parse_weight(val):
+        if pd.isna(val) or str(val) == '計不': return None
+        w_str = str(val).split('(')[0].strip()
+        if w_str.isdigit(): return int(w_str)
+        return None
+        
+    if 'weight' in keep_df.columns:
+        keep_df['weight'] = keep_df['weight'].apply(parse_weight)
 
     # クラス分類
     def parse_race_class(name):

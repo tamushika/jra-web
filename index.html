@@ -127,27 +127,31 @@
 
             <div class="tab-content" id="tab-past-data">
                 <div class="control-row" style="justify-content: space-between; align-items: center; display: flex; flex-wrap: wrap; gap: 10px;">
-                    <button class="primary-btn highlight" id="runPastDataBtn">現在の条件で過去データを分析</button>
+                    <button class="primary-btn highlight" id="runPastDataBtn">設定条件でデータを分析</button>
                     <div style="display: flex; align-items: center; background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color);">
                         <label style="cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 13px;">
+                            <input type="checkbox" id="matchConditionCheckbox" checked />
+                            馬場 <span id="displayCondition" style="color: var(--primary); font-weight: bold;">[--]</span> 一致
+                        </label>
+                        <label style="cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 13px; margin-left: 15px; padding-left: 15px; border-left: 1px solid var(--border-color);">
                             <input type="checkbox" id="matchClassCheckbox" checked />
-                            クラス設定 <span id="displayRaceClass" style="color: var(--primary); font-weight: bold;">[--]</span> を完全一致させる
+                            クラス <span id="displayRaceClass" style="color: var(--primary); font-weight: bold;">[--]</span> 一致
                         </label>
                     </div>
                 </div>
                 <div id="pastDataStatus" class="status-msg" style="margin-top: 10px;"></div>
                 
-                <div class="split-pane" style="margin-top: 15px; display: none;" id="pastDataResultsContainer">
-                    <div class="left-pane" style="flex: 1;">
-                        <h3 class="section-title">【馬場状態・完全一致】</h3>
-                        <div id="exactMatchStatus" class="baba-label highlight-box" style="margin-bottom: 10px;"></div>
-                        
+                <div style="margin-top: 15px; display: none; flex-direction: column; gap: 15px;" id="pastDataResultsContainer">
+                    <h3 class="section-title">【データ分析結果】</h3>
+                    <div id="matchStatusLabel" class="baba-label highlight-box" style="margin-bottom: 5px;"></div>
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
                         <div class="stats-group">
                             <h4>馬番別 勝率トップ5</h4>
                             <div class="table-container small-table">
                                 <table>
                                     <thead><tr><th>馬番</th><th>勝率</th><th>複勝率</th></tr></thead>
-                                    <tbody id="exactUmabanTbody"></tbody>
+                                    <tbody id="resUmabanTbody"></tbody>
                                 </table>
                             </div>
                         </div>
@@ -157,7 +161,7 @@
                             <div class="table-container small-table">
                                 <table>
                                     <thead><tr><th>脚質</th><th>勝率</th><th>複勝率</th></tr></thead>
-                                    <tbody id="exactKyakuTbody"></tbody>
+                                    <tbody id="resKyakuTbody"></tbody>
                                 </table>
                             </div>
                         </div>
@@ -167,57 +171,26 @@
                             <div class="table-container small-table">
                                 <table>
                                     <thead><tr><th>騎手</th><th>勝率</th><th>連対+3着</th></tr></thead>
-                                    <tbody id="exactJockeyTbody"></tbody>
+                                    <tbody id="resJockeyTbody"></tbody>
                                 </table>
                             </div>
                         </div>
-                        
-                        <div class="summary-box">
-                            <p>平均タイム: <strong id="exactAvgTime">-</strong></p>
-                            <p>上がり3F平均: <strong id="exactAvgAgari">-</strong></p>
-                            <p class="small-text">対象データ: <span id="exactEntries">-</span></p>
+
+                        <div class="stats-group">
+                            <h4>馬体重別 傾向</h4>
+                            <div class="table-container small-table">
+                                <table>
+                                    <thead><tr><th>馬体重</th><th>勝率</th><th>複勝率</th></tr></thead>
+                                    <tbody id="resWeightTbody"></tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                     
-                    <div class="right-pane" style="flex: 1;">
-                        <h3 class="section-title">【馬場不問（全天候）】</h3>
-                        <div id="allMatchStatus" class="baba-label highlight-box" style="margin-bottom: 10px;"></div>
-                        
-                        <div class="stats-group">
-                            <h4>馬番別 勝率トップ5</h4>
-                            <div class="table-container small-table">
-                                <table>
-                                    <thead><tr><th>馬番</th><th>勝率</th><th>複勝率</th></tr></thead>
-                                    <tbody id="allUmabanTbody"></tbody>
-                                </table>
-                            </div>
-                        </div>
-                        
-                        <div class="stats-group">
-                            <h4>脚質傾向</h4>
-                            <div class="table-container small-table">
-                                <table>
-                                    <thead><tr><th>脚質</th><th>勝率</th><th>複勝率</th></tr></thead>
-                                    <tbody id="allKyakuTbody"></tbody>
-                                </table>
-                            </div>
-                        </div>
-
-                        <div class="stats-group">
-                            <h4>好成績騎手 トップ5</h4>
-                            <div class="table-container small-table">
-                                <table>
-                                    <thead><tr><th>騎手</th><th>勝率</th><th>連対+3着</th></tr></thead>
-                                    <tbody id="allJockeyTbody"></tbody>
-                                </table>
-                            </div>
-                        </div>
-                        
-                        <div class="summary-box">
-                            <p>平均タイム: <strong id="allAvgTime">-</strong></p>
-                            <p>上がり3F平均: <strong id="allAvgAgari">-</strong></p>
-                            <p class="small-text">対象データ: <span id="allEntries">-</span></p>
-                        </div>
+                    <div class="summary-box">
+                        <p>平均タイム: <strong id="resAvgTime">-</strong></p>
+                        <p>上がり3F平均: <strong id="resAvgAgari">-</strong></p>
+                        <p class="small-text">対象データ: <span id="resEntries">-</span></p>
                     </div>
                 </div>
             </div>
