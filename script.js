@@ -486,7 +486,7 @@ function renderPastDataStats(stats, prefix) {
          return;
     }
     
-    document.getElementById(prefix+'Entries').textContent = stats.total_entries + "件 (約" + stats.estimated_races + "レース)";
+    document.getElementById(prefix+'Entries').textContent = stats.exact_races + "レース (" + stats.total_entries + "頭)";
     document.getElementById(prefix+'AvgTime').textContent = stats.avg_time;
     document.getElementById(prefix+'AvgAgari').textContent = stats.avg_agari;
 

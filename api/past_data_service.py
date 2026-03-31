@@ -146,14 +146,13 @@ def analyze_races(rows):
     avg_time = sum(valid_times)/len(valid_times) if valid_times else None
     avg_agari = sum(valid_agari)/len(valid_agari) if valid_agari else None
 
-    # Count actual number of unique races if possible... 
-    # But we don't have race_id, so total_races here is number of *horse entries*.
-    # Number of races roughly = total_races / 14 (average field size)
-    estimated_races = total_races // 14
+    # Count actual number of unique races
+    # 着順1位の馬の数が、ほぼ正確なレース数になります（同着を除く）
+    exact_races = sum([1 for r in rows if r['rank'] == 1])
 
     return {
         'total_entries': total_races,
-        'estimated_races': estimated_races,
+        'exact_races': exact_races,
         'umaban': umaban_arr[:10], # Top 10 by win rate
         'umaban_all': sorted(umaban_arr, key=lambda x: int(x['name']) if x['name'].isdigit() else 99),
         'jockey': jockey_arr,
