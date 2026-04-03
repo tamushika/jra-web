@@ -4,26 +4,70 @@ import re
 import zipfile
 
 def get_db_connection(base_dir):
-    # Check for Vercel /tmp or local fallback
-    db_path = os.path.join('/tmp', 'past_data_v2.db') if os.environ.get('VERCEL') else os.path.join(base_dir, 'past_data_v2.db')
+    # Check for Vercel environment
+    is_vercel = os.environ.get('VERCEL') == '1' or os.environ.get('VERCEL') == 'true'
     
+    # Paths for both environments
+    local_db_path = os.path.join(base_dir, 'past_data_v2.db')
+    vercel_tmp_path = os.path.join('/tmp', 'past_data_v2.db')
+    
+    # Final path depends on environment
+    db_path = vercel_tmp_path if is_vercel else local_db_path
+    
+    # 1. Check if the DB already exists at the final path
     if not os.path.exists(db_path):
-        # 展開元ZIPのパス
-        zip_path = os.path.join(base_dir, 'past_data_v2.zip')
-        if os.path.exists(zip_path):
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                # /tmp に展開するか、localならbase_dirに展開
-                extract_path = '/tmp' if os.environ.get('VERCEL') else base_dir
-                zip_ref.extract('past_data_v2.db', extract_path)
+        # 2. If running on Vercel, check if the file exists in the bundle (read-only)
+        if is_vercel and os.path.exists(local_db_path):
+            # We can connect directly to the bundled DB if it exists, though unzipping to /tmp is safer for large DBs
+            print(f"Bundled DB found at {local_db_path}, using it.")
+            db_path = local_db_path
         else:
-            return None
+            # 3. Try to extract from ZIP
+            zip_path = os.path.join(base_dir, 'past_data_v2.zip')
+            if not os.path.exists(zip_path):
+                # Fallback to current working directory if base_dir is wrong
+                zip_path_alt = os.path.join(os.getcwd(), 'api', 'past_data_v2.zip')
+                if os.path.exists(zip_path_alt):
+                    zip_path = zip_path_alt
+                else:
+                    print(f"Zip file not found at {zip_path} or {zip_path_alt}")
+                    return None
 
+            try:
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    extract_dest = '/tmp' if is_vercel else base_dir
+                    
+                    # Ensure /tmp exists (sometimes needed in serverless environments)
+                    if is_vercel and not os.path.exists('/tmp'):
+                        try:
+                            os.makedirs('/tmp', exist_ok=True)
+                        except:
+                            print("Warning: Could not create /tmp, using base_dir for extraction.")
+                            extract_dest = base_dir
+                            db_path = local_db_path
+                    
+                    print(f"Extracting {zip_path} to {extract_dest}...")
+                    zip_ref.extract('past_data_v2.db', extract_dest)
+            except Exception as e:
+                print(f"Extraction error: {e}")
+                # Last resort fallback tobundled DB if it exists
+                if os.path.exists(local_db_path):
+                    db_path = local_db_path
+                else:
+                    return None
+
+    # Final check
     if not os.path.exists(db_path):
+        print(f"Final DB check failed: {db_path} does not exist.")
         return None
 
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception as e:
+        print(f"SQLite connection error: {e}")
+        return None
 
 def parse_time(t_str):
     if not t_str or str(t_str) == 'NaN': return None
