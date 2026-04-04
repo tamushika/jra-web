@@ -419,13 +419,16 @@ def scrape():
         sire_result = analysis.load_notable_sires(venue, race_type, dist_val, base_dir)
         notable_sires = sire_result.get("sires", [])
         debug_sire_path = sire_result.get("debug", {})
-        
-        # 簡易デバッグ：data_files フォルダの有無
+  
         try:
-            target_dir = os.path.dirname(debug_sire_path.get("attempted_path", ""))
-            debug_sire_path["dir_exists"] = os.path.exists(target_dir)
-            if not debug_sire_path["dir_exists"]:
-                debug_sire_path["api_contents"] = os.listdir(base_dir)
+            target_file = debug_sire_path.get("attempted_path", "")
+            if not os.path.exists(target_file):
+                # 親ディレクトリの中身を確認
+                parent_dir = os.path.dirname(target_file)
+                if os.path.exists(parent_dir):
+                    debug_sire_path["dir_contents"] = os.listdir(parent_dir)
+                else:
+                    debug_sire_path["api_root_contents"] = os.listdir(base_dir)
         except: pass
 
         sire_ranking_map = {s['name']: s['rank'] for s in notable_sires}

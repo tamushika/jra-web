@@ -1,9 +1,13 @@
 {
-  "functions": {
-    "api/index.py": {
-      "includeFiles": "data_files/**"
+  "builds": [
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python",
+      "config": {
+        "includeFiles": "api/data_files/**"
+      }
     }
-  },
+  ],
   "rewrites": [
     {
       "source": "/api/(.*)",
