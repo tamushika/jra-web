@@ -371,6 +371,11 @@ tbody tr:hover { background: var(--row-hover); }
 .waku-7 { background-color: #ff9900; color: #000; }
 .waku-8 { background-color: #ff99cc; color: #000; }
 
+/* Sire Ranking Colors */
+.sire-rank-1 { color: #ff5252 !important; font-weight: bold; }
+.sire-rank-2-5 { color: #00e676 !important; font-weight: bold; }
+.sire-rank-6-10 { color: #40c4ff !important; font-weight: bold; }
+
 .log-area {
     width: 100%;
     height: 300px;

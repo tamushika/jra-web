@@ -4,7 +4,7 @@ import os
 
 # パスの設定
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CSV_PATH = os.path.join(BASE_DIR, 'csv', 'data_2020-2025.csv')
+CSV_PATH = os.path.join(BASE_DIR, 'DATA', '共通', 'data_2020-2025.csv')
 DB_PATH = os.path.join(BASE_DIR, 'past_data_v2.db')
 
 def build_database():

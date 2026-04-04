@@ -195,8 +195,39 @@ function applyScrapeData(data, url, mode) {
     const pmStatus = document.getElementById('pastDataStatus');
     if(pmStatus) pmStatus.textContent = '';
     
+    // Notable Sires Rendering (NEW)
+    renderNotableSiresTable(data.notable_sires, `${data.venue} ${data.race_type}${data.dist_val}m`);
+
     // Fetch Wind Data
     fetchWindData(data.venue);
+}
+
+function renderNotableSiresTable(sires, title) {
+    const tbody = document.getElementById('sireTbody');
+    const tabTitle = document.getElementById('sireTabTitle');
+    if (!tbody) return;
+
+    if (tabTitle) tabTitle.textContent = `${title} 注目産駒データ`;
+
+    if (!sires || sires.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5">このコースの注目産駒データはありません。</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = sires.map(s => {
+        let rankClass = "";
+        if (s.rank === 1) rankClass = "sire-rank-1";
+        else if (s.rank <= 5) rankClass = "sire-rank-2-5";
+        else rankClass = "sire-rank-6-10";
+
+        return `<tr>
+            <td>${s.rank}</td>
+            <td style="text-align: left; font-weight: bold;" class="${rankClass}">${s.name}</td>
+            <td>${s.win_rate}</td>
+            <td>${s.quinella_rate}</td>
+            <td>${s.show_rate}</td>
+        </tr>`;
+    }).join('');
 }
 
 const COURSE_DIRECTION = {
@@ -312,6 +343,14 @@ function renderHorsesTable(horses) {
             }
             
             if(val === h.name) td.style.textAlign = 'left';
+            
+            // Sire Ranking Highlight (idx 11 corresponds to h.sire)
+            if (idx === 11 && h.sire_rank) {
+                if (h.sire_rank === 1) td.classList.add('sire-rank-1');
+                else if (h.sire_rank <= 5) td.classList.add('sire-rank-2-5');
+                else if (h.sire_rank <= 10) td.classList.add('sire-rank-6-10');
+            }
+
             tr.appendChild(td);
         });
         

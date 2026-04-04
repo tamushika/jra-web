@@ -3,35 +3,20 @@ import pandas as pd
 import os
 
 def load_csv_criteria(venue_name, base_dir):
-    # base_dir に頼らず、このファイル自体の場所を取得する
     current_script_dir = os.path.dirname(os.path.abspath(__file__))
     
-    venue_file_map = {
-        "中山": "nakayama.csv", 
-        "京都": "kyoto.csv", 
-        "中京": "tyukyo.csv", 
-        "阪神": "hanshin.csv",
-        "東京": "tokyo.csv",
-        "小倉": "kokura.csv"
-    }
-    filename = venue_file_map.get(venue_name, "kyoto.csv")
+    # 新しい構成: DATA/{会場}/好走条件/criteria.csv
+    file_path = os.path.join(current_script_dir, "DATA", venue_name, "好走条件", "criteria.csv")
     
-    # パスの候補をリスト化
-    paths_to_check = [
-        os.path.join(current_script_dir, ".venv", "csv", filename), # .venv/csv/内
-        os.path.join(current_script_dir, "csv", filename),         # csv/内（推奨）
-        os.path.join(current_script_dir, filename)                 # スクリプトと同じフォルダ
-    ]
-    
-    file_path = None
-    for p in paths_to_check:
-        if os.path.exists(p):
-            file_path = p
-            break
-            
-    if not file_path:
-        print(f"【警告】CSVファイルが見つかりません: {filename}")
-        return []
+    if not os.path.exists(file_path):
+        # 互換性のための旧パスチェック（念のため）
+        old_filename_map = {"中山": "nakayama.csv", "京都": "kyoto.csv", "中京": "tyukyo.csv", "阪神": "hanshin.csv", "東京": "tokyo.csv", "小倉": "kokura.csv"}
+        old_path = os.path.join(current_script_dir, "csv", old_filename_map.get(venue_name, "kyoto.csv"))
+        if os.path.exists(old_path):
+            file_path = old_path
+        else:
+            print(f"【警告】好走条件ファイルが見つかりません: {venue_name}")
+            return []
 
     # 以下、読み込み処理（df = pd.read_csv...）
         
@@ -54,25 +39,20 @@ def load_csv_criteria(venue_name, base_dir):
 def load_course_feature(venue, race_type, distance, base_dir):
     """
     指定された会場・条件のコース特徴テキストを読み込む
-    パス例: DATA/京都/芝1200.txt
+    新パス例: DATA/京都/コース情報/芝1200.txt
     """
     current_script_dir = os.path.dirname(os.path.abspath(__file__))
     filename = f"{race_type}{distance}.txt"
     
-    paths_to_check = [
-        os.path.join(current_script_dir, "DATA", venue, filename),
-        os.path.join(current_script_dir, ".venv", "DATA", venue, filename),
-        os.path.join(base_dir, "DATA", venue, filename)
-    ]
+    file_path = os.path.join(current_script_dir, "DATA", venue, "コース情報", filename)
     
-    file_path = None
-    for p in paths_to_check:
-        if os.path.exists(p):
-            file_path = p
-            break
-
-    if not file_path:
-        return f"【情報】{venue} {race_type}{distance}m の特徴データは登録されていません。"
+    if not os.path.exists(file_path):
+        # 旧パスチェック（念のため）
+        old_path = os.path.join(current_script_dir, "DATA", venue, filename)
+        if os.path.exists(old_path):
+            file_path = old_path
+        else:
+            return f"【情報】{venue} {race_type}{distance}m の特徴データは登録されていません。"
 
     try:
         with open(file_path, 'r', encoding='utf-8-sig') as f:
@@ -81,14 +61,21 @@ def load_course_feature(venue, race_type, distance, base_dir):
         return f"エラー: ファイルの読み込みに失敗しました ({str(e)})"
 
 def load_sire_lineage(base_dir):
-    """syuboba.csv を読み込む (.venv/csv/ フォルダ内)"""
+    """syuboba.csv を読み込む (DATA/共通/ フォルダ内)"""
     lineage_map = {}
     current_script_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, ".venv", "csv", "syuboba.csv")
+    
+    file_path = os.path.join(current_script_dir, "DATA", "共通", "syuboba.csv")
     
     if not os.path.exists(file_path):
-        file_path = os.path.join(current_script_dir, "csv", "syuboba.csv")
-        if not os.path.exists(file_path): 
+        # 旧パスチェック
+        old_path = os.path.join(base_dir, ".venv", "csv", "syuboba.csv")
+        if not os.path.exists(old_path):
+            old_path = os.path.join(current_script_dir, "csv", "syuboba.csv")
+        
+        if os.path.exists(old_path):
+            file_path = old_path
+        else:
             print("【警告】syuboba.csv が見つかりません")
             return {}
         
@@ -101,6 +88,35 @@ def load_sire_lineage(base_dir):
                 for sire in parts[1:]: lineage_map[sire] = group_name
     except: pass
     return lineage_map
+
+def load_notable_sires(venue, race_type, distance, base_dir):
+    """
+    指定された会場・条件の注目産駒データ（種牡馬ランキング）を読み込む
+    パス例: api/DATA/中山/注目産駒/芝1600.csv
+    """
+    current_script_dir = os.path.dirname(os.path.abspath(__file__))
+    filename = f"{race_type}{distance}.csv"
+    file_path = os.path.join(current_script_dir, "DATA", venue, "注目産駒", filename)
+
+    if not os.path.exists(file_path):
+        return []
+
+    try:
+        df = pd.read_csv(file_path, header=None, encoding='utf-8-sig')
+        sires = []
+        for i, row in df.iterrows():
+            if len(row) < 4: continue
+            sires.append({
+                "rank": i + 1,
+                "name": str(row[0]).strip(),
+                "win_rate": f"{float(row[1]):.1f}%",
+                "quinella_rate": f"{float(row[2]):.1f}%",
+                "show_rate": f"{float(row[3]):.1f}%"
+            })
+        return sires
+    except Exception as e:
+        print(f"Error loading notable sires: {e}")
+        return []
 
 def is_valid_cond(c):
     return c and str(c).strip() not in ["nan", "-", "", "None"]

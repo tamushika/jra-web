@@ -384,7 +384,13 @@ def scrape():
         mawari_map = {}
         try:
             import pandas as pd
-            df = pd.read_csv(os.path.join(base_dir, "csv", "mawari.csv"), header=None, encoding='utf-8-sig')
+            # 新構成: DATA/共通/mawari.csv
+            mawari_path = os.path.join(base_dir, "DATA", "共通", "mawari.csv")
+            if not os.path.exists(mawari_path):
+                # 旧構成
+                mawari_path = os.path.join(base_dir, "csv", "mawari.csv")
+            
+            df = pd.read_csv(mawari_path, header=None, encoding='utf-8-sig')
             mawari_map = {str(row[0]).strip(): str(row[1]).strip() for _, row in df.iterrows()}
         except: pass
 
@@ -409,6 +415,16 @@ def scrape():
         # Feature Course Memo
         feature_text = analysis.load_course_feature(venue, race_type, dist_val, base_dir)
         
+        # Notable Sires (NEW)
+        notable_sires = analysis.load_notable_sires(venue, race_type, dist_val, base_dir)
+        sire_ranking_map = {s['name']: s['rank'] for s in notable_sires}
+
+        # 更新された馬データ（ランク付与）
+        for h in horses_out:
+            s_name = h.get('sire', '-')
+            if s_name in sire_ranking_map:
+                h['sire_rank'] = sire_ranking_map[s_name]
+
         harab_index = "-"
         if feature_text:
             harab_m = re.search(r'【?波乱指数】?[:：\s]*([^\n]+)', feature_text)
@@ -463,6 +479,7 @@ def scrape():
             "criteria_lines": criteria_lines,
             "harab_index": harab_index,
             "feature_text": feature_text,
+            "notable_sires": notable_sires,
             "matrix_data": matrix,
             "horses": horses_out,
             "has_double_circle": has_double_circle,
