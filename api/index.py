@@ -384,8 +384,8 @@ def scrape():
         mawari_map = {}
         try:
             import pandas as pd
-            # 新構成: DATA/共通/mawari.csv
-            mawari_path = os.path.join(base_dir, "DATA", "共通", "mawari.csv")
+            # Mawari data (data_files/common/mawari.csv)
+            mawari_path = os.path.join(base_dir, "..", "data_files", "common", "mawari.csv")
             if not os.path.exists(mawari_path):
                 # 旧構成
                 mawari_path = os.path.join(base_dir, "csv", "mawari.csv")

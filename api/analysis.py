@@ -12,13 +12,12 @@ def load_csv_criteria(venue_name, base_dir):
     current_script_dir = os.path.dirname(os.path.abspath(__file__))
     venue_slug = VENUE_SLUG_MAP.get(venue_name, "kyoto")
     
-    # 新構成: data_files/{slug}/criteria/criteria.csv
-    file_path = os.path.join(current_script_dir, "data_files", venue_slug, "criteria", "criteria.csv")
+    # ルートの data_files を参照: api/の親フォルダ/data_files
+    file_path = os.path.join(current_script_dir, "..", "data_files", venue_slug, "criteria", "criteria.csv")
     
     if not os.path.exists(file_path):
         # 互換性のための旧パスチェック
-        old_filename_map = {"中山": "nakayama.csv", "京都": "kyoto.csv", "中京": "tyukyo.csv", "阪神": "hanshin.csv", "東京": "tokyo.csv", "小倉": "kokura.csv"}
-        old_path = os.path.join(current_script_dir, "csv", old_filename_map.get(venue_name, "kyoto.csv"))
+        old_path = os.path.join(current_script_dir, "data_files", venue_slug, "criteria", "criteria.csv")
         if os.path.exists(old_path):
             file_path = old_path
         else:
@@ -46,10 +45,16 @@ def load_course_feature(venue, race_type, distance, base_dir):
     venue_slug = VENUE_SLUG_MAP.get(venue, "kyoto")
     filename = f"{race_type}{distance}.txt"
     
-    file_path = os.path.join(current_script_dir, "data_files", venue_slug, "course_info", filename)
+    # ルートの data_files を参照
+    file_path = os.path.join(current_script_dir, "..", "data_files", venue_slug, "course_info", filename)
     
     if not os.path.exists(file_path):
-        return f"【情報】{venue} {race_type}{distance}m の特徴データは登録されていません。"
+        # 内部パスチェック (フォールバック)
+        alt_path = os.path.join(current_script_dir, "data_files", venue_slug, "course_info", filename)
+        if os.path.exists(alt_path):
+            file_path = alt_path
+        else:
+            return f"【情報】{venue} {race_type}{distance}m の特徴データは登録されていません。"
 
     try:
         with open(file_path, 'r', encoding='utf-8-sig') as f:
@@ -62,10 +67,16 @@ def load_sire_lineage(base_dir):
     lineage_map = {}
     current_script_dir = os.path.dirname(os.path.abspath(__file__))
     
-    file_path = os.path.join(current_script_dir, "data_files", "common", "syuboba.csv")
+    # ルートの data_files を参照
+    file_path = os.path.join(current_script_dir, "..", "data_files", "common", "syuboba.csv")
     
     if not os.path.exists(file_path):
-        return {}
+        # 内部パスチェック
+        alt_path = os.path.join(current_script_dir, "data_files", "common", "syuboba.csv")
+        if os.path.exists(alt_path):
+            file_path = alt_path
+        else:
+            return {}
         
     try:
         with open(file_path, 'r', encoding='utf-8-sig') as f:
@@ -82,7 +93,9 @@ def load_notable_sires(venue, race_type, distance, base_dir):
     current_script_dir = os.path.dirname(os.path.abspath(__file__))
     venue_slug = VENUE_SLUG_MAP.get(venue, "kyoto")
     filename = f"{race_type}{distance}.csv"
-    file_path = os.path.join(current_script_dir, "data_files", venue_slug, "sire", filename)
+    
+    # ルートの data_files を参照
+    file_path = os.path.join(current_script_dir, "..", "data_files", venue_slug, "sire", filename)
 
     debug_info = {
         "attempted_path": file_path,
@@ -91,7 +104,14 @@ def load_notable_sires(venue, race_type, distance, base_dir):
     }
 
     if not debug_info["exists"]:
-        return {"sires": [], "debug": debug_info}
+        # 内部パスチェック（フォールバック）
+        alt_path = os.path.join(current_script_dir, "data_files", venue_slug, "sire", filename)
+        if os.path.exists(alt_path):
+            debug_info["attempted_path"] = alt_path
+            debug_info["exists"] = True
+            file_path = alt_path
+        else:
+            return {"sires": [], "debug": debug_info}
 
     try:
         df = pd.read_csv(file_path, header=None, encoding='utf-8-sig')
