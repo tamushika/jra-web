@@ -416,7 +416,10 @@ def scrape():
         feature_text = analysis.load_course_feature(venue, race_type, dist_val, base_dir)
         
         # Notable Sires (NEW)
-        notable_sires = analysis.load_notable_sires(venue, race_type, dist_val, base_dir)
+        sire_result = analysis.load_notable_sires(venue, race_type, dist_val, base_dir)
+        notable_sires = sire_result.get("sires", [])
+        debug_sire_path = sire_result.get("debug", {})
+        
         sire_ranking_map = {s['name']: s['rank'] for s in notable_sires}
 
         # 更新された馬データ（ランク付与）
@@ -480,6 +483,7 @@ def scrape():
             "harab_index": harab_index,
             "feature_text": feature_text,
             "notable_sires": notable_sires,
+            "debug_sire": debug_sire_path,
             "matrix_data": matrix,
             "horses": horses_out,
             "has_double_circle": has_double_circle,

@@ -196,6 +196,7 @@ function applyScrapeData(data, url, mode) {
     if(pmStatus) pmStatus.textContent = '';
     
     // Notable Sires Rendering (NEW)
+    window.lastRaceData = data;
     renderNotableSiresTable(data.notable_sires, `${data.venue} ${data.race_type}${data.dist_val}m`);
 
     // Fetch Wind Data
@@ -210,7 +211,12 @@ function renderNotableSiresTable(sires, title) {
     if (tabTitle) tabTitle.textContent = `${title} 注目産駒データ`;
 
     if (!sires || sires.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5">このコースの注目産駒データはありません。</td></tr>';
+        let debugHtml = '<p style="color:red; font-size:10px; margin-top:10px;">Debug: Data not found</p>';
+        if (window.lastRaceData && window.lastRaceData.debug_sire) {
+            const d = window.lastRaceData.debug_sire;
+            debugHtml += `<p style="font-size:10px; color:gray;">Path: ${d.attempted_path}<br>Exists: ${d.exists}${d.error ? '<br>Error: ' + d.error : ''}</p>`;
+        }
+        tbody.innerHTML = `<tr><td colspan="5">このコースの注目産駒データはありません。${debugHtml}</td></tr>`;
         return;
     }
 

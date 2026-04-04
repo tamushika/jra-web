@@ -92,14 +92,19 @@ def load_sire_lineage(base_dir):
 def load_notable_sires(venue, race_type, distance, base_dir):
     """
     指定された会場・条件の注目産駒データ（種牡馬ランキング）を読み込む
-    パス例: api/DATA/中山/注目産駒/芝1600.csv
     """
-    current_script_dir = os.path.dirname(os.path.abspath(__file__))
     filename = f"{race_type}{distance}.csv"
-    file_path = os.path.join(current_script_dir, "DATA", venue, "注目産駒", filename)
+    # base_dir は api/ フォルダを指している
+    file_path = os.path.join(base_dir, "DATA", venue, "注目産駒", filename)
 
-    if not os.path.exists(file_path):
-        return []
+    debug_info = {
+        "attempted_path": file_path,
+        "exists": os.path.exists(file_path),
+        "error": None
+    }
+
+    if not debug_info["exists"]:
+        return {"sires": [], "debug": debug_info}
 
     try:
         df = pd.read_csv(file_path, header=None, encoding='utf-8-sig')
@@ -113,10 +118,10 @@ def load_notable_sires(venue, race_type, distance, base_dir):
                 "quinella_rate": f"{float(row[2]):.1f}%",
                 "show_rate": f"{float(row[3]):.1f}%"
             })
-        return sires
+        return {"sires": sires, "debug": debug_info}
     except Exception as e:
-        print(f"Error loading notable sires: {e}")
-        return []
+        debug_info["error"] = str(e)
+        return {"sires": [], "debug": debug_info}
 
 def is_valid_cond(c):
     return c and str(c).strip() not in ["nan", "-", "", "None"]
