@@ -217,9 +217,8 @@ function renderNotableSiresTable(sires, title) {
             debugHtml += `<p style="font-size:9px; color:gray; text-align:left;">
                 Path: ${d.attempted_path}<br>
                 Exists: ${d.exists}<br>
-                API Dir: ${JSON.stringify(d.api_dir_contents)}<br>
-                DATA Dir: ${JSON.stringify(d.data_dir_contents)}<br>
-                Dir Contents: ${JSON.stringify(d.dir_contents)}
+                Dir Exists: ${d.dir_exists}<br>
+                API Contents: ${JSON.stringify(d.api_contents || [])}
             </p>`;
         }
         tbody.innerHTML = `<tr><td colspan="5">このコースの注目産駒データはありません。${debugHtml}</td></tr>`;

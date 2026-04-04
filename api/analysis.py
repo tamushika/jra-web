@@ -2,24 +2,28 @@ import re
 import pandas as pd
 import os
 
+VENUE_SLUG_MAP = {
+    "中山": "nakayama", "阪神": "hanshin", "東京": "tokyo", "京都": "kyoto",
+    "中京": "chukyo", "新潟": "niigata", "福島": "fukushima", "小倉": "kokura",
+    "札幌": "sapporo", "函館": "hakodate", "共通": "common"
+}
+
 def load_csv_criteria(venue_name, base_dir):
     current_script_dir = os.path.dirname(os.path.abspath(__file__))
+    venue_slug = VENUE_SLUG_MAP.get(venue_name, "kyoto")
     
-    # 新しい構成: DATA/{会場}/好走条件/criteria.csv
-    file_path = os.path.join(current_script_dir, "DATA", venue_name, "好走条件", "criteria.csv")
+    # 新構成: data_files/{slug}/criteria/criteria.csv
+    file_path = os.path.join(current_script_dir, "data_files", venue_slug, "criteria", "criteria.csv")
     
     if not os.path.exists(file_path):
-        # 互換性のための旧パスチェック（念のため）
+        # 互換性のための旧パスチェック
         old_filename_map = {"中山": "nakayama.csv", "京都": "kyoto.csv", "中京": "tyukyo.csv", "阪神": "hanshin.csv", "東京": "tokyo.csv", "小倉": "kokura.csv"}
         old_path = os.path.join(current_script_dir, "csv", old_filename_map.get(venue_name, "kyoto.csv"))
         if os.path.exists(old_path):
             file_path = old_path
         else:
-            print(f"【警告】好走条件ファイルが見つかりません: {venue_name}")
             return []
 
-    # 以下、読み込み処理（df = pd.read_csv...）
-        
     try:
         df = pd.read_csv(file_path, header=None, encoding='utf-8-sig') 
         criteria = []
@@ -37,22 +41,15 @@ def load_csv_criteria(venue_name, base_dir):
     except: return []
 
 def load_course_feature(venue, race_type, distance, base_dir):
-    """
-    指定された会場・条件のコース特徴テキストを読み込む
-    新パス例: DATA/京都/コース情報/芝1200.txt
-    """
+    """ 指定された会場・条件のコース特徴テキストを読み込む """
     current_script_dir = os.path.dirname(os.path.abspath(__file__))
+    venue_slug = VENUE_SLUG_MAP.get(venue, "kyoto")
     filename = f"{race_type}{distance}.txt"
     
-    file_path = os.path.join(current_script_dir, "DATA", venue, "コース情報", filename)
+    file_path = os.path.join(current_script_dir, "data_files", venue_slug, "course_info", filename)
     
     if not os.path.exists(file_path):
-        # 旧パスチェック（念のため）
-        old_path = os.path.join(current_script_dir, "DATA", venue, filename)
-        if os.path.exists(old_path):
-            file_path = old_path
-        else:
-            return f"【情報】{venue} {race_type}{distance}m の特徴データは登録されていません。"
+        return f"【情報】{venue} {race_type}{distance}m の特徴データは登録されていません。"
 
     try:
         with open(file_path, 'r', encoding='utf-8-sig') as f:
@@ -61,23 +58,14 @@ def load_course_feature(venue, race_type, distance, base_dir):
         return f"エラー: ファイルの読み込みに失敗しました ({str(e)})"
 
 def load_sire_lineage(base_dir):
-    """syuboba.csv を読み込む (DATA/共通/ フォルダ内)"""
+    """syuboba.csv を読み込む (data_files/common/ フォルダ内)"""
     lineage_map = {}
     current_script_dir = os.path.dirname(os.path.abspath(__file__))
     
-    file_path = os.path.join(current_script_dir, "DATA", "共通", "syuboba.csv")
+    file_path = os.path.join(current_script_dir, "data_files", "common", "syuboba.csv")
     
     if not os.path.exists(file_path):
-        # 旧パスチェック
-        old_path = os.path.join(base_dir, ".venv", "csv", "syuboba.csv")
-        if not os.path.exists(old_path):
-            old_path = os.path.join(current_script_dir, "csv", "syuboba.csv")
-        
-        if os.path.exists(old_path):
-            file_path = old_path
-        else:
-            print("【警告】syuboba.csv が見つかりません")
-            return {}
+        return {}
         
     try:
         with open(file_path, 'r', encoding='utf-8-sig') as f:
@@ -90,12 +78,11 @@ def load_sire_lineage(base_dir):
     return lineage_map
 
 def load_notable_sires(venue, race_type, distance, base_dir):
-    """
-    指定された会場・条件の注目産駒データ（種牡馬ランキング）を読み込む
-    """
+    """ 指定された会場・条件の注目産駒データ（種牡馬ランキング）を読み込む """
+    current_script_dir = os.path.dirname(os.path.abspath(__file__))
+    venue_slug = VENUE_SLUG_MAP.get(venue, "kyoto")
     filename = f"{race_type}{distance}.csv"
-    # base_dir は api/ フォルダを指している
-    file_path = os.path.join(base_dir, "DATA", venue, "注目産駒", filename)
+    file_path = os.path.join(current_script_dir, "data_files", venue_slug, "sire", filename)
 
     debug_info = {
         "attempted_path": file_path,

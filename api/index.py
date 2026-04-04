@@ -420,20 +420,13 @@ def scrape():
         notable_sires = sire_result.get("sires", [])
         debug_sire_path = sire_result.get("debug", {})
         
-        # さらに詳細なデバッグ：ディレクトリ内容をリストアップ
+        # 簡易デバッグ：data_files フォルダの有無
         try:
-            venue_dir = os.path.join(base_dir, "DATA", venue)
-            debug_sire_path["api_dir_contents"] = os.listdir(base_dir) # /var/task/api の中身
-            if os.path.exists(venue_dir):
-                debug_sire_path["dir_contents"] = os.listdir(venue_dir)
-            else:
-                data_dir = os.path.join(base_dir, "DATA")
-                if os.path.exists(data_dir):
-                    debug_sire_path["data_dir_contents"] = os.listdir(data_dir)
-                else:
-                    debug_sire_path["dir_contents"] = "DATA dir not found"
-        except Exception as e:
-            debug_sire_path["dir_contents"] = str(e)
+            target_dir = os.path.dirname(debug_sire_path.get("attempted_path", ""))
+            debug_sire_path["dir_exists"] = os.path.exists(target_dir)
+            if not debug_sire_path["dir_exists"]:
+                debug_sire_path["api_contents"] = os.listdir(base_dir)
+        except: pass
 
         sire_ranking_map = {s['name']: s['rank'] for s in notable_sires}
 
