@@ -423,10 +423,15 @@ def scrape():
         # さらに詳細なデバッグ：ディレクトリ内容をリストアップ
         try:
             venue_dir = os.path.join(base_dir, "DATA", venue)
+            debug_sire_path["api_dir_contents"] = os.listdir(base_dir) # /var/task/api の中身
             if os.path.exists(venue_dir):
                 debug_sire_path["dir_contents"] = os.listdir(venue_dir)
             else:
-                debug_sire_path["dir_contents"] = f"Venue dir not found: {venue_dir}"
+                data_dir = os.path.join(base_dir, "DATA")
+                if os.path.exists(data_dir):
+                    debug_sire_path["data_dir_contents"] = os.listdir(data_dir)
+                else:
+                    debug_sire_path["dir_contents"] = "DATA dir not found"
         except Exception as e:
             debug_sire_path["dir_contents"] = str(e)
 

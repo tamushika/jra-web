@@ -214,7 +214,13 @@ function renderNotableSiresTable(sires, title) {
         let debugHtml = '<p style="color:red; font-size:10px; margin-top:10px;">Debug: Data not found</p>';
         if (window.lastRaceData && window.lastRaceData.debug_sire) {
             const d = window.lastRaceData.debug_sire;
-            debugHtml += `<p style="font-size:10px; color:gray;">Path: ${d.attempted_path}<br>Exists: ${d.exists}${d.error ? '<br>Error: ' + d.error : ''}<br>Dir Contents: ${JSON.stringify(d.dir_contents)}</p>`;
+            debugHtml += `<p style="font-size:9px; color:gray; text-align:left;">
+                Path: ${d.attempted_path}<br>
+                Exists: ${d.exists}<br>
+                API Dir: ${JSON.stringify(d.api_dir_contents)}<br>
+                DATA Dir: ${JSON.stringify(d.data_dir_contents)}<br>
+                Dir Contents: ${JSON.stringify(d.dir_contents)}
+            </p>`;
         }
         tbody.innerHTML = `<tr><td colspan="5">このコースの注目産駒データはありません。${debugHtml}</td></tr>`;
         return;
