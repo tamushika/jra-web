@@ -420,6 +420,16 @@ def scrape():
         notable_sires = sire_result.get("sires", [])
         debug_sire_path = sire_result.get("debug", {})
         
+        # さらに詳細なデバッグ：ディレクトリ内容をリストアップ
+        try:
+            venue_dir = os.path.join(base_dir, "DATA", venue)
+            if os.path.exists(venue_dir):
+                debug_sire_path["dir_contents"] = os.listdir(venue_dir)
+            else:
+                debug_sire_path["dir_contents"] = f"Venue dir not found: {venue_dir}"
+        except Exception as e:
+            debug_sire_path["dir_contents"] = str(e)
+
         sire_ranking_map = {s['name']: s['rank'] for s in notable_sires}
 
         # 更新された馬データ（ランク付与）
