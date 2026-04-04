@@ -1,13 +1,4 @@
 {
-  "functions": {
-    "api/index.py": {
-      "includeFiles": [
-        "data_files/**",
-        "past_data_v2.zip",
-        "jra_images.json"
-      ]
-    }
-  },
   "rewrites": [
     {
       "source": "/api/(.*)",
