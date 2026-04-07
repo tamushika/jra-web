@@ -131,7 +131,7 @@ function applyScrapeData(data, url, mode) {
             ultraText += `\n`;
         }
     });
-    document.getElementById('ultraDetails').textContent = ultraText || "ウルトラ判定に該当する馬はいません。";
+    document.getElementById('ultraDetails').textContent = ultraText || "好走条件判定に該当する馬はいません。";
     
     document.getElementById('harabValue').textContent = data.harab_index || "-";
 

@@ -597,15 +597,25 @@ tbody tr:hover { background: var(--row-hover); }
 
     /* Tabs adjustments */
     .tabs {
-        overflow-x: auto;
-        white-space: nowrap;
-        -webkit-overflow-scrolling: touch;
-        padding: 0 10px;
+        flex-wrap: wrap;       /* Enable wrapping */
+        overflow-x: visible;   /* Remove horizontal scroll */
+        padding: 5px;
+        gap: 5px;              /* Spacer between tabs when wrapped */
     }
     
     .tab-btn {
-        padding: 10px 15px;
-        font-size: 13px;
+        padding: 8px 10px;
+        font-size: 12px;
+        flex: 1 1 calc(33% - 10px); /* Fill space natively, roughly 3 cols max */
+        text-align: center;
+        border-radius: 4px;
+        background: rgba(255,255,255,0.05); /* Make wrapped tabs look like buttons */
+        border-bottom: none;
+    }
+    
+    .tab-btn.active {
+        background: rgba(47, 129, 247, 0.2); 
+        border-bottom: 2px solid var(--primary);
     }
 
     .tab-content {
