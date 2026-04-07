@@ -564,23 +564,31 @@ tbody tr:hover { background: var(--row-hover); }
 
     .matrix-container {
         width: 100%;
-        overflow-x: auto; /* Enable horizontal scrolling */
-        padding-bottom: 10px; /* Add some space for scrollbar */
-        -webkit-overflow-scrolling: touch; /* Smooth scrolling on iOS */
+        overflow-x: visible; /* Disable horizontal scrolling */
     }
 
-    /* Keep the matrix row as a single line, do not let it wrap so scrolling works */
     .matrix-row {
-        min-width: max-content; 
+        display: flex;
+        flex-wrap: wrap; /* Allow buttons to wrap to next line */
+        gap: 8px;
+        margin-bottom: 15px; /* Add space between venue blocks */
     }
 
     .matrix-label {
-        width: 120px; /* slightly smaller on mobile */
-        font-size: 11px;
+        width: 100%; /* Make label take full width on its own line */
+        font-size: 13px;
+        font-weight: bold;
+        text-align: center;
+        padding: 6px;
+        border-radius: 4px;
+        margin-bottom: 5px;
     }
 
     .r-btn {
-        width: 32px; /* slightly smaller on mobile */
+        flex: 1 1 calc(25% - 8px); /* 4 buttons per row max */
+        min-width: 60px; /* Wide buttons */
+        padding: 10px 0; /* Taller clickable area */
+        font-size: 13px;
     }
 
     .criteria-container {
