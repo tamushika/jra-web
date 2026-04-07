@@ -472,3 +472,180 @@ tbody tr:hover { background: var(--row-hover); }
     color: var(--text-muted);
     margin-top: 10px;
 }
+
+/* --- Responsive Control Panels --- */
+.control-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+}
+
+.past-data-controls {
+    justify-content: space-between;
+}
+
+.past-data-filters {
+    display: flex;
+    align-items: center;
+    background: rgba(0,0,0,0.3);
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+}
+
+.filter-label {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+}
+
+.filter-label.border-left {
+    margin-left: 15px;
+    padding-left: 15px;
+    border-left: 1px solid var(--border-color);
+}
+
+.filter-value {
+    color: var(--primary);
+    font-weight: bold;
+}
+
+.past-data-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 15px;
+}
+
+.ai-password-input {
+    padding: 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background: rgba(0,0,0,0.3);
+    color: white;
+    width: 200px;
+}
+
+/* --- Responsive Design for Smartphones --- */
+@media (max-width: 768px) {
+    body {
+        padding: 10px;
+    }
+    
+    .glass-container {
+        border-radius: 8px;
+    }
+
+    header {
+        padding: 15px;
+    }
+
+    h1 {
+        font-size: 16px;
+        flex-wrap: wrap;
+    }
+
+    .input-group {
+        flex-direction: column;
+    }
+
+    input[type="text"] {
+        min-width: 100%;
+    }
+
+    /* Matrix Section adjustments */
+    .matrix-section {
+        flex-direction: column;
+        padding: 15px 10px;
+        gap: 15px;
+    }
+
+    .matrix-container {
+        width: 100%;
+        overflow-x: auto; /* Enable horizontal scrolling */
+        padding-bottom: 10px; /* Add some space for scrollbar */
+        -webkit-overflow-scrolling: touch; /* Smooth scrolling on iOS */
+    }
+
+    /* Keep the matrix row as a single line, do not let it wrap so scrolling works */
+    .matrix-row {
+        min-width: max-content; 
+    }
+
+    .matrix-label {
+        width: 120px; /* slightly smaller on mobile */
+        font-size: 11px;
+    }
+
+    .r-btn {
+        width: 32px; /* slightly smaller on mobile */
+    }
+
+    .criteria-container {
+        width: 100%; /* Fix hardcoded 600px */
+    }
+
+    /* Tabs adjustments */
+    .tabs {
+        overflow-x: auto;
+        white-space: nowrap;
+        -webkit-overflow-scrolling: touch;
+        padding: 0 10px;
+    }
+    
+    .tab-btn {
+        padding: 10px 15px;
+        font-size: 13px;
+    }
+
+    .tab-content {
+        padding: 15px 10px;
+    }
+
+    /* Split Pane adjustments */
+    .split-pane {
+        flex-direction: column;
+    }
+
+    /* Table adjustments */
+    th, td {
+        padding: 8px 10px;
+        font-size: 11px;
+    }
+
+    /* Past Data Tab adjustments */
+    .past-data-controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .past-data-filters {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+    }
+    
+    .filter-label.border-left {
+        margin-left: 0;
+        padding-left: 0;
+        border-left: none;
+        border-top: 1px solid var(--border-color);
+        padding-top: 10px;
+        width: 100%;
+    }
+
+    .past-data-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .ai-control-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .ai-password-input {
+        width: 100%;
+    }
+}

@@ -150,16 +150,16 @@
             </div>
 
             <div class="tab-content" id="tab-past-data">
-                <div class="control-row" style="justify-content: space-between; align-items: center; display: flex; flex-wrap: wrap; gap: 10px;">
+                <div class="control-row past-data-controls">
                     <button class="primary-btn highlight" id="runPastDataBtn">設定条件でデータを分析</button>
-                    <div style="display: flex; align-items: center; background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color);">
-                        <label style="cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 13px;">
+                    <div class="past-data-filters">
+                        <label class="filter-label">
                             <input type="checkbox" id="matchConditionCheckbox" checked />
-                            馬場 <span id="displayCondition" style="color: var(--primary); font-weight: bold;">[--]</span> 一致
+                            馬場 <span id="displayCondition" class="filter-value">[--]</span> 一致
                         </label>
-                        <label style="cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 13px; margin-left: 15px; padding-left: 15px; border-left: 1px solid var(--border-color);">
+                        <label class="filter-label border-left">
                             <input type="checkbox" id="matchClassCheckbox" checked />
-                            クラス <span id="displayRaceClass" style="color: var(--primary); font-weight: bold;">[--]</span> 一致
+                            クラス <span id="displayRaceClass" class="filter-value">[--]</span> 一致
                         </label>
                     </div>
                 </div>
@@ -169,7 +169,7 @@
                     <h3 class="section-title">【データ分析結果】</h3>
                     <div id="matchStatusLabel" class="baba-label highlight-box" style="margin-bottom: 5px;"></div>
                     
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                    <div class="past-data-grid">
                         <div class="stats-group">
                             <h4>馬番別 勝率トップ5</h4>
                             <div class="table-container small-table">
@@ -230,8 +230,8 @@
             </div>
 
             <div class="tab-content" id="tab-ai">
-                <div class="control-row">
-                    <input type="password" id="aiPassword" placeholder="アクセスパスワード" style="padding: 10px; border-radius: 6px; border: 1px solid var(--border-color); background: rgba(0,0,0,0.3); color: white; width: 200px;">
+                <div class="control-row ai-control-row">
+                    <input type="password" id="aiPassword" placeholder="アクセスパスワード" class="ai-password-input">
                     <button class="primary-btn highlight" id="runAiBtn">AI予想を実行する</button>
                     <span id="aiStatus"></span>
                 </div>
