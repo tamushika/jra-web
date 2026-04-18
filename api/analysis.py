@@ -2,6 +2,19 @@ import re
 import pandas as pd
 import os
 
+def get_class_rank(cls_str):
+    if not cls_str: return 0
+    if "GⅠ" in cls_str or "G1" in cls_str: return 90
+    if "GⅡ" in cls_str or "G2" in cls_str: return 80
+    if "GⅢ" in cls_str or "G3" in cls_str: return 70
+    if "OP" in cls_str or "オープン" in cls_str or "L" in cls_str or "リステッド" in cls_str: return 60
+    if "3勝" in cls_str or "1600万" in cls_str: return 50
+    if "2勝" in cls_str or "1000万" in cls_str: return 40
+    if "1勝" in cls_str or "500万" in cls_str: return 30
+    if "未勝利" in cls_str: return 20
+    if "新馬" in cls_str: return 10
+    return 0
+
 VENUE_SLUG_MAP = {
     "中山": "nakayama", "阪神": "hanshin", "東京": "tokyo", "京都": "kyoto",
     "中京": "chukyo", "新潟": "niigata", "福島": "fukushima", "小倉": "kokura",
@@ -273,9 +286,9 @@ def check_condition(cond, h, r, sire_lineage, mawari_map):
 
         # 5. 血統判定 (父/母父)
         if "父" in cond:
-            # 置換対象を増やして「父・母父が」などにも対応
+            # 置換対象を増やして「父か母父が」などにも対応
             target = cond
-            for prefix in ["父が", "父or母父が", "父・母父が", "系", "種牡馬", "以外"]:
+            for prefix in ["父が", "父or母父が", "父・母父が", "父か母父が", "系", "種牡馬", "以外"]:
                 target = target.replace(prefix, "")
             target = target.strip()
             
@@ -287,39 +300,58 @@ def check_condition(cond, h, r, sire_lineage, mawari_map):
             return True
 
         # 6. 前走場所・コース・距離
-        if "前走" in cond:
+        venues = ["中山","京都","東京","阪神","中京","新潟","福島","小倉","札幌","函館"]
+        is_course_cond = any(k in cond for k in ["条件", "コース", "距離", "m", "場所", "ダート", "芝"]) or any(v in cond for v in venues)
+        if "前走" in cond and is_course_cond:
             raw_hist = h['hist'][0]['raw'] if h['hist'] else ""
             prev_venue = re.sub(r'\d+回|\d+日', '', raw_hist.split()[1]) if len(raw_hist.split()) > 1 else ""
             curr_venue = r.get('venue', "")
 
-            if "同コース" in cond:
-                prev_course = h['hist'][0].get('course', "")
-                actual_dist_m = re.search(r'(\d+)', prev_course)
-                # 競馬場チェック
+            prev_course = h['hist'][0].get('course', "")
+            actual_dist_m = re.search(r'(\d+)', prev_course)
+            actual_dist = int(actual_dist_m.group(1)) if actual_dist_m else 0
+            
+            prev_type = "芝" if "芝" in prev_course else "ダート" if "ダ" in prev_course else ""
+            
+            # --- 馬場状態（芝/ダート）直接指定 ---
+            if "ダート" in cond and prev_type != "ダート": return False
+            if "芝" in cond and "ダート" not in cond and prev_type != "芝": return False
+
+            # --- 同条件判定 ---
+            if "同条件" in cond or "同コース" in cond:
                 if prev_venue != curr_venue: return False
-                # 距離チェック
-                if not actual_dist_m or int(actual_dist_m.group(1)) != r.get('dist', 0): return False
-                # 芝/ダート チェック
-                prev_type = "芝" if "芝" in prev_course else "ダート" if "ダ" in prev_course else ""
+                if actual_dist != r.get('dist', 0): return False
                 if prev_type != r.get('type', ""): return False
                 return True
 
             if "同競馬場" in cond and prev_venue != curr_venue: return False
             if "別競馬場" in cond and prev_venue == curr_venue: return False
             if "中央場所" in cond and prev_venue not in ["中山", "東京", "京都", "阪神"]: return False
-            if "距離" in cond or "m" in cond:
-                prev_course = h['hist'][0].get('course', "")
-                actual_dist_m = re.search(r'(\d+)', prev_course)
-                target_dist_m = re.search(r'(\d+)', cond)
-                if actual_dist_m:
-                    actual = int(actual_dist_m.group(1))
+            
+            # --- 距離判定 ---
+            if "別距離" in cond:
+                if actual_dist == r.get('dist', 0): return False
+            elif "距離" in cond or "m" in cond:
+                range_m = re.search(r'(\d+)\s*~\s*(\d+)', cond)
+                if range_m:
+                    min_d, max_d = int(range_m.group(1)), int(range_m.group(2))
+                    if not (min_d <= actual_dist <= max_d): return False
+                else:
+                    target_dist_m = re.search(r'(\d+)', cond)
                     target = int(target_dist_m.group(1)) if target_dist_m else r.get('dist', 0)
-                    if "同距離超" in cond and actual <= target: return False
-                    if "同距離以上" in cond and actual < target: return False
-                    if "同距離" in cond and "以上" not in cond and "超" not in cond and actual != target: return False
-            venues = ["中山","京都","東京","阪神","中京","新潟","福島","小倉","札幌","函館"]
+                    if "同距離超" in cond or "同距離越" in cond:
+                        if actual_dist <= target: return False
+                    elif "同距離以上" in cond or "m以上" in cond or ("以上" in cond and target_dist_m):
+                        if actual_dist < target: return False
+                    elif "以下" in cond and target_dist_m:
+                        if actual_dist > target: return False
+                    else:
+                        if actual_dist != target: return False
+            
+            # 競馬場名の指定があればチェック
             target_v = next((v for v in venues if v in cond), None)
             if target_v and target_v != prev_venue: return False
+            
             return True
 
         # 7. 枠・番
@@ -366,7 +398,20 @@ def check_condition(cond, h, r, sire_lineage, mawari_map):
             if ("以下" in cond or "以内" in cond) and actual > target: return False
             return True
 
-        # 10. 性別・年齢・所属
+        # 10. 性別・年齢・所属・クラス
+        if "クラス" in cond:
+            if "前走クラスが今回以上" in cond:
+                curr_class = r.get("class", "クラス不明")
+                curr_rank = get_class_rank(curr_class)
+                
+                prev_raw = h['hist'][0]['raw'] if h['hist'] else ""
+                prev_race_name = h['hist'][0].get('race_name', "")
+                prev_rank = max(get_class_rank(prev_raw), get_class_rank(prev_race_name))
+                
+                if curr_rank == 0 or prev_rank == 0: return False
+                return prev_rank >= curr_rank
+            return True
+
         if "性別" in cond or "牝馬" in cond or "牡馬・セン" in cond:
             if "牝馬" in cond and "牝" not in h['sex_age']: return False
             if "牡馬・セン" in cond and not any(x in h['sex_age'] for x in ["牡", "セ"]): return False
