@@ -341,7 +341,44 @@ function renderHorsesTable(horses) {
         tr.appendChild(tdWaku);
         cols.forEach((val, idx) => {
             const td = document.createElement('td');
-            td.textContent = val;
+            
+            if (idx === 5) {
+                td.style.textAlign = 'left';
+                const expandBtn = document.createElement('button');
+                expandBtn.textContent = '+';
+                expandBtn.className = 'expand-history-btn';
+                expandBtn.style.marginRight = '8px';
+                
+                expandBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    const nextTr = tr.nextElementSibling;
+                    if (nextTr && nextTr.classList.contains('history-row')) {
+                        if (nextTr.style.display === 'none') {
+                            nextTr.style.display = window.innerWidth <= 768 ? 'block' : 'table-row';
+                            expandBtn.textContent = '-';
+                        } else {
+                            nextTr.style.display = 'none';
+                            expandBtn.textContent = '+';
+                        }
+                    } else {
+                        const histRow = document.createElement('tr');
+                        histRow.className = 'history-row';
+                        const histTd = document.createElement('td');
+                        histTd.colSpan = 14; 
+                        histTd.innerHTML = buildMiniHistoryTable(h.hist);
+                        histRow.appendChild(histTd);
+                        tr.after(histRow);
+                        expandBtn.textContent = '-';
+                    }
+                };
+                td.appendChild(expandBtn);
+                
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = val;
+                td.appendChild(nameSpan);
+            } else {
+                td.textContent = val;
+            }
             
             if (idx === 1 && val === '◎') {
                 td.classList.add('grade-tooltip-target');
@@ -352,8 +389,6 @@ function renderHorsesTable(horses) {
                     : '詳細データなし';
                 td.appendChild(tooltipSpan);
             }
-            
-            if(val === h.name) td.style.textAlign = 'left';
             
             // Sire Ranking Highlight (idx 11 corresponds to h.sire)
             if (idx === 11 && h.sire_rank) {
@@ -367,6 +402,37 @@ function renderHorsesTable(horses) {
         
         tbody.appendChild(tr);
     });
+}
+
+function buildMiniHistoryTable(hist) {
+    if (!hist || hist.length === 0) {
+        return '<div style="padding: 10px; text-align: center; color: var(--text-muted);">過去データなし</div>';
+    }
+    
+    let html = `<div class="mini-history-container">`;
+    const labels = ["前走", "2走前", "3走前", "4走前"];
+    
+    hist.forEach((hInfo, idx) => {
+        if(idx > 2) return; // limit to 3 races max for UI space
+        
+        const dateMatch = hInfo.raw ? hInfo.raw.match(/(\d{4}年\d+月\d+日)/) : null;
+        const dateStr = dateMatch ? dateMatch[1] : '-';
+        const cond = [hInfo.course, hInfo.condition].filter(Boolean).join(' ') || '-';
+        
+        html += `<div class="mini-history-row">
+            <div class="mh-header"><strong>${labels[idx]}</strong> <span>${dateStr} ${hInfo.place || '-'} ${cond}</span></div>
+            <div class="mh-body">
+                <div><span>レース:</span> ${hInfo.race_name || '-'} (${hInfo.total || '-'}頭 ${hInfo.pop_rank || '-'}人)</div>
+                <div><span>着順:</span> <strong style="color:var(--text-main);">${hInfo.rank || '-'}</strong></div>
+                <div><span>タイム:</span> ${hInfo.run_time || '-'} (上${hInfo.agari_rank || '-'})</div>
+                <div><span>通過順:</span> ${hInfo.corners || '-'}</div>
+                <div><span>騎手/斤量:</span> ${hInfo.jockey || '-'} ${hInfo.kinryo || '-'}</div>
+                <div><span>馬体重:</span> ${hInfo.weight || '-'}</div>
+            </div>
+        </div>`;
+    });
+    html += `</div>`;
+    return html;
 }
 
 function renderMatrix(matrixData, currentVenue) {

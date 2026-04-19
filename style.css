@@ -528,6 +528,78 @@ tbody tr:hover { background: var(--row-hover); }
     width: 200px;
 }
 
+/* --- Past History Expanding Row --- */
+.expand-history-btn {
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid var(--border-color);
+    color: var(--text-main);
+    border-radius: 4px;
+    width: 20px;
+    height: 20px;
+    line-height: 18px;
+    text-align: center;
+    padding: 0;
+    cursor: pointer;
+    font-size: 14px;
+    display: inline-block;
+    vertical-align: middle;
+    transition: all 0.2s;
+}
+.expand-history-btn:hover {
+    background: rgba(47, 129, 247, 0.3);
+    border-color: var(--primary);
+}
+
+.history-row {
+    background: rgba(0, 0, 0, 0.2);
+}
+.history-row td {
+    padding: 0 !important;
+}
+.mini-history-container {
+    padding: 10px;
+    display: flex;
+    gap: 15px;
+    flex-wrap: wrap;
+    background: rgba(15, 20, 30, 0.6);
+    box-shadow: inset 0 2px 10px rgba(0,0,0,0.3);
+}
+.mini-history-row {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 8px 12px;
+    flex: 1;
+    min-width: 250px;
+    font-size: 12px;
+}
+.mh-header {
+    border-bottom: 1px dashed rgba(255,255,255,0.2);
+    padding-bottom: 6px;
+    margin-bottom: 6px;
+}
+.mh-header strong {
+    background: rgba(47, 129, 247, 0.2);
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-right: 6px;
+    color: #fff;
+    font-size: 11px;
+}
+.mh-header span {
+    color: var(--primary);
+}
+.mh-body {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 8px;
+    color: var(--text-main);
+}
+.mh-body span {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
 /* --- Responsive Design for Smartphones --- */
 @media (max-width: 768px) {
     body {
@@ -678,6 +750,31 @@ tbody tr:hover { background: var(--row-hover); }
 
     #horsesTable td:nth-child(8) { grid-column: 4; grid-row: 4; justify-content: flex-end; }
     #horsesTable td:nth-child(13) { grid-column: 1 / 4; grid-row: 4; border-top: 1px dashed var(--border-color); padding-top: 6px; margin-top: 2px; white-space: normal; color: var(--text-muted); }
+
+    /* History row specific mobile fixes */
+    #horsesTable tr.history-row {
+        display: block;
+        margin-top: -16px;
+        margin-bottom: 12px;
+        border-top: none;
+        border-radius: 0 0 8px 8px;
+        background: transparent;
+        padding: 0;
+    }
+    #horsesTable tr.history-row td {
+        display: block;
+        width: 100%;
+        text-align: left;
+    }
+    .mini-history-container {
+        padding: 10px;
+        flex-direction: column;
+        border-radius: 0 0 8px 8px;
+        background: rgba(15, 20, 30, 0.8);
+    }
+    .mh-body {
+        grid-template-columns: 1fr;
+    }
 
     /* Column Labels */
     #horsesTable td:nth-child(4)::before { content: "オッズ: "; color: #8b949e; font-size: 11px; margin-right: 4px; }
