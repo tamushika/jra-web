@@ -343,16 +343,20 @@ def scrape():
         race_name = race_name_tag.get_text(strip=True) if race_name_tag else "レース名不明"
         
         race_time = ""
-        time_tag = soup.find(class_=re.compile(r'race_time|start_time', re.I))
-        if time_tag and ":" in time_tag.get_text():
-            m = re.search(r'(\d{1,2}:\d{2})', time_tag.get_text())
-            if m: race_time = m.group(1)
+        # Look for explicit time elements containing 発走 (handles accessS and new layouts)
+        for t_tag in soup.find_all(class_=re.compile(r'time', re.I)):
+            if t_tag and "発走" in t_tag.get_text():
+                m = re.search(r'(\d{1,2})[時:](\d{2})', t_tag.get_text())
+                if m:
+                    race_time = f"{m.group(1)}:{m.group(2)}"
+                    break
         
+        # Fallback to general page text if not found yet
         if not race_time:
-            m = re.search(r'発走[\s：:]*(\d{1,2}:\d{2})', page_text)
+            m = re.search(r'発走(?:時刻)?[\s：:]*(\d{1,2})[時:](\d{2})', page_text)
             if not m:
-                m = re.search(r'(\d{1,2}:\d{2})[\s]*(?:発走|発走時刻)', page_text)
-            if m: race_time = m.group(1)
+                m = re.search(r'(\d{1,2})[時:](\d{2})[\s]*(?:分)?[\s]*(?:発走|発走時刻)', page_text)
+            if m: race_time = f"{m.group(1)}:{m.group(2)}"
             
         time_str = f" {race_time}発走" if race_time else ""
         race_label = f"【{venue} {race_idx}R】{race_type}{dist_val}m{time_str}　{race_name}"

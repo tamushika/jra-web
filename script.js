@@ -20,8 +20,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Main Actions
     document.getElementById('searchBtn').addEventListener('click', startScraping);
-    document.getElementById('getUrlBtn').addEventListener('click', async () => {
+    async function autoFetchUrl(isManual) {
         const btn = document.getElementById('getUrlBtn');
+        const prevText = btn.textContent;
         btn.disabled = true;
         btn.textContent = "取得中...";
         try {
@@ -31,15 +32,24 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.error) throw new Error(data.error);
             if (data.url) {
                 document.getElementById('urlInput').value = data.url;
-                alert("最新のURLを取得しました。\n" + data.url);
+                if (isManual) alert("最新のURLを取得しました。\n" + data.url);
+            } else {
+                document.getElementById('urlInput').value = "";
+                if (isManual) alert("出馬表がありません。");
             }
         } catch(err) {
-            alert("URL取得エラー: " + err.message);
+            document.getElementById('urlInput').value = "";
+            if (isManual) alert("URL取得エラー: " + err.message + "\n現在出馬表データはありません。");
         } finally {
             btn.disabled = false;
             btn.textContent = "最新URL取得";
         }
-    });
+    }
+
+    document.getElementById('getUrlBtn').addEventListener('click', () => autoFetchUrl(true));
+    
+    // Auto-fetch on page load
+    autoFetchUrl(false);
 
     document.getElementById('historyHorseSelect').addEventListener('change', updateHistoryTable);
     document.getElementById('runAiBtn').addEventListener('click', runAiPrediction);
