@@ -330,8 +330,14 @@ def get_past_data(base_dir, place, track_type, distance, condition=None, race_cl
     params = [place, track_type, distance]
 
     if condition and condition != "null" and condition != "":
+        db_condition = condition
+        if condition == "稍重":
+            db_condition = "稍"
+        elif condition == "不良":
+            db_condition = "不"
+            
         query += " AND condition = ?"
-        params.append(condition)
+        params.append(db_condition)
 
     if race_class and race_class != "null" and race_class != "":
         query += " AND race_class = ?"

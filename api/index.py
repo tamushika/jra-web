@@ -341,7 +341,24 @@ def scrape():
         
         race_name_tag = soup.find(class_="race_name")
         race_name = race_name_tag.get_text(strip=True) if race_name_tag else "レース名不明"
-        race_label = f"【{venue} {race_idx}R】{race_type}{dist_val}m　{race_name}"
+        
+        race_time = ""
+        time_tag = soup.select_one('.race_time') or soup.find("div", class_=re.compile(r'\btime\b', re.I))
+        if time_tag and ":" in time_tag.get_text():
+            m = re.search(r'(\d{1,2}:\d{2})', time_tag.get_text())
+            if m: race_time = m.group(1)
+        
+        if not race_time:
+            m = re.search(r'発走[\s]*(\d{1,2}:\d{2})', page_text)
+            if not m:
+                m = re.search(r'(\d{1,2}:\d{2})[\s]*発走', page_text)
+            if not m:
+                # Fallback to the first time-like string found early in the text
+                m = re.search(r'(\d{1,2}:\d{2})', page_text[:5000])
+            if m: race_time = m.group(1)
+            
+        time_str = f" {race_time}発走" if race_time else ""
+        race_label = f"【{venue} {race_idx}R】{race_type}{dist_val}m{time_str}　{race_name}"
 
         def get_race_class(name):
             name_str = str(name).upper()
