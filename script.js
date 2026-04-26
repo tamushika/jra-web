@@ -647,18 +647,46 @@ function renderPastDataStats(stats, prefix) {
     document.getElementById(prefix+'AvgTime').textContent = stats.avg_time;
     document.getElementById(prefix+'AvgAgari').textContent = stats.avg_agari;
 
-    const buildTrs = (arr, cols) => (arr && arr.length > 0) 
-        ? arr.map(item => `<tr>${cols.map(c => `<td>${item[c]}</td>`).join('')}</tr>`).join('')
-        : '<tr><td colspan="3">データなし</td></tr>';
+    const buildTrs = (arr, cols, highlight = false) => {
+        if(!arr || arr.length === 0) return '<tr><td colspan="3">データなし</td></tr>';
+        
+        let rankMap = new Map();
+        if (highlight) {
+            let sorted = [...arr].sort((a, b) => {
+                let wDiff = (parseFloat(b.win_rate) || 0) - (parseFloat(a.win_rate) || 0);
+                if (wDiff !== 0) return wDiff;
+                return (parseFloat(b.top3_rate) || 0) - (parseFloat(a.top3_rate) || 0);
+            });
+            for(let i=0; i<sorted.length; i++) {
+                if ((parseFloat(sorted[i].win_rate)||0) === 0 && (parseFloat(sorted[i].top3_rate)||0) === 0) continue;
+                if (i > 0 && sorted[i].win_rate === sorted[i-1].win_rate && sorted[i].top3_rate === sorted[i-1].top3_rate) {
+                    rankMap.set(sorted[i].name, rankMap.get(sorted[i-1].name));
+                } else {
+                    rankMap.set(sorted[i].name, i + 1);
+                }
+            }
+        }
+        
+        return arr.map(item => {
+            let rowStyle = "";
+            if (highlight) {
+                let r = rankMap.get(item.name);
+                if (r === 1) rowStyle = "color: #ff3366; font-weight: bold;";
+                else if (r === 2) rowStyle = "color: #33cc66; font-weight: bold;";
+                else if (r === 3) rowStyle = "color: #33ccff; font-weight: bold;";
+            }
+            return `<tr style="${rowStyle}">${cols.map(c => `<td>${item[c]}</td>`).join('')}</tr>`;
+        }).join('');
+    };
     
     document.getElementById(prefix+'UmabanTbody').innerHTML = buildTrs(stats.umaban, ['name', 'win_rate', 'top3_rate']);
     
     const wakuEl = document.getElementById(prefix+'WakuTbody');
-    if (wakuEl && stats.waku) wakuEl.innerHTML = buildTrs(stats.waku, ['name', 'win_rate', 'top3_rate']);
+    if (wakuEl && stats.waku) wakuEl.innerHTML = buildTrs(stats.waku, ['name', 'win_rate', 'top3_rate'], true);
 
     document.getElementById(prefix+'KyakuTbody').innerHTML = buildTrs(stats.kyakushitsu, ['name', 'win_rate', 'top3_rate']);
     document.getElementById(prefix+'JockeyTbody').innerHTML = buildTrs(stats.jockey, ['name', 'win_rate', 'top3_rate']);
     
     const weightEl = document.getElementById(prefix+'WeightTbody');
-    if (weightEl && stats.weight) weightEl.innerHTML = buildTrs(stats.weight, ['name', 'win_rate', 'top3_rate']);
+    if (weightEl && stats.weight) weightEl.innerHTML = buildTrs(stats.weight, ['name', 'win_rate', 'top3_rate'], true);
 }
