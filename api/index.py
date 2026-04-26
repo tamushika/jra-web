@@ -428,6 +428,21 @@ def scrape():
             h['grade'] = grade
             h['ultra_details'] = det
             if grade == "◎": has_double_circle = True
+            
+            # Distance comparison
+            h['dist_diff'] = "-"
+            if h.get('hist') and h['hist'][0] and h['hist'][0].get('course'):
+                prev_course = h['hist'][0]['course']
+                m = re.search(r'(\d+)', prev_course)
+                if m:
+                    prev_dist = int(m.group(1))
+                    if dist_val > prev_dist:
+                        h['dist_diff'] = "延長"
+                    elif dist_val < prev_dist:
+                        h['dist_diff'] = "短縮"
+                    else:
+                        h['dist_diff'] = "同"
+            
             horses_out.append(h)
 
         # Feature Course Memo

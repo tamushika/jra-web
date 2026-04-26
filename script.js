@@ -343,7 +343,7 @@ function renderHorsesTable(horses) {
         
         // Other Cols
         const cols = [
-            h.num, h.grade || '-', h.odds, h.pop || '-', h.iv,
+            h.num, h.grade || '-', h.odds, h.pop || '-', h.iv, h.dist_diff || '-',
             h.name, h.sex_age, h.kyakushitsu, h.kg, h.jock || h.jockey,
             h.affi, h.sire, h.bms
         ];
@@ -352,7 +352,7 @@ function renderHorsesTable(horses) {
         cols.forEach((val, idx) => {
             const td = document.createElement('td');
             
-            if (idx === 5) {
+            if (idx === 6) { // idx 6 is now h.name
                 td.style.textAlign = 'left';
                 const expandBtn = document.createElement('button');
                 expandBtn.textContent = '+';
@@ -374,7 +374,7 @@ function renderHorsesTable(horses) {
                         const histRow = document.createElement('tr');
                         histRow.className = 'history-row';
                         const histTd = document.createElement('td');
-                        histTd.colSpan = 14; 
+                        histTd.colSpan = 15; 
                         histTd.innerHTML = buildMiniHistoryTable(h.hist);
                         histRow.appendChild(histTd);
                         tr.after(histRow);
@@ -400,8 +400,8 @@ function renderHorsesTable(horses) {
                 td.appendChild(tooltipSpan);
             }
             
-            // Sire Ranking Highlight (idx 11 corresponds to h.sire)
-            if (idx === 11 && h.sire_rank) {
+            // Sire Ranking Highlight (idx 12 corresponds to h.sire now)
+            if (idx === 12 && h.sire_rank) {
                 if (h.sire_rank === 1) td.classList.add('sire-rank-1');
                 else if (h.sire_rank <= 5) td.classList.add('sire-rank-2-5');
                 else if (h.sire_rank <= 10) td.classList.add('sire-rank-6-10');
