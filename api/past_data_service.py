@@ -79,7 +79,6 @@ def get_db_connection(base_dir):
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-        conn.is_pg = False
         return conn
     except Exception as e:
         print(f"SQLite connection error: {e}")
@@ -383,3 +382,117 @@ def get_past_data(base_dir, place, track_type, distance, condition=None, race_cl
         "success": True,
         "results": res
     }
+
+def get_track_bias_data(base_dir, place):
+    conn = get_db_connection(base_dir)
+    if not conn:
+        return {"error": "Database not found"}
+        
+    cursor = conn.cursor()
+    is_pg = getattr(conn, 'is_pg', False)
+    
+    try:
+        # First find the latest date for this place
+        q_date = "SELECT MAX(date) as max_date FROM races WHERE place = ?"
+        if is_pg: q_date = q_date.replace('?', '%s')
+        cursor.execute(q_date, (place,))
+        row = cursor.fetchone()
+        latest_date = row['max_date'] if row else None
+        
+        if not latest_date:
+            return {"error": "No recent races found"}
+            
+        # Get races for that date and place
+        q_races = """
+            SELECT rank, track_type, horse_number, corner_4, popularity, total_horses 
+            FROM races 
+            WHERE place = ? AND date = ? AND rank <= 3
+        """
+        if is_pg: q_races = q_races.replace('?', '%s')
+        cursor.execute(q_races, (place, latest_date))
+        rows = [dict(r) for r in cursor.fetchall()]
+        
+        # Analyze Bias split by track_type (芝 vs ダート)
+        bias_results = {"芝": {"nige": 0, "sashi": 0, "in": 0, "out": 0, "total": 0},
+                        "ダート": {"nige": 0, "sashi": 0, "in": 0, "out": 0, "total": 0}}
+        
+        import re
+        for r in rows:
+            tt = r.get('track_type')
+            if tt not in bias_results: continue
+            
+            # Base weight is 1. If it was unpopular but ran top 3, increase the weight!
+            pop = r.get('popularity')
+            rank = r.get('rank')
+            try: pop = float(pop) 
+            except: pop = 1
+            try: rank = float(rank)
+            except: rank = 1
+            
+            pop_diff = max(0, pop - rank)
+            # If standard performance (1st pop, 1st place -> weight 1)
+            # If 6th pop, 1st place -> pop_diff=5 -> weight 1+5=6 (very strong evidence of bias)
+            weight = 1 + pop_diff
+            
+            bias_results[tt]["total"] += 1
+            
+            # Analyze Kyakushitsu
+            c4 = r.get('corner_4')
+            if c4 and str(c4) != 'nan':
+                m = re.search(r'\d+', str(c4))
+                if m:
+                    pos = int(m.group())
+                    if pos <= 4:
+                        bias_results[tt]["nige"] += weight
+                    else:
+                        bias_results[tt]["sashi"] += weight
+                        
+            # Analyze Waku
+            h_num = r.get('horse_number')
+            t_horses = r.get('total_horses')
+            waku = calculate_waku(h_num, t_horses)
+            if waku:
+                if waku <= 4:
+                    bias_results[tt]["in"] += weight
+                elif waku >= 5:
+                    bias_results[tt]["out"] += weight
+
+        # Evaluate logic
+        evaluations = {}
+        for tt, b in bias_results.items():
+            if b["total"] == 0:
+                evaluations[tt] = {"kyaku": "データなし", "waku": "データなし"}
+                continue
+                
+            k_eval = "フラット"
+            if b["nige"] > b["sashi"] * 1.5:
+                k_eval = "前残り有利（逃げ/先行）"
+            elif b["sashi"] > b["nige"] * 1.5:
+                k_eval = "差し有利"
+                
+            w_eval = "フラット"
+            if b["in"] > b["out"] * 1.3:
+                w_eval = "イン（内枠）有利"
+            elif b["out"] > b["in"] * 1.3:
+                w_eval = "外枠有利"
+                
+            evaluations[tt] = {
+                "kyaku": k_eval,
+                "waku": w_eval,
+                "nige_score": b["nige"],
+                "sashi_score": b["sashi"],
+                "in_score": b["in"],
+                "out_score": b["out"]
+            }
+            
+        return {
+            "success": True,
+            "latest_date": latest_date,
+            "place": place,
+            "evaluations": evaluations
+        }
+    except Exception as e:
+        print(f"Track bias error: {e}")
+        return {"error": str(e)}
+    finally:
+        conn.close()

@@ -23,6 +23,9 @@
                     <button id="searchBtn" class="primary-btn">解析開始</button>
                     <button id="getUrlBtn" class="secondary-btn">最新URL取得</button>
                 </div>
+                <div class="input-group" style="margin-top: 5px;">
+                    <button id="trackBiasBtn" class="secondary-btn" style="width: 100%; border: 1px solid var(--accent); color: var(--accent); background: transparent;">🔍 直近実績（トラックバイアス）解析</button>
+                </div>
                 <div class="status-panel">
                     <div id="raceInfo" class="race-label">【待機中】URLを入力して解析開始を押してください。</div>
                     <div id="babaInfo" class="baba-label">馬場情報：未取得</div>
@@ -38,6 +41,22 @@
             <div class="criteria-container" id="criteriaContainer">
                 <strong id="criteriaTitle">【好走条件】</strong>
                 <div id="criteriaList">該当なし</div>
+            </div>
+            <!-- Track bias container hidden by default -->
+            <div class="criteria-container" id="trackBiasContainer" style="display: none; margin-top: 10px; border-color: var(--accent);">
+                <strong id="trackBiasTitle" style="color: var(--accent);">【直近トラックバイアス：<span id="tbPlace">-</span> （<span id="tbDate">-</span>）】</strong>
+                <div id="trackBiasList" style="margin-top: 10px; font-size: 0.9em; display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                    <div style="background: rgba(0,0,0,0.2); padding: 10px; border-radius: 4px;">
+                        <div style="font-weight: bold; margin-bottom: 5px; color: #4ade80;">芝レース傾向</div>
+                        <div>脚質：<span id="tbShibaKyaku" style="font-weight: bold;">-</span></div>
+                        <div>枠番：<span id="tbShibaWaku">-</span></div>
+                    </div>
+                    <div style="background: rgba(0,0,0,0.2); padding: 10px; border-radius: 4px;">
+                        <div style="font-weight: bold; margin-bottom: 5px; color: #facc15;">ダートレース傾向</div>
+                        <div>脚質：<span id="tbDirtKyaku" style="font-weight: bold;">-</span></div>
+                        <div>枠番：<span id="tbDirtWaku">-</span></div>
+                    </div>
+                </div>
             </div>
         </section>
 

@@ -58,6 +58,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const pastDataBtn = document.getElementById('runPastDataBtn');
     if(pastDataBtn) pastDataBtn.addEventListener('click', fetchPastData);
     
+    const trackBiasBtn = document.getElementById('trackBiasBtn');
+    if(trackBiasBtn) trackBiasBtn.addEventListener('click', fetchTrackBias);
+
     // Auto-fetch on checkbox changes
     const classCheck = document.getElementById('matchClassCheckbox');
     const condCheck = document.getElementById('matchConditionCheckbox');
@@ -690,3 +693,54 @@ function renderPastDataStats(stats, prefix) {
     const weightEl = document.getElementById(prefix+'WeightTbody');
     if (weightEl && stats.weight) weightEl.innerHTML = buildTrs(stats.weight, ['name', 'win_rate', 'top3_rate'], true);
 }
+
+async function fetchTrackBias() {
+    const rInfo = document.getElementById('raceInfo').textContent;
+    let place = null;
+    const places = ["札幌", "函館", "福島", "新潟", "東京", "中山", "中京", "京都", "阪神", "小倉"];
+    for (let p of places) {
+        if (rInfo.includes(p)) place = p;
+    }
+    
+    if (!place) {
+        alert("出馬表を先に解析し、競馬場を特定してください。");
+        return;
+    }
+
+    const btn = document.getElementById('trackBiasBtn');
+    btn.textContent = "解析中...";
+    btn.disabled = true;
+    
+    try {
+        const response = await fetch(`/api/track_bias?place=${encodeURIComponent(place)}`);
+        const data = await response.json();
+        
+        if (data.error) throw new Error(data.error);
+
+        const container = document.getElementById('trackBiasContainer');
+        container.style.display = 'block';
+        
+        document.getElementById('tbPlace').textContent = data.place;
+        
+        let formattedDate = data.latest_date;
+        if(formattedDate && formattedDate.length === 6) {
+            formattedDate = `20${formattedDate.substring(0,2)}年${formattedDate.substring(2,4)}月${formattedDate.substring(4,6)}日`;
+        }
+        document.getElementById('tbDate').textContent = formattedDate;
+        
+        const t_s = data.evaluations["芝"] || {kyaku: "データなし", waku: "データなし"};
+        document.getElementById('tbShibaKyaku').textContent = t_s.kyaku;
+        document.getElementById('tbShibaWaku').textContent = t_s.waku;
+        
+        const t_d = data.evaluations["ダート"] || {kyaku: "データなし", waku: "データなし"};
+        document.getElementById('tbDirtKyaku').textContent = t_d.kyaku;
+        document.getElementById('tbDirtWaku').textContent = t_d.waku;
+        
+    } catch (err) {
+        alert("トラックバイアスの取得に失敗しました: " + err.message);
+    } finally {
+        btn.textContent = "🔍 直近実績（トラックバイアス）解析";
+        btn.disabled = false;
+    }
+}
+

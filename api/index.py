@@ -623,5 +623,20 @@ def ai_predict():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/track_bias', methods=['GET'])
+def get_track_bias():
+    try:
+        place = request.args.get('place')
+        if not place:
+            return jsonify({"error": "Missing place parameter"}), 400
+            
+        base_dir = get_base_dir()
+        from past_data_service import get_track_bias_data
+        result = get_track_bias_data(base_dir, place)
+        return jsonify(result)
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
 if __name__ == '__main__':
     app.run(port=5000, debug=True)
