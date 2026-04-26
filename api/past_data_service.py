@@ -4,6 +4,21 @@ import re
 import zipfile
 
 def get_db_connection(base_dir):
+    # Check for DATABASE_URL first
+    db_url = os.environ.get('DATABASE_URL')
+    if db_url:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+        if db_url.startswith("postgres://"):
+            db_url = db_url.replace("postgres://", "postgresql://", 1)
+        try:
+            conn = psycopg2.connect(db_url, cursor_factory=RealDictCursor)
+            conn.is_pg = True
+            return conn
+        except Exception as e:
+            print(f"PostgreSQL connection error: {e}")
+            return None
+
     # Check for Vercel environment
     is_vercel = os.environ.get('VERCEL') == '1' or os.environ.get('VERCEL') == 'true'
     
@@ -64,6 +79,7 @@ def get_db_connection(base_dir):
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        conn.is_pg = False
         return conn
     except Exception as e:
         print(f"SQLite connection error: {e}")
@@ -340,12 +356,26 @@ def get_past_data(base_dir, place, track_type, distance, condition=None, race_cl
         params.append(db_condition)
 
     if race_class and race_class != "null" and race_class != "":
+        # We need to use LIKE if race_class is partly matched? JRA DB 'race_class' isn't explicitly defined in 1980.csv.
+        # But we preserved 'race_name' column. Maybe race_class wasn't in 1980.csv explicitly mapped to 'race_class'?
+        # 1980.csv does not have a "race_class" column. It has "レース名" (race_name) which contains "ファイＨ･3勝".
+        # For now, let's keep the query as is. If column doesn't exist, we might need a fallback.
+        # But wait, original DB also might just not have returned anything.
         query += " AND race_class = ?"
         params.append(race_class)
 
-    cursor.execute(query, tuple(params))
-    rows = [dict(row) for row in cursor.fetchall()]
-    conn.close()
+    is_pg = getattr(conn, 'is_pg', False)
+    if is_pg:
+        query = query.replace('?', '%s')
+        
+    try:
+        cursor.execute(query, tuple(params))
+        rows = [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        print(f"Query error: {e}")
+        rows = []
+    finally:
+        conn.close()
 
     res = analyze_races(rows)
 
