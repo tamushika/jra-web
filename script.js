@@ -710,32 +710,95 @@ async function fetchTrackBias() {
     const btn = document.getElementById('trackBiasBtn');
     btn.textContent = "解析中...";
     btn.disabled = true;
-    
+
     try {
         const response = await fetch(`/api/track_bias?place=${encodeURIComponent(place)}`);
         const data = await response.json();
-        
         if (data.error) throw new Error(data.error);
 
-        const container = document.getElementById('trackBiasContainer');
-        container.style.display = 'block';
-        
         document.getElementById('tbPlace').textContent = data.place;
-        
-        let formattedDate = data.latest_date;
-        if(formattedDate && formattedDate.length === 6) {
-            formattedDate = `20${formattedDate.substring(0,2)}年${formattedDate.substring(2,4)}月${formattedDate.substring(4,6)}日`;
+
+        let formattedDate = data.latest_date || '';
+        if (formattedDate.length === 6) {
+            formattedDate = `20${formattedDate.slice(0,2)}年${formattedDate.slice(2,4)}月${formattedDate.slice(4,6)}日`;
         }
         document.getElementById('tbDate').textContent = formattedDate;
-        
-        const t_s = data.evaluations["芝"] || {kyaku: "データなし", waku: "データなし"};
-        document.getElementById('tbShibaKyaku').textContent = t_s.kyaku;
-        document.getElementById('tbShibaWaku').textContent = t_s.waku;
-        
-        const t_d = data.evaluations["ダート"] || {kyaku: "データなし", waku: "データなし"};
-        document.getElementById('tbDirtKyaku').textContent = t_d.kyaku;
-        document.getElementById('tbDirtWaku').textContent = t_d.waku;
-        
+
+        const tracks = [
+            { key: '芝',    label: '🌿 芝レース',    titleColor: '#4ade80' },
+            { key: 'ダート', label: '🟤 ダートレース', titleColor: '#facc15' },
+        ];
+
+        const tbBody = document.getElementById('tbBody');
+        tbBody.innerHTML = tracks.map(({ key, label, titleColor }) => {
+            const ev = data.evaluations[key];
+            if (!ev || ev.kyaku === 'データなし') {
+                return `<div class="tb-panel">
+                    <div class="tb-panel-title" style="color:${titleColor}">${label}</div>
+                    <div class="tb-no-data">このトラック種別のデータがありません</div>
+                </div>`;
+            }
+
+            const nigeScore  = ev.nige_score  || 0;
+            const sashiScore = ev.sashi_score || 0;
+            const inScore    = ev.in_score    || 0;
+            const outScore   = ev.out_score   || 0;
+
+            const kyakuTotal = nigeScore + sashiScore;
+            const wakuTotal  = inScore  + outScore;
+            const nigePct  = kyakuTotal > 0 ? Math.round(nigeScore  / kyakuTotal * 100) : 50;
+            const sashiPct = kyakuTotal > 0 ? Math.round(sashiScore / kyakuTotal * 100) : 50;
+            const inPct    = wakuTotal  > 0 ? Math.round(inScore    / wakuTotal  * 100) : 50;
+            const outPct   = wakuTotal  > 0 ? Math.round(outScore   / wakuTotal  * 100) : 50;
+
+            const kyakuClass   = ev.kyaku.includes('前') ? 'front' : ev.kyaku.includes('差') ? 'sashi' : 'flat';
+            const wakuClass    = ev.waku.includes('イン') ? 'inner' : ev.waku.includes('外') ? 'outer' : 'flat';
+
+            return `<div class="tb-panel">
+                <div class="tb-panel-title" style="color:${titleColor}">${label}</div>
+
+                <div class="tb-chart-group">
+                    <div class="tb-chart-label">脚質傾向（加重スコア）</div>
+                    <div class="tb-chart-row">
+                        <span class="tb-chart-name">逃げ・先行</span>
+                        <div class="tb-bar-track">
+                            <div class="tb-bar-fill nige" style="width:${nigePct}%"></div>
+                        </div>
+                        <span class="tb-pct">${nigePct}%</span>
+                    </div>
+                    <div class="tb-chart-row">
+                        <span class="tb-chart-name">差し・追込</span>
+                        <div class="tb-bar-track">
+                            <div class="tb-bar-fill sashi" style="width:${sashiPct}%"></div>
+                        </div>
+                        <span class="tb-pct">${sashiPct}%</span>
+                    </div>
+                    <div>→ <span class="tb-verdict ${kyakuClass}">${ev.kyaku}</span></div>
+                </div>
+
+                <div class="tb-chart-group">
+                    <div class="tb-chart-label">枠番傾向（加重スコア）</div>
+                    <div class="tb-chart-row">
+                        <span class="tb-chart-name">内枠（1〜4枠）</span>
+                        <div class="tb-bar-track">
+                            <div class="tb-bar-fill inner" style="width:${inPct}%"></div>
+                        </div>
+                        <span class="tb-pct">${inPct}%</span>
+                    </div>
+                    <div class="tb-chart-row">
+                        <span class="tb-chart-name">外枠（5〜8枠）</span>
+                        <div class="tb-bar-track">
+                            <div class="tb-bar-fill outer" style="width:${outPct}%"></div>
+                        </div>
+                        <span class="tb-pct">${outPct}%</span>
+                    </div>
+                    <div>→ <span class="tb-verdict ${wakuClass}">${ev.waku}</span></div>
+                </div>
+            </div>`;
+        }).join('');
+
+        document.getElementById('trackBiasContainer').style.display = 'block';
+
     } catch (err) {
         alert("トラックバイアスの取得に失敗しました: " + err.message);
     } finally {
