@@ -638,5 +638,35 @@ def get_track_bias():
         import traceback
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
+@app.route('/api/db_test', methods=['GET'])
+def db_test():
+    import traceback
+    db_url = os.environ.get('DATABASE_URL', '')
+    result = {
+        "DATABASE_URL_set": bool(db_url),
+        "DATABASE_URL_prefix": db_url[:30] + "..." if len(db_url) > 30 else db_url,
+    }
+    try:
+        import psycopg2
+        result["psycopg2_version"] = psycopg2.__version__
+        url = db_url
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        conn = psycopg2.connect(url)
+        result["connection"] = "OK"
+        # Test if custom attribute can be set
+        try:
+            conn.is_pg = True
+            result["custom_attr"] = "OK"
+        except AttributeError as e:
+            result["custom_attr_error"] = str(e)
+        conn.close()
+    except ImportError as e:
+        result["psycopg2_import_error"] = str(e)
+    except Exception as e:
+        result["connection_error"] = str(e)
+        result["traceback"] = traceback.format_exc()
+    return jsonify(result)
+
 if __name__ == '__main__':
     app.run(port=5000, debug=True)

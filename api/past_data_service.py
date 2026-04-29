@@ -3,12 +3,21 @@ import os
 import re
 import zipfile
 
+_last_db_error = None
+
 def get_db_connection(base_dir):
+    global _last_db_error
+    _last_db_error = None
     # Check for DATABASE_URL first
     db_url = os.environ.get('DATABASE_URL')
     if db_url:
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
+        try:
+            import psycopg2
+            from psycopg2.extras import RealDictCursor
+        except ImportError as e:
+            _last_db_error = f"psycopg2 import error: {e}"
+            print(_last_db_error)
+            return None
         if db_url.startswith("postgres://"):
             db_url = db_url.replace("postgres://", "postgresql://", 1)
         try:
@@ -16,7 +25,8 @@ def get_db_connection(base_dir):
             conn.is_pg = True
             return conn
         except Exception as e:
-            print(f"PostgreSQL connection error: {e}")
+            _last_db_error = f"PostgreSQL connection error: {e}"
+            print(_last_db_error)
             return None
 
     # Check for Vercel environment
@@ -333,7 +343,7 @@ def analyze_races(rows):
 def get_past_data(base_dir, place, track_type, distance, condition=None, race_class=None):
     conn = get_db_connection(base_dir)
     if not conn:
-        return {"error": "Database not found"}
+        return {"error": f"Database not found: {_last_db_error or 'unknown'}"}
         
     cursor = conn.cursor()
 
@@ -386,7 +396,7 @@ def get_past_data(base_dir, place, track_type, distance, condition=None, race_cl
 def get_track_bias_data(base_dir, place):
     conn = get_db_connection(base_dir)
     if not conn:
-        return {"error": "Database not found"}
+        return {"error": f"Database not found: {_last_db_error or 'unknown'}"}
         
     cursor = conn.cursor()
     is_pg = getattr(conn, 'is_pg', False)
