@@ -5,6 +5,13 @@ import zipfile
 
 _last_db_error = None
 
+class _PgConn:
+    """psycopg2接続のラッパー。is_pg属性でPostgreSQL判定を可能にする。"""
+    is_pg = True
+    def __init__(self, conn): self._conn = conn
+    def cursor(self): return self._conn.cursor()
+    def close(self): return self._conn.close()
+
 def get_db_connection(base_dir):
     global _last_db_error
     _last_db_error = None
@@ -22,8 +29,7 @@ def get_db_connection(base_dir):
             db_url = db_url.replace("postgres://", "postgresql://", 1)
         try:
             conn = psycopg2.connect(db_url, cursor_factory=RealDictCursor)
-            conn.is_pg = True
-            return conn
+            return _PgConn(conn)
         except Exception as e:
             _last_db_error = f"PostgreSQL connection error: {e}"
             print(_last_db_error)
