@@ -2,6 +2,7 @@ import sqlite3
 import os
 import re
 import zipfile
+import json
 
 _last_db_error = None
 
@@ -11,6 +12,74 @@ class _PgConn:
     def __init__(self, conn): self._conn = conn
     def cursor(self): return self._conn.cursor()
     def close(self): return self._conn.close()
+
+def _parse_time_any(t_str):
+    """'1:34.5' または数値形式の文字列を秒数(float)に変換する。"""
+    if not t_str or str(t_str) in ('nan', 'None', ''): return None
+    t_str = str(t_str).strip()
+    try:
+        if ':' in t_str:
+            m, s = t_str.split(':', 1)
+            return float(m) * 60 + float(s)
+        v = float(t_str)
+        return v if v > 0 else None
+    except:
+        return None
+
+def _race_class_from_name(name):
+    """レース名からクラス区分を推定する。"""
+    if not name: return 'オープン'
+    n = str(name)
+    if any(x in n for x in ['G1','G2','G3','ＧⅠ','ＧⅡ','ＧⅢ','JG1','JG2','JG3']): return '重賞'
+    if '(L)' in n or 'L)' in n: return 'オープン'
+    if 'オープン' in n or 'OP' in n.upper(): return 'オープン'
+    if '3勝' in n or '３勝' in n: return '3勝'
+    if '2勝' in n or '２勝' in n: return '2勝'
+    if '1勝' in n or '１勝' in n: return '1勝'
+    if '未勝利' in n: return '未勝利'
+    if '新馬' in n: return '新馬'
+    return 'オープン'
+
+def _load_standard_times(base_dir):
+    path = os.path.join(base_dir, 'data_files', 'common', 'standard_times.json')
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"standard_times load error: {e}")
+        return {}
+
+def _compute_track_speed(winner_rows, std_times):
+    """
+    勝ち馬タイムと基準タイムを比較し、馬場の高低速を判定する。
+    diff>0 → 基準より速い(高速馬場)、diff<0 → 遅い(低速馬場)
+    """
+    by_type = {}
+    for r in winner_rows:
+        tt  = r.get('track_type', '')
+        dist = str(r.get('distance') or '')
+        name = r.get('race_name', '')
+        t_sec = _parse_time_any(r.get('time'))
+        if not t_sec or not dist or tt not in ('芝', 'ダート'):
+            continue
+        race_cls = _race_class_from_name(name)
+        std = std_times.get(tt, {}).get(dist, {}).get(race_cls)
+        if std is None:
+            continue
+        diff = std - t_sec  # 正→速い、負→遅い
+        by_type.setdefault(tt, []).append(diff)
+
+    result = {}
+    for tt, diffs in by_type.items():
+        avg = sum(diffs) / len(diffs)
+        if   avg >  1.2: label, cat = '高速馬場',   'fast'
+        elif avg >  0.4: label, cat = 'やや高速',   'slightly_fast'
+        elif avg < -1.2: label, cat = '低速馬場',   'slow'
+        elif avg < -0.4: label, cat = 'やや低速',   'slightly_slow'
+        else:            label, cat = '平均的',     'normal'
+        result[tt] = {'label': label, 'category': cat,
+                      'avg_diff': round(avg, 2), 'samples': len(diffs)}
+    return result
 
 def get_db_connection(base_dir):
     global _last_db_error
@@ -418,22 +487,34 @@ def get_track_bias_data(base_dir, place):
         if not latest_date:
             return {"error": "No recent races found"}
             
-        # Get races for that date and place
+        # Get all races for that date (bias: top3, speed: rank1)
         q_races = """
-            SELECT rank, track_type, horse_number, corner_4, popularity, total_horses 
-            FROM races 
-            WHERE place = ? AND date = ? AND rank <= 3
+            SELECT rank, track_type, horse_number, corner_4, popularity, total_horses,
+                   time, distance, race_name
+            FROM races
+            WHERE place = ? AND date = ?
         """
         if is_pg: q_races = q_races.replace('?', '%s')
         cursor.execute(q_races, (place, latest_date))
         rows = [dict(r) for r in cursor.fetchall()]
-        
+
+        def _to_float(v):
+            try: return float(v)
+            except: return None
+
+        top3_rows   = [r for r in rows if (_to_float(r.get('rank')) or 99) <= 3]
+        winner_rows = [r for r in rows if (_to_float(r.get('rank')) or 99) == 1]
+
+        # Track speed analysis
+        std_times   = _load_standard_times(base_dir)
+        track_speed = _compute_track_speed(winner_rows, std_times)
+
         # Analyze Bias split by track_type (芝 vs ダート)
         bias_results = {"芝": {"nige": 0, "sashi": 0, "in": 0, "out": 0, "total": 0},
                         "ダート": {"nige": 0, "sashi": 0, "in": 0, "out": 0, "total": 0}}
         
         import re
-        for r in rows:
+        for r in top3_rows:
             tt = r.get('track_type')
             if tt not in bias_results: continue
             
@@ -505,7 +586,8 @@ def get_track_bias_data(base_dir, place):
             "success": True,
             "latest_date": latest_date,
             "place": place,
-            "evaluations": evaluations
+            "evaluations": evaluations,
+            "track_speed": track_speed
         }
     except Exception as e:
         print(f"Track bias error: {e}")

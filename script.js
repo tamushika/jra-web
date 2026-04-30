@@ -2,6 +2,7 @@ let globalHorsesData = [];
 let raceCache = {}; // ◎がいるレースのハッシュマップ
 let apiCache = {}; // { URL: { mode: "詳細", data: {...} } }
 let currentRaceContext = { venue: "", track_type: "", distance: 0, condition: "", race_class: "" };
+let trackBiasCache = {}; // { 競馬場名: APIレスポンス }
 
 document.addEventListener('DOMContentLoaded', () => {
     // Tab Switching
@@ -132,9 +133,12 @@ function applyScrapeData(data, url, mode) {
 
     globalHorsesData = data.horses || [];
     renderHorsesTable(globalHorsesData);
-    
+
     raceCache[url] = data.has_double_circle;
     renderMatrix(data.matrix_data, data.venue);
+
+    // 競馬場が変わったときにトラックバイアスを自動切替
+    if (data.venue) fetchTrackBias(data.venue);
     
     let ultraText = "";
     globalHorsesData.forEach(h => {
@@ -707,103 +711,131 @@ async function fetchTrackBias() {
         return;
     }
 
+    // venueOverride がある = レース切替による自動呼出し（キャッシュ優先・エラー非表示）
+    const isAuto = !!venueOverride;
+
     const btn = document.getElementById('trackBiasBtn');
     btn.textContent = "解析中...";
     btn.disabled = true;
 
     try {
+        // キャッシュ確認（手動クリックはキャッシュ破棄して再取得）
+        if (!isAuto) delete trackBiasCache[place];
+        if (trackBiasCache[place] !== undefined) {
+            renderTrackBias(trackBiasCache[place]);
+            return;
+        }
+
         const response = await fetch(`/api/track_bias?place=${encodeURIComponent(place)}`);
         const data = await response.json();
-        if (data.error) throw new Error(data.error);
-
-        document.getElementById('tbPlace').textContent = data.place;
-
-        let formattedDate = data.latest_date || '';
-        if (formattedDate.length === 6) {
-            formattedDate = `20${formattedDate.slice(0,2)}年${formattedDate.slice(2,4)}月${formattedDate.slice(4,6)}日`;
-        }
-        document.getElementById('tbDate').textContent = formattedDate;
-
-        const tracks = [
-            { key: '芝',    label: '🌿 芝レース',    titleColor: '#4ade80' },
-            { key: 'ダート', label: '🟤 ダートレース', titleColor: '#facc15' },
-        ];
-
-        const tbBody = document.getElementById('tbBody');
-        tbBody.innerHTML = tracks.map(({ key, label, titleColor }) => {
-            const ev = data.evaluations[key];
-            if (!ev || ev.kyaku === 'データなし') {
-                return `<div class="tb-panel">
-                    <div class="tb-panel-title" style="color:${titleColor}">${label}</div>
-                    <div class="tb-no-data">このトラック種別のデータがありません</div>
-                </div>`;
-            }
-
-            const nigeScore  = ev.nige_score  || 0;
-            const sashiScore = ev.sashi_score || 0;
-            const inScore    = ev.in_score    || 0;
-            const outScore   = ev.out_score   || 0;
-
-            const kyakuTotal = nigeScore + sashiScore;
-            const wakuTotal  = inScore  + outScore;
-            const nigePct  = kyakuTotal > 0 ? Math.round(nigeScore  / kyakuTotal * 100) : 50;
-            const sashiPct = kyakuTotal > 0 ? Math.round(sashiScore / kyakuTotal * 100) : 50;
-            const inPct    = wakuTotal  > 0 ? Math.round(inScore    / wakuTotal  * 100) : 50;
-            const outPct   = wakuTotal  > 0 ? Math.round(outScore   / wakuTotal  * 100) : 50;
-
-            const kyakuClass   = ev.kyaku.includes('前') ? 'front' : ev.kyaku.includes('差') ? 'sashi' : 'flat';
-            const wakuClass    = ev.waku.includes('イン') ? 'inner' : ev.waku.includes('外') ? 'outer' : 'flat';
-
-            return `<div class="tb-panel">
-                <div class="tb-panel-title" style="color:${titleColor}">${label}</div>
-
-                <div class="tb-chart-group">
-                    <div class="tb-chart-label">脚質傾向（加重スコア）</div>
-                    <div class="tb-chart-row">
-                        <span class="tb-chart-name">逃げ・先行</span>
-                        <div class="tb-bar-track">
-                            <div class="tb-bar-fill nige" style="width:${nigePct}%"></div>
-                        </div>
-                        <span class="tb-pct">${nigePct}%</span>
-                    </div>
-                    <div class="tb-chart-row">
-                        <span class="tb-chart-name">差し・追込</span>
-                        <div class="tb-bar-track">
-                            <div class="tb-bar-fill sashi" style="width:${sashiPct}%"></div>
-                        </div>
-                        <span class="tb-pct">${sashiPct}%</span>
-                    </div>
-                    <div>→ <span class="tb-verdict ${kyakuClass}">${ev.kyaku}</span></div>
-                </div>
-
-                <div class="tb-chart-group">
-                    <div class="tb-chart-label">枠番傾向（加重スコア）</div>
-                    <div class="tb-chart-row">
-                        <span class="tb-chart-name">内枠（1〜4枠）</span>
-                        <div class="tb-bar-track">
-                            <div class="tb-bar-fill inner" style="width:${inPct}%"></div>
-                        </div>
-                        <span class="tb-pct">${inPct}%</span>
-                    </div>
-                    <div class="tb-chart-row">
-                        <span class="tb-chart-name">外枠（5〜8枠）</span>
-                        <div class="tb-bar-track">
-                            <div class="tb-bar-fill outer" style="width:${outPct}%"></div>
-                        </div>
-                        <span class="tb-pct">${outPct}%</span>
-                    </div>
-                    <div>→ <span class="tb-verdict ${wakuClass}">${ev.waku}</span></div>
-                </div>
-            </div>`;
-        }).join('');
-
-        document.getElementById('trackBiasContainer').style.display = 'block';
+        trackBiasCache[place] = data;
+        renderTrackBias(data);
 
     } catch (err) {
-        alert("トラックバイアスの取得に失敗しました: " + err.message);
+        if (!isAuto) alert("トラックバイアスの取得に失敗しました: " + err.message);
     } finally {
         btn.textContent = "🔍 直近実績（トラックバイアス）解析";
         btn.disabled = false;
     }
+}
+
+function renderTrackBias(data) {
+    const container = document.getElementById('trackBiasContainer');
+
+    // エラー or データなし
+    if (data.error) {
+        const noData = data.error.includes('No recent races') || data.error.includes('No recent');
+        document.getElementById('tbPlace').textContent = noData ? '—' : '?';
+        document.getElementById('tbDate').textContent  = noData ? '直近データなし' : 'エラー';
+        document.getElementById('tbBody').innerHTML =
+            `<div class="tb-no-data" style="grid-column:1/-1">${noData ? 'この競馬場の直近開催データがありません' : data.error}</div>`;
+        container.style.display = 'block';
+        return;
+    }
+
+    let formattedDate = data.latest_date || '';
+    if (formattedDate.length === 6) {
+        formattedDate = `20${formattedDate.slice(0,2)}年${formattedDate.slice(2,4)}月${formattedDate.slice(4,6)}日`;
+    }
+    document.getElementById('tbPlace').textContent = data.place || '—';
+    document.getElementById('tbDate').textContent  = formattedDate;
+
+    const speedCatClass = { fast:'fast', slightly_fast:'slightly_fast', slow:'slow', slightly_slow:'slightly_slow', normal:'flat' };
+    const tracks = [
+        { key: '芝',    label: '🌿 芝レース',    titleColor: '#4ade80' },
+        { key: 'ダート', label: '🟤 ダートレース', titleColor: '#facc15' },
+    ];
+
+    document.getElementById('tbBody').innerHTML = tracks.map(({ key, label, titleColor }) => {
+        const ev = (data.evaluations || {})[key];
+        const sp = (data.track_speed || {})[key];
+
+        // 速度バッジHTML
+        let speedHtml = '';
+        if (sp) {
+            const cls = speedCatClass[sp.category] || 'flat';
+            const sign = sp.avg_diff >= 0 ? '+' : '';
+            speedHtml = `<div class="tb-speed-row">
+                <span class="tb-verdict ${cls}">${sp.label}</span>
+                <span class="tb-speed-diff">${sign}${sp.avg_diff}秒（基準比 ${sp.samples}R平均）</span>
+            </div>`;
+        }
+
+        if (!ev || ev.kyaku === 'データなし') {
+            return `<div class="tb-panel">
+                <div class="tb-panel-title" style="color:${titleColor}">${label}</div>
+                ${speedHtml}
+                <div class="tb-no-data">バイアスデータなし</div>
+            </div>`;
+        }
+
+        const nigeScore  = ev.nige_score  || 0;
+        const sashiScore = ev.sashi_score || 0;
+        const inScore    = ev.in_score    || 0;
+        const outScore   = ev.out_score   || 0;
+        const kyakuTotal = nigeScore + sashiScore;
+        const wakuTotal  = inScore + outScore;
+        const nigePct  = kyakuTotal > 0 ? Math.round(nigeScore  / kyakuTotal * 100) : 50;
+        const sashiPct = kyakuTotal > 0 ? Math.round(sashiScore / kyakuTotal * 100) : 50;
+        const inPct    = wakuTotal  > 0 ? Math.round(inScore    / wakuTotal  * 100) : 50;
+        const outPct   = wakuTotal  > 0 ? Math.round(outScore   / wakuTotal  * 100) : 50;
+        const kyakuCls = ev.kyaku.includes('前') ? 'front' : ev.kyaku.includes('差') ? 'sashi' : 'flat';
+        const wakuCls  = ev.waku.includes('イン') ? 'inner' : ev.waku.includes('外') ? 'outer' : 'flat';
+
+        return `<div class="tb-panel">
+            <div class="tb-panel-title" style="color:${titleColor}">${label}</div>
+            ${speedHtml}
+            <div class="tb-chart-group">
+                <div class="tb-chart-label">脚質傾向（加重スコア）</div>
+                <div class="tb-chart-row">
+                    <span class="tb-chart-name">逃げ・先行</span>
+                    <div class="tb-bar-track"><div class="tb-bar-fill nige" style="width:${nigePct}%"></div></div>
+                    <span class="tb-pct">${nigePct}%</span>
+                </div>
+                <div class="tb-chart-row">
+                    <span class="tb-chart-name">差し・追込</span>
+                    <div class="tb-bar-track"><div class="tb-bar-fill sashi" style="width:${sashiPct}%"></div></div>
+                    <span class="tb-pct">${sashiPct}%</span>
+                </div>
+                <div>→ <span class="tb-verdict ${kyakuCls}">${ev.kyaku}</span></div>
+            </div>
+            <div class="tb-chart-group">
+                <div class="tb-chart-label">枠番傾向（加重スコア）</div>
+                <div class="tb-chart-row">
+                    <span class="tb-chart-name">内枠（1〜4枠）</span>
+                    <div class="tb-bar-track"><div class="tb-bar-fill inner" style="width:${inPct}%"></div></div>
+                    <span class="tb-pct">${inPct}%</span>
+                </div>
+                <div class="tb-chart-row">
+                    <span class="tb-chart-name">外枠（5〜8枠）</span>
+                    <div class="tb-bar-track"><div class="tb-bar-fill outer" style="width:${outPct}%"></div></div>
+                    <span class="tb-pct">${outPct}%</span>
+                </div>
+                <div>→ <span class="tb-verdict ${wakuCls}">${ev.waku}</span></div>
+            </div>
+        </div>`;
+    }).join('');
+
+    container.style.display = 'block';
 }
 

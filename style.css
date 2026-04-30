@@ -299,8 +299,22 @@ button {
 .tb-verdict.sashi  { background: rgba(99,102,241,0.2);  color: #a5b4fc; }
 .tb-verdict.inner  { background: rgba(16,185,129,0.2);  color: #6ee7b7; }
 .tb-verdict.outer  { background: rgba(244,63,94,0.2);   color: #fda4af; }
-.tb-verdict.flat   { background: rgba(255,255,255,0.08); color: var(--text-muted); }
-.tb-verdict.nodata { background: rgba(255,255,255,0.04); color: var(--text-muted); }
+.tb-verdict.flat         { background: rgba(255,255,255,0.08); color: var(--text-muted); }
+.tb-verdict.nodata       { background: rgba(255,255,255,0.04); color: var(--text-muted); }
+.tb-verdict.slightly_fast { background: rgba(16,185,129,0.15);  color: #86efac; }
+.tb-verdict.slightly_slow { background: rgba(244,63,94,0.15);   color: #fca5a5; }
+.tb-speed-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px dashed var(--border-color);
+}
+.tb-speed-diff {
+    font-size: 10px;
+    color: var(--text-muted);
+}
 .tb-no-data {
     font-size: 12px;
     color: var(--text-muted);
