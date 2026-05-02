@@ -486,7 +486,17 @@ def get_track_bias_data(base_dir, place):
         
         if not latest_date:
             return {"error": "No recent races found"}
-            
+
+        # 開幕週チェック: 直近14日以内のデータがなければ表示しない
+        from datetime import datetime, timedelta
+        try:
+            y = 2000 + int(latest_date[:2])
+            latest_dt = datetime(y, int(latest_date[2:4]), int(latest_date[4:6]))
+            if (datetime.now() - latest_dt).days > 14:
+                return {"error": "No recent races found"}
+        except Exception:
+            pass
+
         # Get all races for that date (bias: top3, speed: rank1)
         q_races = """
             SELECT rank, track_type, horse_number, corner_4, popularity, total_horses,
