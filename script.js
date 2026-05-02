@@ -60,7 +60,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if(pastDataBtn) pastDataBtn.addEventListener('click', fetchPastData);
     
     const trackBiasBtn = document.getElementById('trackBiasBtn');
-    if(trackBiasBtn) trackBiasBtn.addEventListener('click', fetchTrackBias);
+    if(trackBiasBtn) trackBiasBtn.addEventListener('click', () => fetchTrackBias());
 
     // Auto-fetch on checkbox changes
     const classCheck = document.getElementById('matchClassCheckbox');
@@ -698,21 +698,22 @@ function renderPastDataStats(stats, prefix) {
     if (weightEl && stats.weight) weightEl.innerHTML = buildTrs(stats.weight, ['name', 'win_rate', 'top3_rate'], true);
 }
 
-async function fetchTrackBias() {
-    const rInfo = document.getElementById('raceInfo').textContent;
-    let place = null;
-    const places = ["札幌", "函館", "福島", "新潟", "東京", "中山", "中京", "京都", "阪神", "小倉"];
-    for (let p of places) {
-        if (rInfo.includes(p)) place = p;
-    }
-    
+async function fetchTrackBias(venueOverride) {
+    // venueOverride あり = 自動切替（キャッシュ優先・アラート非表示）
+    // venueOverride なし = ボタン手動クリック
+    const isAuto = !!venueOverride;
+
+    let place = venueOverride || null;
     if (!place) {
-        alert("出馬表を先に解析し、競馬場を特定してください。");
-        return;
+        const rInfo = document.getElementById('raceInfo').textContent;
+        const places = ["札幌", "函館", "福島", "新潟", "東京", "中山", "中京", "京都", "阪神", "小倉"];
+        for (let p of places) { if (rInfo.includes(p)) place = p; }
     }
 
-    // venueOverride がある = レース切替による自動呼出し（キャッシュ優先・エラー非表示）
-    const isAuto = !!venueOverride;
+    if (!place) {
+        if (!isAuto) alert("出馬表を先に解析し、競馬場を特定してください。");
+        return;
+    }
 
     const btn = document.getElementById('trackBiasBtn');
     btn.textContent = "解析中...";
