@@ -422,8 +422,10 @@ def get_past_data(base_dir, place, track_type, distance, condition=None, race_cl
         
     cursor = conn.cursor()
 
+    # race_class 列は DB に存在しないため race_name で Python 側フィルタする
     query = '''
-        SELECT rank, horse_number, corner_4, jockey, time, agari_3f, weight, total_horses
+        SELECT rank, horse_number, corner_4, jockey, time, agari_3f, weight, total_horses,
+               race_name
         FROM races
         WHERE place = ? AND track_type = ? AND distance = ?
     '''
@@ -435,23 +437,13 @@ def get_past_data(base_dir, place, track_type, distance, condition=None, race_cl
             db_condition = "稍"
         elif condition == "不良":
             db_condition = "不"
-            
         query += " AND condition = ?"
         params.append(db_condition)
-
-    if race_class and race_class != "null" and race_class != "":
-        # We need to use LIKE if race_class is partly matched? JRA DB 'race_class' isn't explicitly defined in 1980.csv.
-        # But we preserved 'race_name' column. Maybe race_class wasn't in 1980.csv explicitly mapped to 'race_class'?
-        # 1980.csv does not have a "race_class" column. It has "レース名" (race_name) which contains "ファイＨ･3勝".
-        # For now, let's keep the query as is. If column doesn't exist, we might need a fallback.
-        # But wait, original DB also might just not have returned anything.
-        query += " AND race_class = ?"
-        params.append(race_class)
 
     is_pg = getattr(conn, 'is_pg', False)
     if is_pg:
         query = query.replace('?', '%s')
-        
+
     try:
         cursor.execute(query, tuple(params))
         rows = [dict(row) for row in cursor.fetchall()]
@@ -460,6 +452,13 @@ def get_past_data(base_dir, place, track_type, distance, condition=None, race_cl
         rows = []
     finally:
         conn.close()
+
+    # クラスフィルタを Python 側で適用
+    # フロントエンドは "3勝クラス" 形式、_race_class_from_name は "3勝" を返すため正規化
+    if race_class and race_class not in ("null", ""):
+        rc_norm = race_class.replace('クラス', '')  # "3勝クラス" → "3勝"
+        rows = [r for r in rows
+                if _race_class_from_name(r.get('race_name', '')) in (rc_norm, race_class)]
 
     res = analyze_races(rows)
 
