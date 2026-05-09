@@ -62,6 +62,7 @@
                 <button class="tab-btn" data-target="tab-sire">注目産駒</button>
                 <button class="tab-btn" data-target="tab-past-data">過去データ分析</button>
                 <button class="tab-btn" data-target="tab-ai">AI予想</button>
+                <button class="tab-btn" data-target="tab-win5">WIN5予想</button>
             </div>
 
             <div class="tab-content active" id="tab-horses">
@@ -249,6 +250,32 @@
                     <span id="aiStatus"></span>
                 </div>
                 <pre class="log-area" id="aiResult">事前にGEMINI_API_KEY環境変数が必要です。またはAPIリクエスト時にキーを含めてください。</pre>
+            </div>
+
+            <div class="tab-content" id="tab-win5">
+                <div class="win5-header">
+                    <button class="primary-btn" id="win5LoadBtn" onclick="loadWin5Races()">WIN5対象レースを取得</button>
+                    <span id="win5LoadStatus" class="win5-status-text"></span>
+                </div>
+
+                <div id="win5RaceSection" style="display:none">
+                    <div id="win5DateLabel" class="win5-date-label"></div>
+                    <div id="win5RaceGrid" class="win5-race-grid"></div>
+
+                    <div class="win5-predict-bar">
+                        <label class="win5-label">点数上限</label>
+                        <div class="win5-points-group">
+                            <label class="win5-radio-label"><input type="radio" name="win5pts" value="50"> 50点</label>
+                            <label class="win5-radio-label"><input type="radio" name="win5pts" value="100" checked> 100点</label>
+                            <label class="win5-radio-label"><input type="radio" name="win5pts" value="150"> 150点</label>
+                        </div>
+                        <input type="password" id="win5Password" placeholder="パスワード" class="ai-password-input">
+                        <button class="primary-btn highlight" id="win5PredictBtn" onclick="runWin5Prediction()">AI予想を実行</button>
+                        <span id="win5PredictStatus" class="win5-status-text"></span>
+                    </div>
+
+                    <pre class="log-area" id="win5Result" style="display:none"></pre>
+                </div>
             </div>
         </main>
     </div>

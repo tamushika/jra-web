@@ -587,6 +587,105 @@ async function runAiPrediction() {
     }
 }
 
+// ═══════════════════════════════════════════
+// WIN5 予想機能
+// ═══════════════════════════════════════════
+
+let win5Data = null;
+
+async function loadWin5Races() {
+    const btn = document.getElementById('win5LoadBtn');
+    const status = document.getElementById('win5LoadStatus');
+    btn.disabled = true;
+    status.textContent = '取得中...';
+
+    try {
+        const res = await fetch('/api/win5_races');
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || '取得失敗');
+
+        win5Data = data;
+        document.getElementById('win5DateLabel').textContent = `📅 ${data.date} WIN5対象レース`;
+        renderWin5Grid(data.races);
+        document.getElementById('win5RaceSection').style.display = 'block';
+        document.getElementById('win5Result').style.display = 'none';
+        status.textContent = '取得完了';
+    } catch(e) {
+        status.textContent = 'エラー: ' + e.message;
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function renderWin5Grid(races) {
+    const grid = document.getElementById('win5RaceGrid');
+    grid.innerHTML = races.map((race, i) => {
+        const hasUrl = race.url ? '✅' : '⚠️';
+        const urlInput = race.url ? '' :
+            `<input id="win5url${i}" class="win5-url-input"
+                    placeholder="accessD URLを貼り付け（例: https://www.jra.go.jp/JRADB/accessD.html?CNAME=...）">`;
+        return `
+        <div class="win5-race-card">
+          <div class="win5-race-no">第${i + 1}レース</div>
+          <div class="win5-race-venue">${race.venue} ${race.race_num}R</div>
+          <div class="win5-race-time">${race.time} 発走</div>
+          <div class="win5-url-status">${hasUrl} ${race.url ? 'URL取得済み' : 'URL手動入力'}</div>
+          ${urlInput}
+        </div>`;
+    }).join('');
+}
+
+async function runWin5Prediction() {
+    if (!win5Data) { alert('先にWIN5レースを取得してください'); return; }
+
+    const pwd = document.getElementById('win5Password').value;
+    if (!pwd) { alert('パスワードを入力してください'); return; }
+
+    const ptRadio = document.querySelector('input[name="win5pts"]:checked');
+    const pointLimit = ptRadio ? parseInt(ptRadio.value) : 100;
+
+    // URL収集（自動取得 or 手動入力）
+    const raceUrls = win5Data.races.map((race, i) => {
+        if (race.url) return race.url;
+        const inp = document.getElementById(`win5url${i}`);
+        return inp ? inp.value.trim() : '';
+    });
+
+    const btn = document.getElementById('win5PredictBtn');
+    const status = document.getElementById('win5PredictStatus');
+    const resultEl = document.getElementById('win5Result');
+
+    btn.disabled = true;
+    status.textContent = '各レースのデータを取得中... (しばらくお待ちください)';
+    resultEl.style.display = 'none';
+
+    try {
+        const res = await fetch('/api/win5_predict', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                race_urls: raceUrls,
+                races_info: win5Data.races,
+                point_limit: pointLimit,
+                date: win5Data.date,
+                password: pwd,
+            }),
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || 'AI予想失敗');
+
+        resultEl.textContent = data.result;
+        resultEl.style.display = 'block';
+        status.textContent = '完了しました';
+    } catch(e) {
+        resultEl.textContent = 'エラーが発生しました:\n' + e.message;
+        resultEl.style.display = 'block';
+        status.textContent = 'エラー';
+    } finally {
+        btn.disabled = false;
+    }
+}
+
 function showLoading(text) {
     document.getElementById('loadingOverlay').classList.remove('hidden');
     if(text) document.getElementById('loadingText').textContent = text;

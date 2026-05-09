@@ -668,5 +668,257 @@ def db_test():
         result["traceback"] = traceback.format_exc()
     return jsonify(result)
 
+# ─────────────────────────────────────────
+# WIN5 予想機能
+# ─────────────────────────────────────────
+
+def _scrape_win5_target():
+    """WIN5対象レース一覧ページから直近のレース情報を取得"""
+    url = 'https://www.jra.go.jp/kouza/win5/info/racelist.html'
+    resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+    resp.encoding = 'shift_jis'
+    soup = BeautifulSoup(resp.text, 'html.parser')
+
+    tables = soup.find_all('table')
+    target_table = tables[1] if len(tables) > 1 else None
+    if not target_table:
+        return None, "WIN5レース表が見つかりません"
+
+    today = datetime.now()
+    for tr in target_table.find_all('tr')[1:]:
+        cells = [td.get_text(' ', strip=True) for td in tr.find_all(['td', 'th'])]
+        # 列構成: 月日 | 発売締切時刻 | 1レース | 2レース | 3レース | 4レース | 5レース
+        if len(cells) < 7:
+            continue
+        m = re.search(r'(\d+)月(\d+)日', cells[0])
+        if not m:
+            continue
+        month, day = int(m.group(1)), int(m.group(2))
+        # 年は常に今年（WIN5ページは当年のみ掲載）
+        race_date = datetime(today.year, month, day)
+        if race_date.date() < today.date():
+            continue
+
+        races = []
+        for i in range(5):  # 5レース: cells[2]〜cells[6]
+            cell = cells[i + 2] if i + 2 < len(cells) else ''
+            vm = re.search(r'(中山|東京|京都|阪神|中京|札幌|函館|福島|新潟|小倉)', cell)
+            rm = re.search(r'(\d+)R', cell)
+            tm = re.search(r'(\d+)時(\d+)分', cell)
+            if vm and rm:
+                races.append({
+                    'idx': i,
+                    'venue': vm.group(1),
+                    'race_num': int(rm.group(1)),
+                    'time': f"{tm.group(1)}:{tm.group(2)}" if tm else '',
+                    'label': cell.strip(),
+                    'url': '',
+                })
+        return {'date': f"{month}月{day}日", 'races': races}, None
+
+    return None, "近日中のWIN5対象レースが見つかりません"
+
+
+def _find_win5_urls(races):
+    """JRAトップページから各WIN5レースのaccessD URLを探す"""
+    results = {}
+    try:
+        res = requests.get('https://www.jra.go.jp/', headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        res.encoding = 'cp932'
+        top_soup = BeautifulSoup(res.text, 'html.parser')
+    except Exception:
+        return results
+
+    # 会場別シードURL収集
+    venue_seeds = {}
+    for a in top_soup.find_all('a', href=True):
+        href = a['href']
+        if ('accessS.html' not in href and 'accessD.html' not in href) or 'CNAME=' not in href:
+            continue
+        vm = re.search(r'CNAME=pw\d+[sd]de\d{2}(\d{2})', href)
+        if not vm:
+            continue
+        venue = VENUE_MAP.get(vm.group(1))
+        if venue:
+            full = ("https://www.jra.go.jp" + href) if href.startswith('/') else href
+            venue_seeds.setdefault(venue, []).append(full)
+
+    for race in races:
+        venue, rnum = race['venue'], race['race_num']
+        seeds = venue_seeds.get(venue, [])
+        for seed in seeds[:2]:
+            try:
+                sr = requests.get(seed, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+                sr.encoding = 'cp932'
+                ssoup = BeautifulSoup(sr.text, 'html.parser')
+                for a in ssoup.find_all('a', href=True):
+                    href = a['href']
+                    if 'accessD.html' not in href:
+                        continue
+                    m = re.search(r'CNAME=pw\d+dde\d+(\d{2})\d{8}', href)
+                    if m and int(m.group(1)) == rnum:
+                        results[race['idx']] = urljoin('https://www.jra.go.jp/JRADB/', href)
+                        break
+                if race['idx'] in results:
+                    break
+            except Exception:
+                continue
+    return results
+
+
+def _scrape_race_for_win5(idx, url, fallback_info):
+    """1レース分のデータを取得（WIN5用簡易版）"""
+    base_dir = get_base_dir()
+    try:
+        if not url:
+            return idx, None, 'URLなし'
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        res.encoding = 'shift_jis'
+        soup = BeautifulSoup(res.text, 'html.parser')
+        page_text = soup.get_text()
+
+        vc = re.search(r'CNAME=pw\d+dde\d{2}(\d{2})', url)
+        venue = VENUE_MAP.get(vc.group(1) if vc else '', fallback_info.get('venue', '不明'))
+        dist_m = re.search(r'(\d,?\d{2,3})メートル', page_text)
+        dist_val = int(dist_m.group(1).replace(',', '')) if dist_m else 0
+        race_type = 'ダート' if 'ダート' in page_text else '芝'
+        rn_tag = soup.find(class_='race_name')
+        race_name = rn_tag.get_text(strip=True) if rn_tag else ''
+
+        tbl = next((t for t in soup.find_all('table') if '馬名' in t.get_text()), None)
+        rows = [r for r in tbl.find_all('tr') if len(r.find_all(['td', 'th'])) >= 5
+                and '馬名' not in r.get_text()] if tbl else []
+        horses = []
+        for row in rows:
+            cells = row.find_all(['td', 'th'])
+            try:
+                off = 1 if '着' in cells[0].get_text() else 0
+                num = cells[1 + off].get_text(strip=True)
+                h_text = cells[2 + off].get_text(' ', strip=True).split()
+                name = h_text[0] if h_text else '-'
+                jr = cells[3 + off].get_text(' ', strip=True).split()
+                sex_age = jr[0] if jr else '-'
+                jockey = ' '.join(jr[2:]) if len(jr) > 2 else '-'
+                odds = '-'
+                for cell in cells:
+                    od = cell.find('div', class_='odds_line')
+                    if od and od.find('strong'):
+                        odds = od.find('strong').get_text(strip=True)
+                        break
+                horses.append({'num': num, 'name': name, 'sex_age': sex_age,
+                               'jockey': jockey, 'odds': odds})
+            except Exception:
+                continue
+
+        from past_data_service import get_track_bias_data
+        bias = get_track_bias_data(base_dir, venue)
+        return idx, {'venue': venue, 'race_type': race_type, 'distance': dist_val,
+                     'race_name': race_name, 'horses': horses, 'bias': bias}, None
+    except Exception as e:
+        return idx, None, str(e)
+
+
+@app.route('/api/win5_races', methods=['GET'])
+def get_win5_races():
+    try:
+        data, err = _scrape_win5_target()
+        if err:
+            return jsonify({'error': err}), 404
+        try:
+            urls = _find_win5_urls(data['races'])
+            for race in data['races']:
+                race['url'] = urls.get(race['idx'], '')
+        except Exception:
+            pass
+        return jsonify({'success': True, **data})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/win5_predict', methods=['POST'])
+def win5_predict():
+    req = request.json or {}
+    if req.get('password') != 'oso18':
+        return jsonify({'error': 'パスワードが間違っています'}), 401
+
+    point_limit = int(req.get('point_limit', 100))
+    race_urls   = req.get('race_urls', [])
+    races_info  = req.get('races_info', [])
+    win5_date   = req.get('date', '')
+    api_key     = req.get('api_key') or os.environ.get('GEMINI_API_KEY')
+
+    if not api_key:
+        return jsonify({'error': 'GEMINI_API_KEY が設定されていません'}), 400
+    if len(race_urls) != 5:
+        return jsonify({'error': '5レースのURLが必要です'}), 400
+
+    # 5レース並列スクレイピング
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+        futs = [ex.submit(_scrape_race_for_win5, i, race_urls[i],
+                          races_info[i] if i < len(races_info) else {})
+                for i in range(5)]
+        results = sorted([f.result() for f in futs], key=lambda x: x[0])
+
+    # プロンプト構築
+    prompt = (
+        f"あなたはプロの競馬予想家です。WIN5（5レース全馬連続的中）の予想を行ってください。\n\n"
+        f"【重要な制約】\n"
+        f"合計点数（各レースの選択頭数の積）が {point_limit}点以内 になるように選択してください。\n"
+        f"例: [2,3,2,2,2]頭選択 → 2×3×2×2×2 = 48点\n\n"
+        f"対象日: {win5_date} WIN5\n\n"
+    )
+
+    for idx, data, err in results:
+        info = races_info[idx] if idx < len(races_info) else {}
+        prompt += f"═══ WIN5 第{idx+1}レース: {info.get('label', '')} ═══\n"
+        if err or not data:
+            prompt += f"  ※データ取得失敗 ({err})\n\n"
+            continue
+        prompt += (f"  会場: {data['venue']} / コース: {data['race_type']}{data['distance']}m"
+                   f" / レース名: {data['race_name']}\n")
+        if data['bias'].get('success'):
+            ev = data['bias'].get('evaluations', {}).get(data['race_type'], {})
+            ts = data['bias'].get('track_speed', {}).get(data['race_type'], {})
+            if ev:
+                prompt += f"  バイアス: 脚質={ev.get('kyaku','?')} / 枠={ev.get('waku','?')}\n"
+            if ts:
+                prompt += f"  馬場速度: {ts.get('label','?')}\n"
+        prompt += "  出走馬:\n"
+        for h in data['horses']:
+            prompt += f"    {h['num']}番 {h['name']} オッズ:{h['odds']} {h['sex_age']} 騎手:{h['jockey']}\n"
+        prompt += "\n"
+
+    prompt += (
+        f"以下の形式で回答してください:\n\n"
+        f"【各レース分析】\n"
+        f"第1〜5レースそれぞれについて: 本命・対抗・切り馬と理由（血統/馬場適性/枠/展開）\n\n"
+        f"【WIN5予想（合計{point_limit}点以内）】\n"
+        f"第1レース選択馬: (例) 3, 7\n"
+        f"第2レース選択馬: \n"
+        f"第3レース選択馬: \n"
+        f"第4レース選択馬: \n"
+        f"第5レース選択馬: \n"
+        f"合計点数: X点 (X×X×X×X×X)\n\n"
+        f"点数の割り振り方針（自信度に応じた頭数配分）も説明してください。"
+    )
+
+    try:
+        genai.configure(api_key=api_key)
+        safety = [
+            {'category': c, 'threshold': 'BLOCK_NONE'}
+            for c in ['HARM_CATEGORY_HARASSMENT', 'HARM_CATEGORY_HATE_SPEECH',
+                      'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'HARM_CATEGORY_DANGEROUS_CONTENT']
+        ]
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        response = model.generate_content(prompt, safety_settings=safety)
+        try:
+            result_text = response.text
+        except ValueError:
+            result_text = 'AIから有効な回答が得られませんでした'
+        return jsonify({'success': True, 'result': result_text})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     app.run(port=5000, debug=True)
