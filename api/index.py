@@ -264,12 +264,30 @@ def fetch_races_for_venue(text, url):
     try:
         res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
         soup = BeautifulSoup(res.text, "html.parser")
+
+        # text 例 "5/9(土) 2回東京5日" から期待日付 "20260509" を抽出
+        # → 同一ページに翌日リンクが混在しても正しい日付のURLのみ保持する
+        expected_date = None
+        dm = re.search(r'(\d+)/(\d+)', text)
+        if dm:
+            year = datetime.now().year
+            expected_date = f"{year}{int(dm.group(1)):02d}{int(dm.group(2)):02d}"
+
         races_map = {}
         for a in soup.find_all("a", href=True):
-            if "CNAME=" in a['href']:
-                m = re.search(r'CNAME=pw\d+dde\d+(\d{2})\d{8}', a['href'])
-                if m and 1 <= int(m.group(1)) <= 12:
-                    races_map[int(m.group(1))] = urljoin("https://www.jra.go.jp/JRADB/", a['href'])
+            href = a['href']
+            if "CNAME=" not in href:
+                continue
+            rn_m = re.search(r'CNAME=pw\d+dde\d+(\d{2})\d{8}', href)
+            if not rn_m or not (1 <= int(rn_m.group(1)) <= 12):
+                continue
+            # 日付フィルタ: CNAMEの末尾8桁が期待日付と一致するURLのみ採用
+            if expected_date:
+                date_m = re.search(r'(\d{8})/[0-9A-Fa-f]+$', href)
+                if date_m and date_m.group(1) != expected_date:
+                    continue
+            races_map[int(rn_m.group(1))] = urljoin("https://www.jra.go.jp/JRADB/", href)
+
         races = [{"r": k, "url": v} for k, v in sorted(races_map.items())]
         return {"text": text, "url": url, "races": races}
     except:

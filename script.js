@@ -597,7 +597,8 @@ let win5Data = null;
 
 /**
  * マトリクスデータから WIN5 対象レースの accessD URL を探す。
- * マトリクスの text 例: "5/9(土) 2回東京5日" → 会場名と日付で照合
+ * マトリクスの text 例: "5/9(土) 2回東京5日" → 会場名と日付で照合。
+ * さらに URL の CNAME に埋め込まれた日付も検証して翌日レースURLの混入を防ぐ。
  */
 function findUrlFromMatrix(venue, raceNum, win5DateStr) {
     if (!globalMatrixData) return '';
@@ -605,13 +606,21 @@ function findUrlFromMatrix(venue, raceNum, win5DateStr) {
     if (!dm) return '';
     const dateShort = `${parseInt(dm[1])}/${parseInt(dm[2])}`; // "5/9"
 
+    // URL内のCNAME日付と比較するための "YYYYMMDD" 文字列を生成
+    const year = new Date().getFullYear();
+    const expectedDate = `${year}${String(parseInt(dm[1])).padStart(2,'0')}${String(parseInt(dm[2])).padStart(2,'0')}`; // "20260509"
+
     for (const venueData of globalMatrixData) {
         const text = venueData.text || '';
-        // 会場名と日付が両方一致するエントリを探す
+        // ラベルの日付・会場名で一次絞り込み
         if (!text.includes(venue)) continue;
         if (!text.startsWith(dateShort)) continue;
         const race = (venueData.races || []).find(r => r.r === raceNum);
-        if (race && race.url) return race.url;
+        if (!race || !race.url) continue;
+        // URLのCNAMEに含まれる日付を二重チェック（同一ページに翌日リンクが混在する場合の対策）
+        const urlDateMatch = race.url.match(/(\d{8})\/[0-9A-Fa-f]+/);
+        if (urlDateMatch && urlDateMatch[1] !== expectedDate) continue;
+        return race.url;
     }
     return '';
 }
