@@ -743,8 +743,11 @@ def _find_win5_urls(races):
             full = ("https://www.jra.go.jp" + href) if href.startswith('/') else href
             venue_seeds.setdefault(venue, []).append(full)
 
+    REVERSE_VENUE = {v: k for k, v in VENUE_MAP.items()}
+
     for race in races:
         venue, rnum = race['venue'], race['race_num']
+        expected_vcode = REVERSE_VENUE.get(venue)
         seeds = venue_seeds.get(venue, [])
         for seed in seeds[:2]:
             try:
@@ -755,8 +758,17 @@ def _find_win5_urls(races):
                     href = a['href']
                     if 'accessD.html' not in href:
                         continue
-                    m = re.search(r'CNAME=pw\d+dde\d+(\d{2})\d{8}', href)
-                    if m and int(m.group(1)) == rnum:
+                    # 会場コードとレース番号の両方を検証
+                    vc_m = re.search(r'CNAME=pw\d+dde\d{2}(\d{2})', href)
+                    rn_m = re.search(r'CNAME=pw\d+dde\d+(\d{2})\d{8}', href)
+                    if not (vc_m and rn_m):
+                        continue
+                    href_vcode = vc_m.group(1)
+                    href_rnum  = int(rn_m.group(1))
+                    # 会場コードが一致しない場合はスキップ（別会場URLの誤マッチを防ぐ）
+                    if expected_vcode and href_vcode != expected_vcode:
+                        continue
+                    if href_rnum == rnum:
                         results[race['idx']] = urljoin('https://www.jra.go.jp/JRADB/', href)
                         break
                 if race['idx'] in results:
@@ -778,7 +790,12 @@ def _scrape_race_for_win5(idx, url, fallback_info):
         page_text = soup.get_text()
 
         vc = re.search(r'CNAME=pw\d+dde\d{2}(\d{2})', url)
-        venue = VENUE_MAP.get(vc.group(1) if vc else '', fallback_info.get('venue', '不明'))
+        url_venue = VENUE_MAP.get(vc.group(1) if vc else '', '')
+        expected_venue = fallback_info.get('venue', '')
+        # URLの会場コードと期待する会場が不一致の場合は誤URLとして扱う
+        if url_venue and expected_venue and url_venue != expected_venue:
+            return idx, None, f'会場不一致: URLは{url_venue}、期待は{expected_venue}'
+        venue = url_venue or expected_venue or '不明'
         dist_m = re.search(r'(\d,?\d{2,3})メートル', page_text)
         dist_val = int(dist_m.group(1).replace(',', '')) if dist_m else 0
         race_type = 'ダート' if 'ダート' in page_text else '芝'
