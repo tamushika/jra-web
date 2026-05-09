@@ -727,12 +727,13 @@ def _scrape_win5_target():
                     'label': cell.strip(),
                     'url': '',
                 })
-        return {'date': f"{month}月{day}日", 'races': races}, None
+        date_yyyymmdd = f"{today.year}{month:02d}{day:02d}"
+        return {'date': f"{month}月{day}日", 'date_yyyymmdd': date_yyyymmdd, 'races': races}, None
 
     return None, "近日中のWIN5対象レースが見つかりません"
 
 
-def _find_win5_urls(races):
+def _find_win5_urls(races, target_date_yyyymmdd=''):
     """JRAトップページから各WIN5レースのaccessD URLを探す"""
     results = {}
     try:
@@ -771,15 +772,20 @@ def _find_win5_urls(races):
                     href = a['href']
                     if 'accessD.html' not in href:
                         continue
-                    # 会場コードとレース番号の両方を検証
-                    vc_m = re.search(r'CNAME=pw\d+dde\d{2}(\d{2})', href)
-                    rn_m = re.search(r'CNAME=pw\d+dde\d+(\d{2})\d{8}', href)
+                    # 会場コード・レース番号・日付の3点を検証
+                    vc_m   = re.search(r'CNAME=pw\d+dde\d{2}(\d{2})', href)
+                    rn_m   = re.search(r'CNAME=pw\d+dde\d+(\d{2})\d{8}', href)
+                    date_m = re.search(r'(\d{8})/[0-9A-Fa-f]+$', href)
                     if not (vc_m and rn_m):
                         continue
                     href_vcode = vc_m.group(1)
                     href_rnum  = int(rn_m.group(1))
-                    # 会場コードが一致しない場合はスキップ（別会場URLの誤マッチを防ぐ）
+                    href_date  = date_m.group(1) if date_m else ''
+                    # 会場コード不一致はスキップ
                     if expected_vcode and href_vcode != expected_vcode:
+                        continue
+                    # 日付不一致はスキップ（5/9のWIN5に5/10のURLが混入するのを防ぐ）
+                    if target_date_yyyymmdd and href_date and href_date != target_date_yyyymmdd:
                         continue
                     if href_rnum == rnum:
                         results[race['idx']] = urljoin('https://www.jra.go.jp/JRADB/', href)
@@ -855,7 +861,7 @@ def get_win5_races():
         if err:
             return jsonify({'error': err}), 404
         try:
-            urls = _find_win5_urls(data['races'])
+            urls = _find_win5_urls(data['races'], data.get('date_yyyymmdd', ''))
             for race in data['races']:
                 race['url'] = urls.get(race['idx'], '')
         except Exception:
