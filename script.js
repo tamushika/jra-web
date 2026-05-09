@@ -3,6 +3,7 @@ let raceCache = {}; // ◎がいるレースのハッシュマップ
 let apiCache = {}; // { URL: { mode: "詳細", data: {...} } }
 let currentRaceContext = { venue: "", track_type: "", distance: 0, condition: "", race_class: "" };
 let trackBiasCache = {}; // { 競馬場名: APIレスポンス }
+let globalMatrixData = null; // マトリクス表示用データ
 
 document.addEventListener('DOMContentLoaded', () => {
     // Tab Switching
@@ -135,6 +136,7 @@ function applyScrapeData(data, url, mode) {
     renderHorsesTable(globalHorsesData);
 
     raceCache[url] = data.has_double_circle;
+    globalMatrixData = data.matrix_data || null; // WIN5照合用に保存
     renderMatrix(data.matrix_data, data.venue);
 
     // 競馬場が変わったときにトラックバイアスを自動切替
@@ -593,6 +595,27 @@ async function runAiPrediction() {
 
 let win5Data = null;
 
+/**
+ * マトリクスデータから WIN5 対象レースの accessD URL を探す。
+ * マトリクスの text 例: "5/9(土) 2回東京5日" → 会場名と日付で照合
+ */
+function findUrlFromMatrix(venue, raceNum, win5DateStr) {
+    if (!globalMatrixData) return '';
+    const dm = win5DateStr.match(/(\d+)月(\d+)日/);
+    if (!dm) return '';
+    const dateShort = `${parseInt(dm[1])}/${parseInt(dm[2])}`; // "5/9"
+
+    for (const venueData of globalMatrixData) {
+        const text = venueData.text || '';
+        // 会場名と日付が両方一致するエントリを探す
+        if (!text.includes(venue)) continue;
+        if (!text.startsWith(dateShort)) continue;
+        const race = (venueData.races || []).find(r => r.r === raceNum);
+        if (race && race.url) return race.url;
+    }
+    return '';
+}
+
 async function loadWin5Races() {
     const btn = document.getElementById('win5LoadBtn');
     const status = document.getElementById('win5LoadStatus');
@@ -604,6 +627,13 @@ async function loadWin5Races() {
         const data = await res.json();
         if (!res.ok || data.error) throw new Error(data.error || '取得失敗');
 
+        // マトリクスで解析済みのレースがあればURLを自動補完
+        for (const race of data.races) {
+            if (!race.url) {
+                const matrixUrl = findUrlFromMatrix(race.venue, race.race_num, data.date);
+                if (matrixUrl) race.url = matrixUrl;
+            }
+        }
         win5Data = data;
         document.getElementById('win5DateLabel').textContent = `📅 ${data.date} WIN5対象レース`;
         renderWin5Grid(data.races);
