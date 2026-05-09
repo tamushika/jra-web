@@ -545,28 +545,41 @@ def latest_url():
         # Javascript getDay(): 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
         if day in [1, 2, 3, 4]:
             return jsonify({"error": "出馬表が公開されていないため、取得に失敗しました。"}), 400
-        else:
-            # 金・土・日の場合、JRAの今週の重賞ページから出馬表を探す
-            res = requests.get('https://www.jra.go.jp/keiba/thisweek/', headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-            res.encoding = 'shift_jis'
-            soup = BeautifulSoup(res.text, "html.parser")
-            
-            # /keiba/thisweek/YYYY/MMDD_X/horse.html のような重賞ページを探す
-            horse_link = soup.find("a", href=re.compile(r'/keiba/thisweek/\d{4}/\d{4}_\d+/horse\.html'))
-            if horse_link:
-                horse_url = urljoin("https://www.jra.go.jp/", horse_link['href'])
-                r2 = requests.get(horse_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-                r2.encoding = 'shift_jis'
-                soup2 = BeautifulSoup(r2.text, "html.parser")
-                a = soup2.find("a", href=re.compile(r'CNAME=pw01dde'))
-                if a: 
-                    return jsonify({"url": urljoin("https://www.jra.go.jp/JRADB/", a['href'])})
-            
-            # 万が一horse.htmlが見つからなかった場合のフォールバック（トップから直接アクセスDを探す）
-            for a in soup.find_all("a", href=True):
-                if 'accessD.html' in a['href']:
-                    return jsonify({"url": urljoin("https://www.jra.go.jp/", a['href'])})
-                
+
+        hdrs = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+            "Referer": "https://www.jra.go.jp/",
+        }
+
+        def _find_access_d(soup_obj):
+            """soup から accessD リンクを返す"""
+            for a in soup_obj.find_all("a", href=True):
+                href = a["href"]
+                if "accessD.html" in href and "CNAME=" in href:
+                    return urljoin("https://www.jra.go.jp/", href)
+            return None
+
+        # 候補ページを順番に試す
+        candidate_urls = [
+            "https://www.jra.go.jp/",
+            "https://www.jra.go.jp/keiba/thisweek/",
+        ]
+        for candidate in candidate_urls:
+            try:
+                res = requests.get(candidate, headers=hdrs, timeout=10)
+                res.encoding = "cp932"
+                soup = BeautifulSoup(res.text, "html.parser")
+                url = _find_access_d(soup)
+                if url:
+                    return jsonify({"url": url})
+            except Exception:
+                continue
+
         return jsonify({"error": "最新のURLが見つかりませんでした。"}), 404
     except Exception as e:
         return jsonify({"error": f"URL取得エラー: {str(e)}"}), 500
