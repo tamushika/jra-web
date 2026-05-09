@@ -84,6 +84,14 @@ def _compute_track_speed(winner_rows, std_times):
 def get_db_connection(base_dir):
     global _last_db_error
     _last_db_error = None
+
+    try:
+        from dotenv import load_dotenv
+        env_path = os.path.join(os.path.dirname(base_dir), '.env')
+        load_dotenv(env_path)
+    except ImportError:
+        pass
+
     # Check for DATABASE_URL first
     db_url = os.environ.get('DATABASE_URL')
     if db_url:
@@ -423,13 +431,20 @@ def get_past_data(base_dir, place, track_type, distance, condition=None, race_cl
     cursor = conn.cursor()
 
     # race_class 列は DB に存在しないため race_name で Python 側フィルタする
-    query = '''
-        SELECT rank, horse_number, corner_4, jockey, time, agari_3f, weight, total_horses,
-               race_name
-        FROM races
-        WHERE place = ? AND track_type = ? AND distance = ?
-    '''
-    params = [place, track_type, distance]
+    # track_type は旧データが 'ダ'、新データが 'ダート' で混在しているため両方に対応
+    is_pg = getattr(conn, 'is_pg', False)
+
+    where_parts = ["place = ?"]
+    params: list = [place]
+
+    if track_type in ('ダート', 'ダ'):
+        where_parts.append("(track_type = 'ダート' OR track_type = 'ダ')")
+    else:
+        where_parts.append("track_type = ?")
+        params.append(track_type)
+
+    where_parts.append("distance = ?")
+    params.append(distance)
 
     if condition and condition != "null" and condition != "":
         db_condition = condition
@@ -437,10 +452,15 @@ def get_past_data(base_dir, place, track_type, distance, condition=None, race_cl
             db_condition = "稍"
         elif condition == "不良":
             db_condition = "不"
-        query += " AND condition = ?"
+        where_parts.append("condition = ?")
         params.append(db_condition)
 
-    is_pg = getattr(conn, 'is_pg', False)
+    query = (
+        "SELECT rank, horse_number, corner_4, jockey, time, agari_3f, weight, total_horses,"
+        " race_name FROM races WHERE "
+        + " AND ".join(where_parts)
+    )
+
     if is_pg:
         query = query.replace('?', '%s')
 
