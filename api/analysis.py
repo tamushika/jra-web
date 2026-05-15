@@ -371,8 +371,8 @@ def check_condition(cond, h, r, sire_lineage, mawari_map):
                 elif "以内" not in cond and val != target: return False
             return True
 
-        # 8. 負担重量・減量 (実判定ロジックに修正)
-        if "負担重量" in cond or "減量" in cond or "軽量" in cond:
+        # 8. 負担重量・減量・斤量 (実判定ロジックに修正)
+        if "負担重量" in cond or "減量" in cond or "軽量" in cond or "斤量" in cond:
             # 騎手名（h['jock']）に含まれる減量記号（▲△☆★◇）の有無をチェック
             reduction_symbols = ["▲", "△", "☆", "★", "◇"]
             # 騎手名に記号がいずれか含まれているか
@@ -385,7 +385,22 @@ def check_condition(cond, h, r, sire_lineage, mawari_map):
                 # 「減量有り」が条件の場合、記号がある馬だけを True にする
                 return has_reduction
                 
-            return True # それ以外の条件（単に「負担重量」のみ等）は現状スルー
+            # 斤量の数値比較ロジック
+            actual_kg_str = str(h.get('kg', "0"))
+            try:
+                actual_kg = float(actual_kg_str)
+            except ValueError:
+                actual_kg = 0.0
+                
+            target_m = re.search(r'(\d+(?:\.\d+)?)', cond)
+            if target_m:
+                target_kg = float(target_m.group(1))
+                if "以上" in cond and actual_kg < target_kg: return False
+                if ("以下" in cond or "以内" in cond) and actual_kg > target_kg: return False
+                if "未満" in cond and actual_kg >= target_kg: return False
+                if "以上" not in cond and "以下" not in cond and "以内" not in cond and "未満" not in cond and actual_kg != target_kg: return False
+                
+            return True # それ以外の条件はスルー
 
         # 9. 馬体重 (厳密比較)
         if "馬体重" in cond:
