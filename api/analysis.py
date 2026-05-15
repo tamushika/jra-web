@@ -421,6 +421,8 @@ def check_condition(cond, h, r, sire_lineage, mawari_map):
                 t, a = int(target_m.group(1)), int(actual_m.group(1))
                 if "以上" in cond and a < t: return False
                 if "以下" in cond and a > t: return False
+                # 「以上」「以下」なし → 完全一致が必要（例:「馬齢が2歳」= 2歳のみ）
+                if "以上" not in cond and "以下" not in cond and t != a: return False
             return True
         if "所属" in cond or "関東馬" in cond or "関西馬" in cond:
             if ("美浦" in cond or "関東" in cond) and h['affi'] != "美浦": return False
