@@ -519,7 +519,7 @@ def get_track_bias_data(base_dir, place):
         # Get all races for that date (bias: top3, speed: rank1)
         q_races = """
             SELECT rank, track_type, horse_number, corner_4, popularity, total_horses,
-                   time, distance, race_name
+                   time, distance, race_name, kaisai
             FROM races
             WHERE place = ? AND date = ?
         """
@@ -531,6 +531,11 @@ def get_track_bias_data(base_dir, place):
             try: return float(v)
             except: return None
 
+        def _extract_race_num(kaisai_str):
+            """kaisai から 'Nレース' の番号を抽出。取得できなければ None"""
+            m = re.search(r'(\d+)レース', str(kaisai_str or ''))
+            return int(m.group(1)) if m else None
+
         top3_rows   = [r for r in rows if (_to_float(r.get('rank')) or 99) <= 3]
         winner_rows = [r for r in rows if (_to_float(r.get('rank')) or 99) == 1]
 
@@ -541,28 +546,31 @@ def get_track_bias_data(base_dir, place):
         # Analyze Bias split by track_type (芝 vs ダート)
         bias_results = {"芝": {"nige": 0, "sashi": 0, "in": 0, "out": 0, "total": 0},
                         "ダート": {"nige": 0, "sashi": 0, "in": 0, "out": 0, "total": 0}}
-        
+
+        # レース別詳細記録: 各馬の加重スコアとその内訳を保持
+        race_details = []
+
         import re
         for r in top3_rows:
             tt = r.get('track_type')
             if tt not in bias_results: continue
-            
+
             # Base weight is 1. If it was unpopular but ran top 3, increase the weight!
             pop = r.get('popularity')
             rank = r.get('rank')
-            try: pop = float(pop) 
+            try: pop = float(pop)
             except: pop = 1
             try: rank = float(rank)
             except: rank = 1
-            
+
             pop_diff = max(0, pop - rank)
-            # If standard performance (1st pop, 1st place -> weight 1)
-            # If 6th pop, 1st place -> pop_diff=5 -> weight 1+5=6 (very strong evidence of bias)
             weight = 1 + pop_diff
-            
+
             bias_results[tt]["total"] += 1
-            
-            # Analyze Kyakushitsu
+
+            # 脚質判定
+            nige_pt = sashi_pt = 0
+            kyaku_label = "不明"
             c4 = r.get('corner_4')
             if c4 and str(c4) != 'nan':
                 m = re.search(r'\d+', str(c4))
@@ -570,18 +578,50 @@ def get_track_bias_data(base_dir, place):
                     pos = int(m.group())
                     if pos <= 4:
                         bias_results[tt]["nige"] += weight
+                        nige_pt = weight
+                        kyaku_label = "逃げ/先行"
                     else:
                         bias_results[tt]["sashi"] += weight
-                        
-            # Analyze Waku
+                        sashi_pt = weight
+                        kyaku_label = "差し/追込"
+
+            # 枠番判定
+            in_pt = out_pt = 0
+            waku_label = "不明"
             h_num = r.get('horse_number')
             t_horses = r.get('total_horses')
             waku = calculate_waku(h_num, t_horses)
             if waku:
                 if waku <= 4:
                     bias_results[tt]["in"] += weight
+                    in_pt = weight
+                    waku_label = f"内枠({waku}枠)"
                 elif waku >= 5:
                     bias_results[tt]["out"] += weight
+                    out_pt = weight
+                    waku_label = f"外枠({waku}枠)"
+
+            # レース別詳細を記録
+            race_num = _extract_race_num(r.get('kaisai', ''))
+            race_details.append({
+                "race_num":   race_num,
+                "race_name":  r.get('race_name', ''),
+                "track_type": tt,
+                "rank":       int(rank),
+                "horse_num":  int(h_num) if h_num is not None else None,
+                "waku":       waku,
+                "popularity": int(pop),
+                "weight":     round(weight, 1),
+                "kyaku":      kyaku_label,
+                "waku_label": waku_label,
+                "nige_pt":    round(nige_pt,  1),
+                "sashi_pt":   round(sashi_pt, 1),
+                "in_pt":      round(in_pt,    1),
+                "out_pt":     round(out_pt,   1),
+            })
+
+        # race_num でソート（None は末尾）
+        race_details.sort(key=lambda x: (x['race_num'] is None, x['race_num'] or 0, x['rank']))
 
         # Evaluate logic
         evaluations = {}
@@ -616,7 +656,8 @@ def get_track_bias_data(base_dir, place):
             "latest_date": latest_date,
             "place": place,
             "evaluations": evaluations,
-            "track_speed": track_speed
+            "track_speed": track_speed,
+            "race_details": race_details,
         }
     except Exception as e:
         print(f"Track bias error: {e}")

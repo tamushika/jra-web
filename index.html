@@ -38,8 +38,12 @@
             <div class="tb-header">
                 <span class="tb-title">📊 直近トラックバイアス：<span id="tbPlace">-</span></span>
                 <span class="tb-date">（<span id="tbDate">-</span>）</span>
+                <button id="tbDetailBtn" class="tb-detail-btn" onclick="toggleBiasDetail()" style="display:none;">詳細表示 ▼</button>
             </div>
             <div id="tbBody" class="tb-body"></div>
+            <div id="tbDetailContainer" style="display:none;">
+                <div id="tbDetailBody"></div>
+            </div>
         </div>
 
         <section class="matrix-section">

@@ -976,5 +976,76 @@ function renderTrackBias(data) {
     }).join('');
 
     container.style.display = 'block';
+
+    // 詳細ボタンを表示（race_details があるとき）
+    const detailBtn = document.getElementById('tbDetailBtn');
+    if (data.race_details && data.race_details.length > 0) {
+        detailBtn.style.display = 'inline-block';
+        detailBtn._biasData = data; // データを紐付け
+    } else {
+        detailBtn.style.display = 'none';
+    }
+    // 詳細パネルは閉じた状態にリセット
+    document.getElementById('tbDetailContainer').style.display = 'none';
+    detailBtn.textContent = '詳細表示 ▼';
+}
+
+function toggleBiasDetail() {
+    const container = document.getElementById('tbDetailContainer');
+    const btn       = document.getElementById('tbDetailBtn');
+    const data      = btn._biasData;
+
+    if (container.style.display !== 'none') {
+        container.style.display = 'none';
+        btn.textContent = '詳細表示 ▼';
+        return;
+    }
+
+    // テーブル生成
+    const details = (data.race_details || []);
+    const tracks = ['芝', 'ダート'];
+
+    const html = tracks.map(tt => {
+        const rows = details.filter(d => d.track_type === tt);
+        if (!rows.length) return '';
+
+        const rowsHtml = rows.map(d => {
+            const raceLabel = d.race_num != null ? `${d.race_num}R` : '?R';
+            const nige  = d.nige_pt  > 0 ? `<span class="tb-score-pos">逃/先 +${d.nige_pt}</span>`  : '';
+            const sashi = d.sashi_pt > 0 ? `<span class="tb-score-pos">差/追 +${d.sashi_pt}</span>` : '';
+            const inn   = d.in_pt    > 0 ? `<span class="tb-score-pos">内枠 +${d.in_pt}</span>`    : '';
+            const out   = d.out_pt   > 0 ? `<span class="tb-score-pos">外枠 +${d.out_pt}</span>`   : '';
+            const scores = [nige, sashi, inn, out].filter(Boolean).join(' ');
+            return `<tr>
+                <td class="tbd-r">${raceLabel}</td>
+                <td class="tbd-name">${d.race_name || ''}</td>
+                <td class="tbd-c">${d.rank}着</td>
+                <td class="tbd-c">${d.horse_num != null ? d.horse_num + '番' : '-'}</td>
+                <td class="tbd-c">${d.waku != null ? d.waku + '枠' : '-'}</td>
+                <td class="tbd-c">${d.popularity}人気</td>
+                <td class="tbd-w">×${d.weight}</td>
+                <td class="tbd-kyaku">${d.kyaku}</td>
+                <td class="tbd-wlabel">${d.waku_label}</td>
+                <td class="tbd-scores">${scores || '-'}</td>
+            </tr>`;
+        }).join('');
+
+        return `<div class="tbd-section">
+            <div class="tbd-title">${tt === '芝' ? '🌿 芝' : '🟤 ダート'} — 上位3着以内馬の加重スコア内訳</div>
+            <table class="tbd-table">
+                <thead>
+                    <tr>
+                        <th>レース</th><th>レース名</th><th>着順</th><th>馬番</th>
+                        <th>枠番</th><th>人気</th><th>加重W</th><th>脚質</th><th>枠分類</th><th>加算スコア</th>
+                    </tr>
+                </thead>
+                <tbody>${rowsHtml}</tbody>
+            </table>
+        </div>`;
+    }).join('');
+
+    document.getElementById('tbDetailBody').innerHTML = html || '<div class="tbd-empty">詳細データなし</div>';
+    container.style.display = 'block';
+    btn.textContent = '詳細を閉じる ▲';
 }
 

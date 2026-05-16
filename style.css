@@ -213,10 +213,54 @@ button {
 }
 .tb-header {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 8px;
     margin-bottom: 12px;
+    flex-wrap: wrap;
 }
+.tb-detail-btn {
+    margin-left: auto;
+    padding: 3px 10px;
+    font-size: 11px;
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background .15s;
+}
+.tb-detail-btn:hover { background: rgba(99,179,237,.12); }
+/* 詳細テーブル */
+#tbDetailContainer { margin-top: 10px; }
+.tbd-section { margin-bottom: 14px; }
+.tbd-title {
+    font-size: 12px; font-weight: 700;
+    color: var(--accent); margin-bottom: 6px;
+}
+.tbd-table {
+    width: 100%; border-collapse: collapse;
+    font-size: 11px; background: var(--bg-card);
+}
+.tbd-table th {
+    background: rgba(99,179,237,.15);
+    color: var(--text-secondary);
+    padding: 5px 8px; text-align: center;
+    border: 1px solid var(--border); white-space: nowrap;
+}
+.tbd-table td {
+    padding: 4px 8px; border: 1px solid var(--border);
+    white-space: nowrap;
+}
+.tbd-table tbody tr:hover td { background: rgba(255,255,255,.05); }
+.tbd-r      { text-align: center; font-weight: 700; color: var(--accent); }
+.tbd-c      { text-align: center; }
+.tbd-w      { text-align: center; font-weight: 700; color: #facc15; }
+.tbd-kyaku  { text-align: center; }
+.tbd-wlabel { text-align: center; }
+.tbd-scores { text-align: left; }
+.tbd-name   { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+.tb-score-pos { color: #4ade80; font-weight: 700; margin-right: 4px; font-size: 11px; }
+.tbd-empty { color: var(--text-muted); font-size: 12px; padding: 8px; }
 .tb-title {
     font-size: 13px;
     font-weight: bold;
