@@ -4,7 +4,13 @@ let apiCache = {}; // { URL: { mode: "詳細", data: {...} } }
 let currentRaceContext = { venue: "", track_type: "", distance: 0, condition: "", race_class: "" };
 let trackBiasCache = {}; // { 競馬場名: APIレスポンス }
 let globalMatrixData = null; // マトリクス表示用データ
-let horseMarks = {}; // { horseNum: '◎'|'〇'|'△'|'☆' } 馬ごとのメモ印
+let allHorseMarks = {}; // { raceUrl: { horseNum: mark } } レースURL別の印
+let currentMarkUrl = ''; // 現在表示中レースのURL
+// アクティブなレースの印オブジェクトを返す（なければ初期化）
+function getMarks() {
+    if (!allHorseMarks[currentMarkUrl]) allHorseMarks[currentMarkUrl] = {};
+    return allHorseMarks[currentMarkUrl];
+}
 
 const MARK_DEFS = [
     { mark: '◎', color: '#ef4444', label: '本命' },
@@ -14,22 +20,21 @@ const MARK_DEFS = [
 ];
 
 function setHorseMark(num, mark) {
-    if (horseMarks[num] === mark) {
-        delete horseMarks[num]; // 同じ印をクリック → 解除
+    const marks = getMarks();
+    if (marks[num] === mark) {
+        delete marks[num]; // 同じ印をクリック → 解除
     } else {
-        horseMarks[num] = mark;
+        marks[num] = mark;
     }
-    // 該当馬のセルを全て再描画
     document.querySelectorAll(`.mark-cell[data-num="${num}"]`).forEach(cell => {
         refreshMarkCell(cell, num);
     });
-    // 行のハイライト更新
     const row = document.querySelector(`tr[data-horse-num="${num}"]`);
     if (row) updateRowMarkStyle(row, num);
 }
 
 function refreshMarkCell(cell, num) {
-    const current = horseMarks[num] || '';
+    const current = getMarks()[num] || '';
     cell.innerHTML = MARK_DEFS.map(({ mark, color }) => {
         const sel = current === mark;
         return `<button class="mark-btn${sel ? ' mark-sel' : ''}"
@@ -41,7 +46,7 @@ function refreshMarkCell(cell, num) {
 }
 
 function updateRowMarkStyle(row, num) {
-    const mark = horseMarks[num] || '';
+    const mark = getMarks()[num] || '';
     const def = MARK_DEFS.find(d => d.mark === mark);
     row.style.boxShadow = def ? `inset 3px 0 0 ${def.color}` : '';
 }
@@ -174,7 +179,7 @@ function applyScrapeData(data, url, mode) {
         : "該当なし";
 
     globalHorsesData = data.horses || [];
-    horseMarks = {}; // 新レース読み込み時に印をリセット
+    currentMarkUrl = url; // アクティブURLを切り替え（印はURLごとに保持）
     renderHorsesTable(globalHorsesData);
 
     raceCache[url] = data.has_double_circle;
