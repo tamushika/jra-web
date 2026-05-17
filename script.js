@@ -4,6 +4,47 @@ let apiCache = {}; // { URL: { mode: "詳細", data: {...} } }
 let currentRaceContext = { venue: "", track_type: "", distance: 0, condition: "", race_class: "" };
 let trackBiasCache = {}; // { 競馬場名: APIレスポンス }
 let globalMatrixData = null; // マトリクス表示用データ
+let horseMarks = {}; // { horseNum: '◎'|'〇'|'△'|'☆' } 馬ごとのメモ印
+
+const MARK_DEFS = [
+    { mark: '◎', color: '#ef4444', label: '本命' },
+    { mark: '〇', color: '#3b82f6', label: '対抗' },
+    { mark: '△', color: '#22c55e', label: '注意' },
+    { mark: '☆', color: '#f59e0b', label: '穴馬' },
+];
+
+function setHorseMark(num, mark) {
+    if (horseMarks[num] === mark) {
+        delete horseMarks[num]; // 同じ印をクリック → 解除
+    } else {
+        horseMarks[num] = mark;
+    }
+    // 該当馬のセルを全て再描画
+    document.querySelectorAll(`.mark-cell[data-num="${num}"]`).forEach(cell => {
+        refreshMarkCell(cell, num);
+    });
+    // 行のハイライト更新
+    const row = document.querySelector(`tr[data-horse-num="${num}"]`);
+    if (row) updateRowMarkStyle(row, num);
+}
+
+function refreshMarkCell(cell, num) {
+    const current = horseMarks[num] || '';
+    cell.innerHTML = MARK_DEFS.map(({ mark, color }) => {
+        const sel = current === mark;
+        return `<button class="mark-btn${sel ? ' mark-sel' : ''}"
+            data-mark="${mark}"
+            style="${sel ? `color:${color};border-color:${color}` : ''}"
+            title="${MARK_DEFS.find(d=>d.mark===mark).label}"
+            onclick="setHorseMark('${num}','${mark}')">${mark}</button>`;
+    }).join('');
+}
+
+function updateRowMarkStyle(row, num) {
+    const mark = horseMarks[num] || '';
+    const def = MARK_DEFS.find(d => d.mark === mark);
+    row.style.boxShadow = def ? `inset 3px 0 0 ${def.color}` : '';
+}
 
 document.addEventListener('DOMContentLoaded', () => {
     // Tab Switching
@@ -133,6 +174,7 @@ function applyScrapeData(data, url, mode) {
         : "該当なし";
 
     globalHorsesData = data.horses || [];
+    horseMarks = {}; // 新レース読み込み時に印をリセット
     renderHorsesTable(globalHorsesData);
 
     raceCache[url] = data.has_double_circle;
@@ -342,9 +384,11 @@ async function fetchWindData(venue) {
 function renderHorsesTable(horses) {
     const tbody = document.getElementById('horsesTbody');
     tbody.innerHTML = '';
-    
+
     horses.forEach(h => {
         const tr = document.createElement('tr');
+        tr.dataset.horseNum = h.num;
+        updateRowMarkStyle(tr, h.num); // 既存の印を反映
         
         const tdWaku = document.createElement('td');
         tdWaku.textContent = h.waku || h.w_num;
@@ -383,7 +427,7 @@ function renderHorsesTable(horses) {
                         const histRow = document.createElement('tr');
                         histRow.className = 'history-row';
                         const histTd = document.createElement('td');
-                        histTd.colSpan = 15; 
+                        histTd.colSpan = 16; // 枠+14列+印列 
                         histTd.innerHTML = buildMiniHistoryTable(h.hist);
                         histRow.appendChild(histTd);
                         tr.after(histRow);
@@ -418,7 +462,14 @@ function renderHorsesTable(horses) {
 
             tr.appendChild(td);
         });
-        
+
+        // ── 印（メモ）列 ──
+        const tdMark = document.createElement('td');
+        tdMark.className = 'mark-cell';
+        tdMark.dataset.num = h.num;
+        refreshMarkCell(tdMark, h.num);
+        tr.appendChild(tdMark);
+
         tbody.appendChild(tr);
     });
 }

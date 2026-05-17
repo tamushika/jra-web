@@ -1089,3 +1089,39 @@ tbody tr:hover { background: var(--row-hover); }
         align-items: flex-start;
     }
 }
+
+/* ─── 馬メモ印 ─── */
+.mark-col-header {
+    white-space: nowrap;
+    text-align: center;
+    min-width: 80px;
+}
+.mark-cell {
+    white-space: nowrap;
+    text-align: center;
+    padding: 2px 4px !important;
+}
+.mark-btn {
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    padding: 1px 4px;
+    margin: 0 1px;
+    opacity: 0.28;
+    transition: opacity .15s, border-color .15s, transform .1s;
+    line-height: 1.2;
+    color: var(--text-primary, #e2e8f0);
+    font-family: inherit;
+}
+.mark-btn:hover {
+    opacity: 0.7;
+    transform: scale(1.15);
+}
+.mark-btn.mark-sel {
+    opacity: 1;
+    border-width: 1px;
+    font-weight: 700;
+    transform: scale(1.1);
+}
