@@ -372,6 +372,12 @@ def insert_into_db(data: dict, url: str) -> dict:
         pop_raw = (r.get("単勝人気") or r.get("人気") or "").strip()
         pop_val = pop_raw or None
 
+        horse_odds_raw = (r.get("単勝") or r.get("単勝オッズ") or r.get("オッズ") or "").strip()
+        try:
+            horse_odds_val = float(horse_odds_raw) if horse_odds_raw else None
+        except ValueError:
+            horse_odds_val = None
+
         df_rows.append({
             "date":         date_val,
             "place":        place_val,
@@ -389,6 +395,7 @@ def insert_into_db(data: dict, url: str) -> dict:
             "agari_3f":     agari_val,
             "popularity":   pop_val,
             "odds":         odds_val,
+            "horse_odds":   horse_odds_val,
             "weight":       w_val,
         })
 

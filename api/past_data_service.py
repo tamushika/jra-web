@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import re
+import math
 import zipfile
 import json
 
@@ -517,9 +518,11 @@ def get_track_bias_data(base_dir, place):
             pass
 
         # Get all races for that date (bias: top3, speed: rank1)
-        q_races = """
+        # horse_odds は PostgreSQL のみ存在（SQLite 歴史データにはない）
+        horse_odds_col = ", horse_odds" if is_pg else ""
+        q_races = f"""
             SELECT rank, track_type, horse_number, corner_4, popularity, total_horses,
-                   time, distance, race_name, kaisai
+                   time, distance, race_name, kaisai{horse_odds_col}
             FROM races
             WHERE place = ? AND date = ?
         """
@@ -555,7 +558,9 @@ def get_track_bias_data(base_dir, place):
             tt = r.get('track_type')
             if tt not in bias_results: continue
 
-            # Base weight is 1. If it was unpopular but ran top 3, increase the weight!
+            # Base weight is 1. If it was unpopular but ran top 3, increase the weight.
+            # When per-horse odds are available, scale the surprise bonus by log(odds)/log(5):
+            #   odds=5.0 → factor 1.0 (baseline), odds=10.0 → factor 1.43, odds=2.0 → 0.43
             pop = r.get('popularity')
             rank = r.get('rank')
             try: pop = float(pop)
@@ -564,7 +569,18 @@ def get_track_bias_data(base_dir, place):
             except: rank = 1
 
             pop_diff = max(0, pop - rank)
-            weight = 1 + pop_diff
+
+            h_odds = r.get('horse_odds')
+            try:
+                h_odds_f = float(h_odds) if h_odds is not None else None
+            except (ValueError, TypeError):
+                h_odds_f = None
+
+            if h_odds_f and h_odds_f > 1.0:
+                odds_factor = math.log(h_odds_f) / math.log(5.0)
+                weight = 1 + pop_diff * max(odds_factor, 0.3)
+            else:
+                weight = 1 + pop_diff
 
             bias_results[tt]["total"] += 1
 
@@ -611,13 +627,14 @@ def get_track_bias_data(base_dir, place):
                 "horse_num":  int(h_num) if h_num is not None else None,
                 "waku":       waku,
                 "popularity": int(pop),
-                "weight":     round(weight, 1),
+                "horse_odds": round(h_odds_f, 1) if h_odds_f else None,
+                "weight":     round(weight, 2),
                 "kyaku":      kyaku_label,
                 "waku_label": waku_label,
-                "nige_pt":    round(nige_pt,  1),
-                "sashi_pt":   round(sashi_pt, 1),
-                "in_pt":      round(in_pt,    1),
-                "out_pt":     round(out_pt,   1),
+                "nige_pt":    round(nige_pt,  2),
+                "sashi_pt":   round(sashi_pt, 2),
+                "in_pt":      round(in_pt,    2),
+                "out_pt":     round(out_pt,   2),
             })
 
         # race_num でソート（None は末尾）

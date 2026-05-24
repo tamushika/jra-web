@@ -259,6 +259,12 @@ def insert_into_db(data: dict, url: str) -> dict:
         tansho_str = r.get("単勝配当", "")
         tansho_str = tansho_str.replace('円', '').replace(',', '').strip()
 
+        horse_odds_raw = (r.get("単勝") or r.get("単勝オッズ") or r.get("オッズ") or "").strip()
+        try:
+            horse_odds_val = float(horse_odds_raw) if horse_odds_raw else None
+        except ValueError:
+            horse_odds_val = None
+
         row_dict = {
             "date": date_val,
             "place": place_val,
@@ -276,6 +282,7 @@ def insert_into_db(data: dict, url: str) -> dict:
             "agari_3f": r.get("上り", "").replace(' ', '').replace('　', ''),
             "popularity": r.get("人気") or r.get("単勝人気"),
             "odds": tansho_str,
+            "horse_odds": horse_odds_val,
             "weight": w_val
         }
         df_rows.append(row_dict)
