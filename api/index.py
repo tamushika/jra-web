@@ -558,12 +558,7 @@ def scrape():
 
 @app.route('/api/latest_url', methods=['GET'])
 def latest_url():
-    day = request.args.get('day', type=int)
     try:
-        # Javascript getDay(): 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
-        if day in [1, 2, 3, 4]:
-            return jsonify({"error": "出馬表が公開されていないため、取得に失敗しました。"}), 400
-
         hdrs = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -575,14 +570,20 @@ def latest_url():
         }
 
         def _find_access_d(soup_obj):
-            """soup から accessD リンクを返す"""
+            """soup から accessD 詳細レース(dde)リンクを返す。なければ任意のaccessDリンクを返す。"""
+            fallback = None
             for a in soup_obj.find_all("a", href=True):
                 href = a["href"]
-                if "accessD.html" in href and "CNAME=" in href:
-                    return urljoin("https://www.jra.go.jp/", href)
-            return None
+                if "accessD.html" not in href or "CNAME=" not in href:
+                    continue
+                full = urljoin("https://www.jra.go.jp/", href)
+                if "dde" in href:
+                    return full  # 個別レースURLを優先
+                if fallback is None:
+                    fallback = full
+            return fallback
 
-        # 候補ページを順番に試す
+        # JRAトップとtodayページを順番に試す
         candidate_urls = [
             "https://www.jra.go.jp/",
             "https://www.jra.go.jp/keiba/thisweek/",
@@ -598,7 +599,7 @@ def latest_url():
             except Exception:
                 continue
 
-        return jsonify({"error": "最新のURLが見つかりませんでした。"}), 404
+        return jsonify({"error": "最新の出馬表URLが見つかりませんでした。レース開催日(木〜日)にお試しください。"}), 404
     except Exception as e:
         return jsonify({"error": f"URL取得エラー: {str(e)}"}), 500
 

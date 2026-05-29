@@ -86,8 +86,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (isManual) alert("出馬表がありません。");
             }
         } catch(err) {
-            document.getElementById('urlInput').value = "";
-            if (isManual) alert("URL取得エラー: " + err.message + "\n現在出馬表データはありません。");
+            if (isManual) {
+                document.getElementById('urlInput').value = "";
+                alert("URL取得エラー: " + err.message + "\n現在出馬表データはありません。");
+            }
         } finally {
             btn.disabled = false;
             btn.textContent = "最新URL取得";
