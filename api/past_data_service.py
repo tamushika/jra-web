@@ -525,6 +525,7 @@ def get_track_bias_data(base_dir, place):
                    time, distance, race_name, kaisai{horse_odds_col}
             FROM races
             WHERE place = ? AND date = ?
+              AND race_name NOT LIKE '%障%'
         """
         if is_pg: q_races = q_races.replace('?', '%s')
         cursor.execute(q_races, (place, latest_date))
