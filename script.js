@@ -1,6 +1,7 @@
 let globalHorsesData = [];
 let raceCache = {}; // ◎がいるレースのハッシュマップ
 let apiCache = {}; // { URL: { mode: "詳細", data: {...} } }
+let pastDataCache = {}; // { apiUrl: APIレスポンス } 過去データ分析キャッシュ
 let currentRaceContext = { venue: "", track_type: "", distance: 0, condition: "", race_class: "" };
 let trackBiasCache = {}; // { 競馬場名: APIレスポンス }
 let globalMatrixData = null; // マトリクス表示用データ
@@ -257,11 +258,13 @@ function applyScrapeData(data, url, mode) {
     const dCond = document.getElementById('displayCondition');
     if (dCond) dCond.textContent = `[${currentRaceContext.condition}]`;
     
-    // Reset past data state if any
-    const pmContainer = document.getElementById('pastDataResultsContainer');
-    if(pmContainer) pmContainer.style.display = 'none';
-    const pmStatus = document.getElementById('pastDataStatus');
-    if(pmStatus) pmStatus.textContent = '';
+    // Restore cached past data if available, otherwise hide the panel
+    if (!_tryRestorePastData()) {
+        const pmContainer = document.getElementById('pastDataResultsContainer');
+        if(pmContainer) pmContainer.style.display = 'none';
+        const pmStatus = document.getElementById('pastDataStatus');
+        if(pmStatus) pmStatus.textContent = '';
+    }
     
     // Notable Sires Rendering (NEW)
     window.lastRaceData = data;
@@ -791,43 +794,63 @@ function hideLoading() {
     document.getElementById('loadingOverlay').classList.add('hidden');
 }
 
+function _buildPastDataUrl() {
+    const matchClass = document.getElementById('matchClassCheckbox').checked;
+    const matchCond  = document.getElementById('matchConditionCheckbox').checked;
+    let url = `/api/past_data?place=${encodeURIComponent(currentRaceContext.venue)}&track_type=${encodeURIComponent(currentRaceContext.track_type)}&distance=${currentRaceContext.distance}`;
+    if (matchCond && currentRaceContext.condition)  url += `&condition=${encodeURIComponent(currentRaceContext.condition)}`;
+    if (matchClass && currentRaceContext.race_class) url += `&race_class=${encodeURIComponent(currentRaceContext.race_class)}`;
+    return url;
+}
+
+function _showPastData(data) {
+    const matchClass = document.getElementById('matchClassCheckbox').checked;
+    const matchCond  = document.getElementById('matchConditionCheckbox').checked;
+    const condLabel  = matchCond  ? `[${currentRaceContext.condition}]`   : "[馬場状態: 不問]";
+    const classLabel = matchClass ? ` [${currentRaceContext.race_class}]` : " [クラス: 不問]";
+    const lbl = document.getElementById('matchStatusLabel');
+    if (lbl) lbl.textContent = `${currentRaceContext.venue} ${currentRaceContext.track_type} ${currentRaceContext.distance}m ${condLabel}${classLabel}`;
+    renderPastDataStats(data.results, 'res');
+    document.getElementById('pastDataResultsContainer').style.display = 'flex';
+    const st = document.getElementById('pastDataStatus');
+    if (st) st.textContent = '集計完了';
+}
+
+function _tryRestorePastData() {
+    if (!currentRaceContext.venue) return false;
+    const apiUrl = _buildPastDataUrl();
+    if (!pastDataCache[apiUrl]) return false;
+    _showPastData(pastDataCache[apiUrl]);
+    return true;
+}
+
 async function fetchPastData() {
     if(!currentRaceContext.venue) {
         alert("レースデータがありません。先に解析を実行してください。");
         return;
     }
-    const btn = document.getElementById('runPastDataBtn');
+    const btn    = document.getElementById('runPastDataBtn');
     const status = document.getElementById('pastDataStatus');
+
+    const apiUrl = _buildPastDataUrl();
+
+    // キャッシュがあればAPIを呼ばず即表示
+    if (pastDataCache[apiUrl]) {
+        _showPastData(pastDataCache[apiUrl]);
+        return;
+    }
+
     btn.disabled = true;
     status.textContent = "データ集計中...";
     document.getElementById('pastDataResultsContainer').style.display = 'none';
 
     try {
-        const matchClass = document.getElementById('matchClassCheckbox').checked;
-        const matchCond = document.getElementById('matchConditionCheckbox').checked;
-
-        let url = `/api/past_data?place=${encodeURIComponent(currentRaceContext.venue)}&track_type=${encodeURIComponent(currentRaceContext.track_type)}&distance=${currentRaceContext.distance}`;
-        
-        if (matchCond && currentRaceContext.condition) {
-            url += `&condition=${encodeURIComponent(currentRaceContext.condition)}`;
-        }
-        if (matchClass && currentRaceContext.race_class) {
-            url += `&race_class=${encodeURIComponent(currentRaceContext.race_class)}`;
-        }
-        
-        const res = await fetch(url);
+        const res = await fetch(apiUrl);
         const data = await res.json();
         if(data.error) throw new Error(data.error);
 
-        const condLabel = matchCond ? `[${currentRaceContext.condition}]` : "[馬場状態: 不問]";
-        const classLabel = matchClass ? ` [${currentRaceContext.race_class}]` : " [クラス: 不問]";
-
-        document.getElementById('matchStatusLabel').textContent = `${currentRaceContext.venue} ${currentRaceContext.track_type} ${currentRaceContext.distance}m ${condLabel}${classLabel}`;
-        
-        renderPastDataStats(data.results, 'res');
-
-        document.getElementById('pastDataResultsContainer').style.display = 'flex';
-        status.textContent = "集計完了";
+        pastDataCache[apiUrl] = data;
+        _showPastData(data);
     } catch(err) {
         status.textContent = "エラー: " + err.message;
     } finally {
