@@ -520,12 +520,14 @@ def get_track_bias_data(base_dir, place):
         # Get all races for that date (bias: top3, speed: rank1)
         # horse_odds は PostgreSQL のみ存在（SQLite 歴史データにはない）
         horse_odds_col = ", horse_odds" if is_pg else ""
+        # psycopg2 は % をパラメータ記号として解釈するため PG では %% でエスケープ
+        like_pct = "%%" if is_pg else "%"
         q_races = f"""
             SELECT rank, track_type, horse_number, corner_4, popularity, total_horses,
                    time, distance, race_name, kaisai{horse_odds_col}
             FROM races
             WHERE place = ? AND date = ?
-              AND race_name NOT LIKE '%障%'
+              AND race_name NOT LIKE '{like_pct}障{like_pct}'
         """
         if is_pg: q_races = q_races.replace('?', '%s')
         cursor.execute(q_races, (place, latest_date))
