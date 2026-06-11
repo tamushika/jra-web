@@ -931,6 +931,9 @@ tbody tr:hover { background: var(--row-hover); }
     #horsesTable tr.history-row td {
         display: block;
         width: 100%;
+        height: auto;
+        white-space: normal;
+        border-radius: 0;
         text-align: left;
     }
     .mini-history-container {
