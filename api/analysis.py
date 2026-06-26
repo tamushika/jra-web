@@ -431,13 +431,26 @@ def check_condition(cond, h, r, sire_lineage, mawari_map):
                 if ("以下" in cond or "以内" in cond) and actual > target: return False
             return True
 
+        # 4.5. 生産者判定 (馬の個別プロフィールページ遷移が必要なため、
+        # h['producer'] が無い場合は判定不可としてFalseを返す。jra-web側はこのキーを
+        # 設定していないため、ここを通っても常にFalseとなり負荷増にはならない)
+        if "生産者" in cond:
+            target = cond.replace("生産者が", "").strip()
+            producer = h.get("producer", "")
+            if not producer:
+                return False
+            return target in producer or producer in target
+
         # 5. 血統判定 (父/母父)
         if "父" in cond:
             # 置換対象を増やして「父か母父が」などにも対応
             target = cond
-            for prefix in ["父が", "父or母父が", "父・母父が", "父か母父が", "系", "種牡馬", "以外"]:
+            # 「父が」は他のprefixの部分文字列でもあるため、より長い(複合)prefixを先に
+            # 除去しないと「父か母父が」等が中途半端に切れてしまう(例:「父か母」が残る)。
+            # 同様に「以外の種牡馬」も「以外」より先に「以外の」を除去しないと「の」が残る。
+            for prefix in ["父or母父が", "父・母父が", "父か母父が", "父が", "系", "以外の", "以外", "種牡馬"]:
                 target = target.replace(prefix, "")
-            target = target.strip()
+            target = re.sub(r"\s+", "", target).strip()
             
             match = (target == h['sire']) or (target in sire_lineage.get(h['sire'], ""))
             if "母父" in cond:
@@ -479,7 +492,7 @@ def check_condition(cond, h, r, sire_lineage, mawari_map):
             if "別距離" in cond:
                 if actual_dist == r.get('dist', 0): return False
             elif "距離" in cond or "m" in cond:
-                range_m = re.search(r'(\d+)\s*~\s*(\d+)', cond)
+                range_m = re.search(r'(\d+)\s*[~〜～]\s*(\d+)', cond)
                 if range_m:
                     min_d, max_d = int(range_m.group(1)), int(range_m.group(2))
                     if not (min_d <= actual_dist <= max_d): return False
@@ -591,7 +604,7 @@ def check_condition(cond, h, r, sire_lineage, mawari_map):
             if ("栗東" in cond or "関西" in cond) and h['affi'] != "栗東": return False
 
         # 11. 自由記述 (騎手名)
-        keywords = ["回り", "着", "角", "上がり", "歳", "牝", "牡", "父", "kg", "枠", "番", "距離", "頭", "週", "斤量", "ダート", "体重", "場所", "所属", "クラス", "条件", "馬齢", "性別", "間隔", "通過順", "負担重量", "順位"]
+        keywords = ["回り", "着", "角", "上がり", "歳", "牝", "牡", "父", "kg", "枠", "番", "距離", "頭", "週", "斤量", "ダート", "体重", "場所", "所属", "クラス", "条件", "馬齢", "性別", "間隔", "通過順", "負担重量", "順位", "生産者"]
         if not any(kw in cond for kw in keywords):
             # 騎手名の場合は「騎手が」を外して比較
             target_jock = cond.replace("騎手が", "").strip()

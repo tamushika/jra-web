@@ -722,7 +722,12 @@ def _scrape_win5_target():
     soup = BeautifulSoup(resp.text, 'html.parser')
 
     tables = soup.find_all('table')
-    target_table = tables[1] if len(tables) > 1 else None
+    target_table = None
+    for t in tables:
+        header_cells = [th.get_text(strip=True) for th in t.find_all(["th", "td"])[:2]]
+        if any("月日" in c for c in header_cells):
+            target_table = t
+            break
     if not target_table:
         return None, "WIN5レース表が見つかりません"
 
