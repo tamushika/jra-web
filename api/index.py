@@ -465,7 +465,14 @@ def scrape():
 
         # Feature Course Memo
         feature_text = analysis.load_course_feature(venue, race_type, dist_val, base_dir)
-        
+
+        # この父このテキこの鞍上 / コース辞典 / 重賞ナビ2026 / 競馬血統総辞典(NEW)
+        konochichi_lines = analysis.load_konochichi_criteria(venue, race_type, dist_val, base_dir)
+        course_tips = analysis.load_course_tips(venue, race_type, dist_val, base_dir)
+        race_conditions = analysis.load_race_conditions(race_name, base_dir)
+        for h in horses_out:
+            h['sire_buysell'] = analysis.load_sire_buysell(h.get('sire'), base_dir)
+
         # Notable Sires (NEW)
         sire_result = analysis.load_notable_sires(venue, race_type, dist_val, base_dir)
         notable_sires = sire_result.get("sires", [])
@@ -542,6 +549,9 @@ def scrape():
             "course_record": course_record_text,
             "course_image": course_image,
             "criteria_lines": criteria_lines,
+            "konochichi_lines": konochichi_lines,
+            "course_tips": course_tips,
+            "race_conditions": race_conditions,
             "harab_index": harab_index,
             "feature_text": feature_text,
             "notable_sires": notable_sires,

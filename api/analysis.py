@@ -121,6 +121,153 @@ def load_notable_sires(venue, race_type, distance, base_dir):
         debug_info["error"] = str(e)
         return {"sires": [], "debug": debug_info}
 
+def load_konochichi_criteria(venue_name, race_type, distance, base_dir):
+    """「この父このテキこの鞍上」の好走条件(criteria_konochichi.csv)を読み込む。
+
+    既存のcriteria.csv(評価ロジックで使用)とは別ファイルで、画面表示専用。
+    馬主/調教師の条件はstatus='flagged'のものも含むため参考情報として扱う。
+    """
+    current_script_dir = os.path.dirname(os.path.abspath(__file__))
+    venue_slug = VENUE_SLUG_MAP.get(venue_name, "kyoto")
+    file_path = os.path.join(current_script_dir, "data_files", venue_slug, "criteria", "criteria_konochichi.csv")
+
+    if not os.path.exists(file_path):
+        return []
+
+    try:
+        df = pd.read_csv(file_path, header=None, encoding='utf-8-sig')
+        lines = []
+        for _, row in df.iterrows():
+            row_type = str(row[1]).strip()
+            dist_range = re.findall(r'\d+', str(row[2]))
+            if not dist_range or row_type != race_type:
+                continue
+            dist_min = int(dist_range[0])
+            dist_max = int(dist_range[1]) if len(dist_range) > 1 else dist_min
+            if not (dist_min <= distance <= dist_max):
+                continue
+            conds = [str(row[k]) for k in (3, 4, 5) if is_valid_cond(row[k])]
+            if conds:
+                status = str(row[6]).strip() if len(row) > 6 else ""
+                suffix = "(要確認)" if status == "flagged" else ""
+                lines.append(f"・{'×'.join(conds)}{suffix}")
+        return lines
+    except Exception:
+        return []
+
+
+def load_course_tips(venue_name, race_type, distance, base_dir):
+    """「コース辞典」のこのコースの狙い方!(course_tips.csv)を読み込む。"""
+    current_script_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(current_script_dir, "data_files", "common", "course_tips.csv")
+
+    if not os.path.exists(file_path):
+        return []
+
+    try:
+        df = pd.read_csv(file_path, encoding='utf-8-sig')
+        tips = []
+        for _, row in df.iterrows():
+            if str(row.get('競馬場', '')).strip() != venue_name:
+                continue
+            row_type = str(row.get('芝ダート', '')).strip()
+            if row_type and row_type != race_type:
+                continue
+            dist_nums = re.findall(r'\d+', str(row.get('距離', '')))
+            if dist_nums and int(dist_nums[0]) != distance:
+                continue
+            hint = str(row.get('狙い方ヒント', '')).strip()
+            if hint:
+                tips.append(hint)
+        return tips
+    except Exception:
+        return []
+
+
+_race_conditions_cache = None
+_RACE_GRADE_RE = re.compile(r"第\d+回|[GgＧ][ⅠⅡⅢ123一二三]+")
+_RACE_PAREN_RE = re.compile(r"[（(]([^）)]*)[）)]")
+
+
+def _race_name_candidates(name):
+    base = _RACE_GRADE_RE.sub("", name)
+    alias = _RACE_PAREN_RE.search(base)
+    main = _RACE_PAREN_RE.sub("", base).strip()
+    candidates = {main} if main else set()
+    if alias:
+        candidates.add(alias.group(1).strip())
+    return {c for c in candidates if c}
+
+
+def load_race_conditions(race_name, base_dir):
+    """「重賞ナビ2026」の好走条件(race_conditions.csv)をレース名から引く。
+
+    本のレース名表記(例:「オークス（優駿牝馬）」)と実際のレース名表記の
+    揺れに対応するため、第◯回・グレード表記を除いた正規化文字列で照合する。
+    """
+    global _race_conditions_cache
+    if not race_name:
+        return []
+
+    current_script_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(current_script_dir, "data_files", "common", "race_conditions.csv")
+
+    if _race_conditions_cache is None:
+        rows = []
+        if os.path.exists(file_path):
+            try:
+                df = pd.read_csv(file_path, encoding='utf-8-sig')
+                rows = df.to_dict('records')
+            except Exception:
+                rows = []
+        _race_conditions_cache = rows
+
+    targets = _race_name_candidates(race_name)
+    if not targets:
+        return []
+
+    matched = []
+    for row in _race_conditions_cache:
+        book_candidates = _race_name_candidates(str(row.get('レース名', '')))
+        if any(b in t or t in b for b in book_candidates for t in targets):
+            matched.append({
+                "kubun": row.get('区分', ''),
+                "header": row.get('小見出し', ''),
+                "conclusion": row.get('結論', ''),
+            })
+    return matched
+
+
+_sire_buysell_cache = None
+
+
+def load_sire_buysell(sire_name, base_dir):
+    """「亀谷敬正の競馬血統辞典2」の買い&消しポイント(sire_buysell.csv)を父名から引く。"""
+    global _sire_buysell_cache
+    if not sire_name or sire_name == "-":
+        return []
+
+    current_script_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(current_script_dir, "data_files", "common", "sire_buysell.csv")
+
+    if _sire_buysell_cache is None:
+        mapping = {}
+        if os.path.exists(file_path):
+            try:
+                df = pd.read_csv(file_path, encoding='utf-8-sig')
+                for _, row in df.iterrows():
+                    name = str(row.get('種牡馬名', '')).strip()
+                    mapping.setdefault(name, []).append({
+                        "kubun": str(row.get('区分', '')).strip(),
+                        "condition": str(row.get('条件文', '')).strip(),
+                    })
+            except Exception:
+                mapping = {}
+        _sire_buysell_cache = mapping
+
+    return _sire_buysell_cache.get(sire_name, [])
+
+
 def is_valid_cond(c):
     return c and str(c).strip() not in ["nan", "-", "", "None"]
 

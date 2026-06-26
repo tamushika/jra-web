@@ -270,8 +270,49 @@ function applyScrapeData(data, url, mode) {
     window.lastRaceData = data;
     renderNotableSiresTable(data.notable_sires, `${data.venue} ${data.race_type}${data.dist_val}m`);
 
+    // 4冊分の好走条件まとめ (NEW)
+    renderBookData(data);
+
     // Fetch Wind Data
     fetchWindData(data.venue);
+}
+
+function renderBookData(data) {
+    const konochichiElem = document.getElementById('konochichiList');
+    if (konochichiElem) {
+        const lines = data.konochichi_lines || [];
+        konochichiElem.innerHTML = lines.length > 0 ? lines.join('<br>') : "データなし";
+    }
+
+    const tipsElem = document.getElementById('courseTipsList');
+    if (tipsElem) {
+        const tips = data.course_tips || [];
+        tipsElem.innerHTML = tips.length > 0 ? tips.map(t => `・${t}`).join('<br>') : "データなし";
+    }
+
+    const raceCondTitle = document.getElementById('raceConditionsTitle');
+    if (raceCondTitle) {
+        raceCondTitle.textContent = `重賞ナビ2026（${data.race_info ? data.race_info.split('　').pop() : 'このレース'}の好走条件）`;
+    }
+    const raceCondTbody = document.getElementById('raceConditionsTbody');
+    if (raceCondTbody) {
+        const rows = data.race_conditions || [];
+        raceCondTbody.innerHTML = rows.length > 0
+            ? rows.map(r => `<tr><td>${r.kubun}</td><td>${r.header}</td><td>${r.conclusion}</td></tr>`).join('')
+            : '<tr><td colspan="3">対象レースの重賞データはありません</td></tr>';
+    }
+
+    const sireBuysellTbody = document.getElementById('sireBuysellTbody');
+    if (sireBuysellTbody) {
+        const horses = data.horses || [];
+        const rows = [];
+        horses.forEach(h => {
+            (h.sire_buysell || []).forEach(bs => {
+                rows.push(`<tr><td>${h.num}</td><td>${h.name}</td><td>${h.sire || '-'}</td><td>${bs.kubun}</td><td>${bs.condition}</td></tr>`);
+            });
+        });
+        sireBuysellTbody.innerHTML = rows.length > 0 ? rows.join('') : '<tr><td colspan="5">データなし</td></tr>';
+    }
 }
 
 function renderNotableSiresTable(sires, title) {

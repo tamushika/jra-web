@@ -64,6 +64,7 @@
                 <button class="tab-btn" data-target="tab-ultra">好走条件判定詳細</button>
                 <button class="tab-btn" data-target="tab-course">コース特徴/風情報</button>
                 <button class="tab-btn" data-target="tab-sire">注目産駒</button>
+                <button class="tab-btn" data-target="tab-bookdata">好走条件まとめ</button>
                 <button class="tab-btn" data-target="tab-past-data">過去データ分析</button>
                 <button class="tab-btn" data-target="tab-ai">AI予想</button>
                 <button class="tab-btn" data-target="tab-win5">WIN5予想</button>
@@ -165,6 +166,35 @@
                             <tr><td colspan="5">データ待機中...</td></tr>
                         </tbody>
                     </table>
+                </div>
+            </div>
+
+            <div class="tab-content" id="tab-bookdata">
+                <div class="info-panel" style="margin-bottom: 15px;">
+                    <h3 class="section-title">この父このテキこの鞍上（コース別好走条件）</h3>
+                    <div id="konochichiList" style="white-space: pre-wrap; line-height: 1.6;">データなし</div>
+                </div>
+                <div class="info-panel" style="margin-bottom: 15px;">
+                    <h3 class="section-title">コース辞典（このコースの狙い方!）</h3>
+                    <div id="courseTipsList" style="white-space: pre-wrap; line-height: 1.6;">データなし</div>
+                </div>
+                <div class="info-panel" style="margin-bottom: 15px;">
+                    <h3 class="section-title" id="raceConditionsTitle">重賞ナビ2026（このレースの好走条件）</h3>
+                    <div class="table-container">
+                        <table>
+                            <thead><tr><th>区分</th><th>小見出し</th><th>結論</th></tr></thead>
+                            <tbody id="raceConditionsTbody"><tr><td colspan="3">対象レースの重賞データはありません</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="info-panel">
+                    <h3 class="section-title">競馬血統総辞典（出走馬の父 買い&消しポイント）</h3>
+                    <div class="table-container">
+                        <table>
+                            <thead><tr><th>馬番</th><th>馬名</th><th>父</th><th>区分</th><th>条件</th></tr></thead>
+                            <tbody id="sireBuysellTbody"><tr><td colspan="5">データなし</td></tr></tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
 
