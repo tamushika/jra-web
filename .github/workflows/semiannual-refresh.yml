@@ -1,0 +1,68 @@
+name: Semiannual refresh (factors + retrain reminder)
+
+on:
+  schedule:
+    # 毎年 1月1日・7月1日 06:00 JST (= 前日 21:00 UTC)
+    - cron: "0 21 1 1,7 *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  refresh-factors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Re-scrape db-keiba factor stats (99 courses)
+        run: python scrape_dbkeiba.py --force --delay 2.0
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "api/data_files/*/factors/*.csv"
+          if git diff --cached --quiet; then
+            echo "変更なし"
+          else
+            git commit -m "Refresh db-keiba factor stats (semiannual auto-update)"
+            git push
+          fi
+
+  retrain-reminder:
+    runs-on: ubuntu-latest
+    needs: refresh-factors
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `MLモデル再学習のリマインダー (${new Date().getFullYear()}年${new Date().getMonth() + 1}月)`;
+            const body = [
+              "半年ごとのMLモデル再学習の時期です。db-keiba統計は自動更新済みです。",
+              "",
+              "以下はローカルでの手動作業が必要です (学習用の馬名つきデータはリポジトリにないため):",
+              "",
+              "1. TARGETから最新の全成績CSVをエクスポートし `C:\\project\\1980.csv` に上書き",
+              "2. `retrain_all.bat` をダブルクリック (DB再構築→馬場差→再学習→カバレッジ再計測を一括実行)",
+              "3. 出力される **OOS検証結果が劣化していないこと** を確認",
+              "4. 変更をコミット & push",
+              "",
+              "※1月実行時は基準タイムの集計期間も1年スライドすること",
+              "  (retrain_all.bat 内の STD_FROM / STD_TO を変更)",
+            ].join("\n");
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["maintenance"],
+            });
