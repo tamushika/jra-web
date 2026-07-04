@@ -62,10 +62,10 @@ _RATE_KEYS = ("win_rate", "quinella_rate", "show_rate", "win_roi", "show_roi")
 
 # ─── 読み込み ────────────────────────────────────────────────────────────────
 
-def load_score_weights(base_dir):
-    """score_weights.json を読み込む。失敗時はデフォルト設定を返す。"""
+def load_score_weights(base_dir, filename="score_weights.json"):
+    """重み設定JSONを読み込む (filename指定でWIN5用等に切替)。失敗時はデフォルト設定。"""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "data_files", "common", "score_weights.json")
+                        "data_files", "common", filename)
     try:
         with open(path, "r", encoding="utf-8-sig") as f:
             return json.load(f)
@@ -385,9 +385,130 @@ def eval_sire_buysell(h, race_context, cfg):
     return total, details
 
 
+# ─── 市場 (単勝オッズ) 統合 ──────────────────────────────────────────────────
+
+def eval_market(h, cfg):
+    """
+    単勝オッズを市場の勝率予測としてスコアに統合する。
+    市場点 = odds_k × ln(odds_ref / オッズ)。odds_ref はレース内順位に影響しない
+    表示用の基準 (デフォルト10倍 = ±0の境界)。
+    バックテスト根拠: 市場(人気順)の勝ち馬カバレッジはモデル単体より高く
+    (k=1: 31.0% vs 20.8%)、ブレンドで的中率が向上する。
+    """
+    params = cfg.get("params", {}).get("market", {})
+    odds_k = params.get("odds_k", 0.0)
+    if not odds_k:
+        return 0.0, []
+    try:
+        odds = float(h.get("odds", 0))
+    except (TypeError, ValueError):
+        return 0.0, []
+    if odds <= 1.0 or odds >= 999:  # 未発売・取得失敗
+        return 0.0, []
+    import math
+    ref = params.get("odds_ref", 10.0)
+    clamp = params.get("clamp", 10.0)
+    pts = max(-clamp, min(clamp, odds_k * math.log(ref / odds)))
+    return pts, [f"市場: 単勝{odds}倍 → {pts:+.1f}"]
+
+
+# ─── 道悪適性 (当日馬場が稍/重/不のときのみ発動) ─────────────────────────────
+
+def eval_wet_aptitude(h, race_context, cfg):
+    """
+    相対道悪適性: 直近4走に道悪(稍/重/不)と良馬場の両方の経験がある馬について、
+    ベスト着順を比較し「道悪の方が走る馬」を加点 /「道悪の方が悪い馬」を減点。
+    当日馬場が道悪のときのみ発動。
+    バックテスト根拠 (backtest_wet.py, 2024-2025): 道悪の方が良い馬は道悪日の
+    単回収94.4% (良馬場日65.9%) と市場が過小評価。単純な道悪好走フラグは
+    良馬場でも同成績 (能力の代理) のため不採用。
+    """
+    params = cfg.get("params", {}).get("wet_aptitude", {})
+    if not params:
+        return 0.0, []
+    cond = str(race_context.get("baba_cond", ""))[:1]
+    if cond not in ("稍", "重", "不"):
+        return 0.0, []
+
+    wet_ranks, dry_ranks = [], []
+    for run in (h.get("hist") or [])[:4]:
+        if not run:
+            continue
+        c = ""
+        for ch in str(run.get("condition", "")):
+            if ch in "良稍重不":
+                c = ch
+                break
+        rank_s = str(run.get("rank", ""))
+        if not c or not rank_s.isdigit():
+            continue
+        (dry_ranks if c == "良" else wet_ranks).append(int(rank_s))
+    if not wet_ranks or not dry_ranks:
+        return 0.0, []  # 相対比較できない馬は増減なし
+
+    gap = min(wet_ranks) - min(dry_ranks)  # 負 = 道悪の方が着順が良い
+    threshold = params.get("rank_gap", 2)
+    if gap <= -threshold:
+        pts = params.get("bonus_better", 2.0)
+        label = "道悪の方が良い"
+    elif gap >= threshold:
+        pts = params.get("penalty_worse", -1.5)
+        label = "道悪の方が悪い"
+    else:
+        return 0.0, []
+    detail = (f"道悪適性: 道悪ベスト{min(wet_ranks)}着 vs 良ベスト{min(dry_ranks)}着 "
+              f"({label}) 当日{cond} → {pts:+.1f}")
+    return pts, [detail]
+
+
+# ─── WIN5 買い目配分 (荒れランク別カバレッジの貪欲最適化) ────────────────────
+
+def allocate_picks(upset_ranks, coverage_map, budget, max_picks=8, fixed=None):
+    """
+    5レースの頭数配分を全探索で決定する。
+    - upset_ranks: 各レースの荒れランク ["S","A","B","C" or None] (Noneはdefault扱い)
+    - coverage_map: {"S": [k=1..Nのカバー率], ..., "default": [...]}
+    - budget: 購入点数上限 (Π picks <= budget)
+    - fixed: 1頭固定(軸)にするレースindexの集合 (点数を他レースに回す)
+    戻り値: (picks[], est_hit_rate)  picks[i] = レースiの頭数
+    Πk <= budget の制約下で Πcoverage (推定的中率) を最大化する。
+    """
+    import itertools as _it
+    fixed = set(fixed or ())
+    curves = []
+    for r in upset_ranks:
+        curve = coverage_map.get(r) or coverage_map.get("default") or [0.3, 0.5, 0.6, 0.7, 0.75, 0.8, 0.84, 0.87]
+        curves.append(curve)
+    n = len(upset_ranks)
+    kmax = [1 if i in fixed else min(max_picks, len(c)) for i, c in enumerate(curves)]
+
+    # 全探索 (最大8^5=32768通り): Πk <= budget の下で Πcoverage 最大
+    best_picks, best_est = [1] * n, 0.0
+    for combo in _it.product(*[range(1, km + 1) for km in kmax]):
+        pts = 1
+        for k in combo:
+            pts *= k
+        if pts > budget:
+            continue
+        est = 1.0
+        for i, k in enumerate(combo):
+            est *= curves[i][k - 1]
+        # 同率なら点数の少ない方 (資金効率優先)
+        if est > best_est + 1e-12 or (abs(est - best_est) <= 1e-12 and pts < _pts_of(best_picks)):
+            best_picks, best_est = list(combo), est
+    return best_picks, best_est
+
+
+def _pts_of(ks):
+    p = 1
+    for k in ks:
+        p *= k
+    return p
+
+
 # ─── 能力サブスコア (タイム指数 / クラス実績 / 上がり質) ────────────────────
 
-_STD_TIMES_CACHE = {"data": None}
+_STD_TIMES_CACHE = {"data": None, "variants": None}
 
 
 def _load_standard_times():
@@ -402,6 +523,27 @@ def _load_standard_times():
     except Exception:
         _STD_TIMES_CACHE["data"] = {}
     return _STD_TIMES_CACHE["data"]
+
+
+def _load_track_variants():
+    """track_variants.json (日別・場別・芝ダ別の馬場差。正=時計がかかる馬場)"""
+    if _STD_TIMES_CACHE["variants"] is not None:
+        return _STD_TIMES_CACHE["variants"]
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "data_files", "common", "track_variants.json")
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            _STD_TIMES_CACHE["variants"] = json.load(f).get("variants", {})
+    except Exception:
+        _STD_TIMES_CACHE["variants"] = {}
+    return _STD_TIMES_CACHE["variants"]
+
+
+def track_variant(date8, place, track):
+    """指定日の馬場差 (秒)。データが無い日は 0.0。"""
+    if not date8:
+        return 0.0
+    return _load_track_variants().get(str(date8), {}).get(place, {}).get(track, 0.0)
 
 
 def class_label(race_name):
@@ -495,7 +637,8 @@ def eval_ability(h, cfg):
     details = []
     hist = [r for r in (h.get("hist") or []) if r]
 
-    # ── タイム指数 (利用可能な過去走の最良値) ──
+    # ── タイム指数 (利用可能な過去走の最良値、馬場差補正つき) ──
+    use_variant = params.get("track_variant", False)
     best_time = None  # (pts, label)
     for i, run in enumerate(hist[:4]):
         tsec = parse_run_time(run.get("run_time", "-"))
@@ -506,12 +649,22 @@ def eval_ability(h, cfg):
         base = std_time(place, track, dist, rclass, cond)
         if base is None:
             continue
-        diff = base - tsec  # 正 = 基準勝ちタイムより速い
+        # 馬場差 (その日の時計のかかり具合)。過去走の日付は raw から抽出
+        variant = 0.0
+        var_note = ""
+        if use_variant:
+            dm = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", str(run.get("raw", "")))
+            if dm:
+                date8 = f"{dm.group(1)}{int(dm.group(2)):02d}{int(dm.group(3)):02d}"
+                variant = track_variant(date8, place, track)
+                if variant:
+                    var_note = f" 馬場差{variant:+.1f}"
+        diff = base + variant - tsec  # 正 = その日の馬場を考慮しても基準勝ちタイムより速い
         rw = recency[i] if i < len(recency) else recency[-1]
         pts = max(-params.get("time_clamp", 8.0),
                   min(params.get("time_clamp", 8.0), diff * params.get("time_k", 2.0))) * rw
         label = (f"{['前走','2走前','3走前','4走前'][i]} {place}{track}{dist}"
-                 f"({rclass}{cond or ''}) 基準{-diff:+.1f}秒")
+                 f"({rclass}{cond or ''}) 基準{-diff:+.1f}秒{var_note}")
         if best_time is None or pts > best_time[0]:
             best_time = (pts, label)
     if best_time is not None:
@@ -615,10 +768,10 @@ def _distance_label(dist_val, prev_dist):
 
 # ─── スコア計算 ──────────────────────────────────────────────────────────────
 
-def _factor_points(row, baseline_show, params, weight):
-    """1ファクター分の得点。データ不足時は None。"""
+def _factor_points(row, baseline_show, params, weight, rate_key="show_rate"):
+    """1ファクター分の得点。データ不足時は None。rate_key で複勝率/勝率ベースを切替。"""
     starts = row.get("starts") or 0
-    show = row.get("show_rate")
+    show = row.get(rate_key)
     if show is None or starts < params.get("min_starts", 5):
         return None, ""
     dev = (show - baseline_show) / 100.0
@@ -641,10 +794,9 @@ def compute_score(h, race_context, factor_table, cfg):
     """
     馬1頭のスコアを算出。
     戻り値: (score | None, score_details[])
-    factor_table が None、または例外発生時は (None, [])。
+    factor_table が None のコースでも能力・血統辞典・判定ボーナスは算出する。
+    例外発生時、および算出根拠が1つも無い場合は (None, [])。
     """
-    if factor_table is None:
-        return None, []
     try:
         return _compute_score_inner(h, race_context, factor_table, cfg)
     except Exception:
@@ -655,7 +807,14 @@ def _compute_score_inner(h, race_context, factor_table, cfg):
     params = cfg.get("params", DEFAULT_CFG["params"])
     weights = cfg.get("weights", DEFAULT_CFG["weights"])
     style_map = cfg.get("style_map", DEFAULT_CFG["style_map"])
-    baseline_show = factor_table["baseline"]["show_rate"]
+    rate_key = params.get("rate_key", "show_rate")
+    rate_label = "勝" if rate_key == "win_rate" else "複"
+    baseline_show = None
+    if factor_table is not None:
+        baseline_show = factor_table["baseline"].get(rate_key)
+        if baseline_show is None:
+            baseline_show = factor_table["baseline"]["show_rate"]
+            rate_key, rate_label = "show_rate", "複"
 
     dist_val = race_context.get("dist") or race_context.get("dist_val") or 0
     race_type = race_context.get("type") or race_context.get("race_type") or ""
@@ -666,74 +825,75 @@ def _compute_score_inner(h, race_context, factor_table, cfg):
 
     def add(factor, entity_label, row):
         w = weights.get(factor)
-        if not w or row is None:  # 重み0のファクターは算入も表示もしない
+        # 重み0・データなし・基準値なし(factors未整備コース)は算入も表示もしない
+        if not w or row is None or baseline_show is None:
             return
-        pts, roi_note = _factor_points(row, baseline_show, params, w)
+        pts, roi_note = _factor_points(row, baseline_show, params, w, rate_key)
         if pts is None:
             return
         nonlocal total
         total += pts
         details.append(
             f"{FACTOR_LABELS.get(factor, factor)} {entity_label}: "
-            f"複{row['show_rate']:.1f}% (基準{baseline_show:.1f}%) n={row['starts']}"
+            f"{rate_label}{row[rate_key]:.1f}% (基準{baseline_show:.1f}%) n={row['starts']}"
             f" → {pts:+.1f}{roi_note}"
         )
 
     # 種牡馬
     add("father_w", h.get("sire", "-"),
-        _match_entity(factor_table.get("father_w"), h.get("sire")))
+        _match_entity((factor_table or {}).get("father_w"), h.get("sire")))
 
     # 騎手
     add("jockey_w", h.get("jock", "-"),
-        _match_entity(factor_table.get("jockey_w"), h.get("jock")))
+        _match_entity((factor_table or {}).get("jockey_w"), h.get("jock")))
 
     # 枠順
     w_num = h.get("w_num")
     if w_num:
-        fmap = factor_table.get("frame") or {}
+        fmap = (factor_table or {}).get("frame") or {}
         row = fmap.get(_norm(f"{w_num}枠")) or fmap.get(_norm(str(w_num)))
         add("frame", f"{w_num}枠", row)
 
     # 脚質 (複数該当は平均、重み0なら算入しない)
     styles = style_map.get(h.get("kyakushitsu", ""), []) if weights.get("averunningstyle") else []
     if styles:
-        smap = factor_table.get("averunningstyle") or {}
+        smap = (factor_table or {}).get("averunningstyle") or {}
         rows = [smap.get(_norm(s)) for s in styles]
         rows = [r for r in rows if r]
         if rows:
             w = weights.get("averunningstyle", 0)
             pts_list = []
             for r in rows:
-                p, _ = _factor_points(r, baseline_show, params, w)
+                p, _ = _factor_points(r, baseline_show, params, w, rate_key)
                 if p is not None:
                     pts_list.append((p, r))
             if pts_list:
                 avg = sum(p for p, _ in pts_list) / len(pts_list)
                 total += avg
                 label = "/".join(styles)
-                shows = "/".join(f"{r['show_rate']:.1f}" for _, r in pts_list)
+                shows = "/".join(f"{r[rate_key]:.1f}" for _, r in pts_list)
                 details.append(
-                    f"{FACTOR_LABELS['averunningstyle']} {label}: 複{shows}% "
+                    f"{FACTOR_LABELS['averunningstyle']} {label}: {rate_label}{shows}% "
                     f"(基準{baseline_show:.1f}%) → {avg:+.1f}"
                 )
 
     # 距離変更 (前走距離との実差分 → db-keibaの7段階ラベル)
     d_label = _distance_label(dist_val, prev_dist)
     if d_label:
-        dmap = factor_table.get("distance") or {}
+        dmap = (factor_table or {}).get("distance") or {}
         add("distance", d_label, dmap.get(_norm(d_label)))
 
     # コース替わり (前走芝/ダ → 今回芝/ダ)
     if prev_surf:
         cur = "芝" if race_type == "芝" else "ダ"
         s_label = f"{prev_surf}→{cur}"
-        smap = factor_table.get("surface") or {}
+        smap = (factor_table or {}).get("surface") or {}
         add("surface", s_label, smap.get(_norm(s_label)))
 
     # 所属 (美浦/栗東)
     affi = h.get("affi")
     if affi in ("美浦", "栗東"):
-        tmap = factor_table.get("stable_trainer") or {}
+        tmap = (factor_table or {}).get("stable_trainer") or {}
         add("stable_trainer", affi, tmap.get(_norm(affi)))
 
     # 血統辞典 買い/消し (競馬血統総辞典)
@@ -748,12 +908,35 @@ def _compute_score_inner(h, race_context, factor_table, cfg):
         total += ab_pts
         details.extend(ab_details)
 
+    # 道悪適性 (当日馬場が稍/重/不のときのみ)
+    wet_pts, wet_details = eval_wet_aptitude(h, race_context, cfg)
+    if wet_details:
+        total += wet_pts
+        details.extend(wet_details)
+
+    # 市場 (単勝オッズ) — odds_k > 0 の設定時のみ (WIN5用)
+    mk_pts, mk_details = eval_market(h, cfg)
+    if mk_details:
+        total += mk_pts
+        details.extend(mk_details)
+
     # 既存◎〇△判定ボーナス
     gb = params.get("grade_bonus", {})
     grade = h.get("grade", "")
     if grade in gb and gb[grade]:
         total += gb[grade]
         details.append(f"判定{grade} → {gb[grade]:+.1f}")
+
+    # 好走条件の該当数ボーナス (2件目以降を加点。バックテストで該当数と勝率の単調増加を確認済)
+    cc = params.get("criteria_count", {})
+    n_match = len(h.get("ultra_details") or [])
+    if cc.get("per_extra") and n_match > 1:
+        pts = min(cc.get("cap", 6.0), cc["per_extra"] * (n_match - 1))
+        total += pts
+        details.append(f"好走条件 該当{n_match}件 → {pts:+.1f}")
+
+    if not details:  # 算出根拠が1つも無い (履歴なし かつ factors未整備 等)
+        return None, []
 
     score = round(total, 1)
     details.append(f"合計: {score:+.1f}")

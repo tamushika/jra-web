@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WIN5予想 (スコアリング+荒れ度配分)</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .w5-container { max-width: 1100px; margin: 0 auto; padding: 16px; }
+        .w5-section { background: rgba(0,0,0,0.25); border: 1px solid var(--border-color);
+                      border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+        .w5-step-title { font-size: 16px; font-weight: bold; color: var(--primary);
+                         margin-bottom: 10px; }
+        .w5-progress { color: var(--text-muted); margin: 8px 0; }
+        .w5-score-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+        .w5-score-table th, .w5-score-table td { border: 1px solid var(--border-color);
+                                                 padding: 4px 8px; text-align: center; }
+        .w5-score-table td.name { text-align: left; }
+        .upset-badge { display: inline-block; padding: 2px 10px; border-radius: 10px;
+                       font-weight: bold; font-size: 12px; margin-left: 6px; }
+        .upset-S { background: #d32f2f; color: #fff; }
+        .upset-A { background: #f57c00; color: #fff; }
+        .upset-B { background: #fbc02d; color: #333; }
+        .upset-C { background: #388e3c; color: #fff; }
+        .upset-N { background: #555; color: #eee; }
+        .w5-pick-row { border: 1px solid var(--border-color); border-radius: 8px;
+                       padding: 10px 14px; margin-bottom: 8px; }
+        .w5-pick-horses { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+        .w5-horse-chip { background: rgba(255,255,255,0.08); border: 1px solid var(--border-color);
+                         border-radius: 6px; padding: 3px 10px; font-size: 13px; }
+        .w5-horse-chip b { color: var(--primary); }
+        .w5-formula { font-size: 20px; font-weight: bold; color: var(--primary); margin: 10px 0 4px; }
+        .w5-est { color: var(--text-muted); font-size: 13px; }
+        .w5-race-head { font-weight: bold; }
+        .w5-selected-row { background: rgba(80, 200, 120, 0.10); }
+        .score-detail-btn { cursor: pointer; color: var(--primary); background: none;
+                            border: none; font-size: 12px; }
+        .w5-detail-pre { font-size: 11px; color: var(--text-muted); text-align: left;
+                         white-space: pre-wrap; margin: 2px 0 0; }
+    </style>
+</head>
+<body>
+<div class="w5-container">
+    <h2 style="margin: 12px 0;">WIN5予想 <span style="font-size:13px;color:var(--text-muted);">スコアリング + 荒れ度配分 (ローカル専用)</span></h2>
+
+    <!-- STEP 1 -->
+    <div class="w5-section">
+        <div class="w5-step-title">STEP 1: WIN5対象レース取得</div>
+        <button class="primary-btn" id="loadBtn" onclick="loadRaces()">対象レースを取得</button>
+        <span class="w5-progress" id="loadStatus"></span>
+        <div class="win5-race-grid" id="raceGrid" style="margin-top:12px;"></div>
+    </div>
+
+    <!-- STEP 2 -->
+    <div class="w5-section">
+        <div class="w5-step-title">STEP 2: スコア計算 (5レース順次・数分かかります)</div>
+        <button class="primary-btn" id="analyzeBtn" onclick="analyzeAll()" disabled>スコア計算開始</button>
+        <span class="w5-progress" id="analyzeStatus"></span>
+        <div id="scoreArea"></div>
+    </div>
+
+    <!-- STEP 3 -->
+    <div class="w5-section">
+        <div class="w5-step-title">STEP 3: 買い目生成</div>
+        <div style="margin-bottom:10px;">
+            点数上限:
+            <label class="win5-radio-label"><input type="radio" name="pts" value="50"> 50点</label>
+            <label class="win5-radio-label"><input type="radio" name="pts" value="100" checked> 100点</label>
+            <label class="win5-radio-label"><input type="radio" name="pts" value="150"> 150点</label>
+            <label class="win5-radio-label"><input type="radio" name="pts" value="200"> 200点</label>
+        </div>
+        <div style="margin-bottom:10px;">
+            <label class="win5-radio-label">
+                <input type="checkbox" id="singleAxis">
+                最も確度が高いレースを1頭固定 (軸) — 浮いた点数を他レースに配分
+            </label>
+            <span style="color:var(--text-muted);font-size:11px;">
+                ※バックテスト(2021-2025・512日、オッズ統合後): 全点数で通常配分が的中率優位。軸固定は点数節約用
+            </span>
+        </div>
+        <button class="primary-btn" id="kaimeBtn" onclick="generateKaime()" disabled>買い目を生成</button>
+        <div id="kaimeArea" style="margin-top:12px;"></div>
+    </div>
+</div>
+
+<script>
+let raceList = [];      // STEP1 の5レース {venue, race_num, time, url}
+let analyzed = [];      // STEP2 の解析結果 (idx順)
+
+function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function upsetBadge(rank) {
+    const r = rank || '?';
+    const cls = ['S','A','B','C'].includes(r) ? `upset-${r}` : 'upset-N';
+    return `<span class="upset-badge ${cls}">荒れ度 ${esc(r)}</span>`;
+}
+
+// ── STEP 1 ──────────────────────────────────────────────
+async function loadRaces() {
+    const st = document.getElementById('loadStatus');
+    st.textContent = '取得中...';
+    document.getElementById('loadBtn').disabled = true;
+    try {
+        const res = await fetch('/api/win5_races');
+        const data = await res.json();
+        const grid = document.getElementById('raceGrid');
+        grid.innerHTML = '';
+        if (!data.success) {
+            st.textContent = data.error || '取得失敗';
+            raceList = Array.from({length: 5}, (_, i) => ({idx: i, venue: '?', race_num: '?', time: '', url: ''}));
+        } else {
+            st.textContent = `対象日: ${data.date || ''}`;
+            raceList = data.races;
+        }
+        raceList.forEach((r, i) => {
+            const found = !!r.url;
+            grid.insertAdjacentHTML('beforeend', `
+                <div class="win5-race-card">
+                    <div class="win5-race-no">WIN5-${i + 1}</div>
+                    <div class="win5-race-venue">${esc(r.venue)} ${esc(r.race_num)}R</div>
+                    <div class="win5-race-time">${esc(r.time || '')}</div>
+                    <div class="win5-url-status">${found ? '✅ URL自動取得' : '⚠️ URLを入力してください'}</div>
+                    <input class="win5-url-input" id="url${i}" value="${esc(r.url)}" placeholder="accessD.html?CNAME=...">
+                </div>`);
+        });
+        document.getElementById('analyzeBtn').disabled = false;
+    } catch (e) {
+        st.textContent = 'エラー: ' + e.message;
+    } finally {
+        document.getElementById('loadBtn').disabled = false;
+    }
+}
+
+// ── STEP 2 ──────────────────────────────────────────────
+async function analyzeAll() {
+    const st = document.getElementById('analyzeStatus');
+    const area = document.getElementById('scoreArea');
+    const btn = document.getElementById('analyzeBtn');
+    btn.disabled = true;
+    area.innerHTML = '';
+    analyzed = [];
+    for (let i = 0; i < 5; i++) {
+        const url = (document.getElementById(`url${i}`)?.value || '').trim();
+        if (!url) {
+            st.textContent = `WIN5-${i + 1} のURLが未入力です`;
+            btn.disabled = false;
+            return;
+        }
+        st.textContent = `解析中... ${i + 1}/5 (${raceList[i]?.venue || ''})`;
+        try {
+            const res = await fetch('/api/win5_analyze_one', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({idx: i, url})
+            });
+            const data = await res.json();
+            if (data.error) throw new Error(data.error);
+            analyzed[i] = data;
+            renderRaceScores(area, i, data);
+        } catch (e) {
+            st.textContent = `WIN5-${i + 1} 解析失敗: ${e.message}`;
+            btn.disabled = false;
+            return;
+        }
+    }
+    st.textContent = '5レース完了';
+    btn.disabled = false;
+    document.getElementById('kaimeBtn').disabled = false;
+}
+
+function renderRaceScores(area, i, data) {
+    const horses = [...(data.horses || [])].sort((a, b) => (b.score ?? -999) - (a.score ?? -999));
+    const rows = horses.map((h, ri) => `
+        <tr id="r${i}h${h.num}">
+            <td>${ri + 1}</td><td>${esc(h.num)}</td>
+            <td class="name">${esc(h.name)}
+                ${h.score_details?.length ? `<button class="score-detail-btn" onclick="toggleDetail(${i},${h.num})">[内訳]</button>
+                <pre class="w5-detail-pre" id="d${i}h${h.num}" style="display:none;">${esc(h.score_details.join('\n'))}</pre>` : ''}
+            </td>
+            <td>${h.score ?? '-'}</td><td>${esc(h.grade || '-')}</td>
+            <td>${esc(h.odds)}</td><td>${esc(h.pop || '-')}</td><td>${esc(h.jock)}</td>
+        </tr>`).join('');
+    area.insertAdjacentHTML('beforeend', `
+        <div style="margin-top:14px;">
+            <div class="w5-race-head">WIN5-${i + 1}: ${esc(data.race_info)} ${upsetBadge(data.upset_rank)}
+                <span style="color:var(--text-muted);font-size:12px;">(荒れ指数 ${data.upset_score ?? '-'})</span>
+            </div>
+            <table class="w5-score-table">
+                <tr><th>順</th><th>馬番</th><th>馬名</th><th>スコア</th><th>判定</th><th>オッズ</th><th>人気</th><th>騎手</th></tr>
+                ${rows}
+            </table>
+        </div>`);
+}
+
+function toggleDetail(i, num) {
+    const el = document.getElementById(`d${i}h${num}`);
+    if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+// ── STEP 3 ──────────────────────────────────────────────
+async function generateKaime() {
+    const pts = document.querySelector('input[name="pts"]:checked').value;
+    const area = document.getElementById('kaimeArea');
+    area.innerHTML = '生成中...';
+    try {
+        const singleAxis = document.getElementById('singleAxis').checked;
+        const res = await fetch('/api/win5_kaime', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({points: Number(pts), races: analyzed, single_axis: singleAxis})
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        // 選択行のハイライト
+        document.querySelectorAll('.w5-selected-row').forEach(el => el.classList.remove('w5-selected-row'));
+        const blocks = data.picks.map(p => {
+            p.horses.forEach(h => document.getElementById(`r${p.idx}h${h.num}`)?.classList.add('w5-selected-row'));
+            const chips = p.horses.map(h =>
+                `<span class="w5-horse-chip"><b>${esc(h.num)}</b> ${esc(h.name)} (${h.score})</span>`).join('');
+            const cov = p.coverage != null ? `カバー率 ${(p.coverage * 100).toFixed(1)}%` : '';
+            const axisBadge = p.is_axis
+                ? '<span class="upset-badge" style="background:#1976d2;color:#fff;">軸 1点</span>' : '';
+            return `<div class="w5-pick-row">
+                <span class="w5-race-head">WIN5-${p.idx + 1} ${esc(p.venue)}</span>
+                ${upsetBadge(p.upset_rank)} ${axisBadge} <b>${p.k}頭</b>
+                <span style="color:var(--text-muted);font-size:12px;">${cov}</span>
+                <div class="w5-pick-horses">${chips}</div>
+            </div>`;
+        }).join('');
+        area.innerHTML = `
+            <div class="w5-formula">${esc(data.formula)} <span style="font-size:13px;color:var(--text-muted);">(上限${data.budget}点)</span></div>
+            <div class="w5-est">推定的中率: ${(data.est_hit_rate * 100).toFixed(2)}%
+                (2024-2025バックテストのカバレッジ実測に基づく)</div>
+            <div style="margin-top:10px;">${blocks}</div>`;
+    } catch (e) {
+        area.innerHTML = `<span style="color:#ff6b6b;">エラー: ${esc(e.message)}</span>`;
+    }
+}
+</script>
+</body>
+</html>

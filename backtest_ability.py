@@ -49,7 +49,7 @@ def load_runs(conn, date_from, date_to):
     cur.execute(
         """SELECT date, place, r, race_name, race_class, horse, total_horses,
                   popularity, rank, track_type, distance, condition,
-                  time_sec, agari, win_pay
+                  time_sec, agari, win_pay, jockey, umaban
            FROM runs WHERE date >= ? AND date <= ?""",
         (lookback, date_to),
     )
@@ -70,9 +70,10 @@ def load_runs(conn, date_from, date_to):
     return runs
 
 
-def extract_features(runs, date_from):
+def extract_features(runs, date_from, use_variant=False):
     """
     各評価出走に対し、直近4走から能力特徴量を抽出。
+    use_variant: 馬場差 (track_variants.json) でタイムを補正するか
     戻り値: [{date, rank, popularity, win_pay, tfeat, cfeat, agari_min}, ...]
       tfeat = max_i clip(基準タイム差, ±4秒) × recency_i   (time_k を掛ける前)
       cfeat = max_i クラス点(10-70) × 着順係数 × recency_i  (class_k を掛ける前)
@@ -100,12 +101,15 @@ def extract_features(runs, date_from):
             agari_min = None
             for j, pr in enumerate(prior):
                 rw = RECENCY[j] if j < len(RECENCY) else RECENCY[-1]
-                # タイム
+                # タイム (use_variant時は馬場差補正)
                 if pr["time_sec"] and pr["condition"]:
                     base = scoring.std_time(pr["place"], pr["track_type"], pr["distance"],
                                             pr["race_class"], pr["condition"])
                     if base is not None:
-                        diff = max(-TIME_DIFF_CLIP, min(TIME_DIFF_CLIP, base - pr["time_sec"]))
+                        tv = scoring.track_variant(pr["date"], pr["place"],
+                                                   pr["track_type"]) if use_variant else 0.0
+                        diff = max(-TIME_DIFF_CLIP,
+                                   min(TIME_DIFF_CLIP, base + tv - pr["time_sec"]))
                         v = diff * rw
                         tfeat = v if tfeat is None else max(tfeat, v)
                 # クラス実績

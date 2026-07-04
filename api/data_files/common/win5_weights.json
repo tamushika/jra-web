@@ -1,0 +1,159 @@
+{
+  "version": 1,
+  "params": {
+    "rate_key": "win_rate",
+    "scale_k": 100,
+    "clamp_min": -8.0,
+    "clamp_max": 12.0,
+    "shrinkage_n0": 20,
+    "min_starts": 5,
+    "roi_bonus": {
+      "show_roi_threshold": 999,
+      "win_roi_threshold": 100,
+      "points": 1.5
+    },
+    "grade_bonus": {
+      "◎": 8.0,
+      "〇": 4.0,
+      "△": 1.5
+    },
+    "criteria_count": {
+      "per_extra": 2.0,
+      "cap": 6.0
+    },
+    "buysell_points": {
+      "買い": 3.0,
+      "消し": -2.0
+    },
+    "buysell_clamp": 6.0,
+    "ability": {
+      "time_k": 1.5,
+      "time_clamp": 8.0,
+      "recency": [
+        1.0,
+        0.85,
+        0.7,
+        0.55
+      ],
+      "class_k": 0.06,
+      "pos_factor": {
+        "1": 1.0,
+        "2": 0.4,
+        "3": 0.2
+      },
+      "agari_best_ratio": 0.3,
+      "agari_bonus": 3.0,
+      "track_variant": true
+    },
+    "wet_aptitude": {
+      "rank_gap": 2,
+      "bonus_better": 2.0,
+      "penalty_worse": -1.5
+    },
+    "market": {
+      "odds_k": 8.0,
+      "odds_ref": 10.0,
+      "clamp": 10.0
+    }
+  },
+  "weights": {
+    "father_w": 0.5,
+    "jockey_w": 1.0,
+    "frame": 0.5,
+    "averunningstyle": 0.0,
+    "distance": 0.8,
+    "surface": 0.8,
+    "stable_trainer": 0.5,
+    "sire_buysell": 1.0,
+    "ability": 1.0
+  },
+  "style_map": {
+    "◀◁◁◁": [
+      "逃げ"
+    ],
+    "◀◀◁◁": [
+      "逃げ",
+      "先行"
+    ],
+    "◁◀◁◁": [
+      "先行"
+    ],
+    "◁◀◀◁": [
+      "先行",
+      "差し"
+    ],
+    "◁◁◀◁": [
+      "差し"
+    ],
+    "◁◁◀◀": [
+      "差し",
+      "追込"
+    ],
+    "◁◁◁◀": [
+      "追込"
+    ]
+  },
+  "allocation": {
+    "max_picks_per_race": 8,
+    "coverage": {
+      "S": [
+        0.2586,
+        0.4401,
+        0.5776,
+        0.6829,
+        0.7559,
+        0.8086,
+        0.8553,
+        0.8875
+      ],
+      "A": [
+        0.297,
+        0.4885,
+        0.6151,
+        0.7089,
+        0.7869,
+        0.8361,
+        0.8689,
+        0.901
+      ],
+      "B": [
+        0.3171,
+        0.5239,
+        0.6533,
+        0.7422,
+        0.8108,
+        0.8634,
+        0.8958,
+        0.9281
+      ],
+      "C": [
+        0.3182,
+        0.5361,
+        0.6738,
+        0.7714,
+        0.8409,
+        0.8997,
+        0.9238,
+        0.9519
+      ],
+      "default": [
+        0.2962,
+        0.494,
+        0.6254,
+        0.7208,
+        0.7932,
+        0.846,
+        0.8815,
+        0.9132
+      ]
+    },
+    "note": "coverage[k-1] = 勝ち馬がスコア上位k頭に入る確率 (荒れランク別)。初期値は仮置き — backtest_win5.py --write が実測値で上書きする"
+  },
+  "backtest_meta": {
+    "tuned_factors": [
+      "allocation.coverage"
+    ],
+    "tuned_at": "2026-07-04",
+    "note": "backtest_win5 20210101-20251231: カバレッジ実測 (9R以降, ランク別n={'A': 1525, 'S': 1520, 'B': 1823, 'C': 748, 'default': 28}). WIN5シミュレーションは日曜R降順5レース近似"
+  }
+}

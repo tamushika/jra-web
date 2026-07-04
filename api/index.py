@@ -9,7 +9,10 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 from bs4 import BeautifulSoup
-import google.generativeai as genai
+try:
+    import google.generativeai as genai
+except ImportError:
+    genai = None  # AI予想以外の機能はgenai無しでも動作 (WIN5ローカルアプリ等)
 
 # Local imports
 import sys
@@ -327,13 +330,9 @@ def build_matrix_data(soup):
                 
     return matrix_data
 
-@app.route('/api/scrape', methods=['POST'])
-def scrape():
-    data = request.json or {}
-    url = data.get('url')
-    mode = data.get('mode', '簡易')
-    if not url: return jsonify({"error": "No URL provided"}), 400
-
+def analyze_race_url(url, mode='簡易'):
+    """レースカードURLをスクレイプ・解析して結果dictを返す。
+    /api/scrape のコア処理 (WIN5ローカルアプリ等からも直接利用)。失敗時は例外を送出。"""
     try:
         res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
         res.encoding = 'shift_jis'
@@ -438,8 +437,17 @@ def scrape():
             age_digit = age_m.group(1).translate(str.maketrans('２３４', '234'))
             age_cond = "古馬混合" if age_m.group(2) else f"{age_digit}歳限定"
 
+        # 当日馬場状態 (道悪適性スコア用): baba_info文字列から当該レースのsurface分を抽出
+        baba_cond = ""
+        if baba_info:
+            surf_label = "芝" if race_type == "芝" else "ダート"
+            cond_m = re.search(rf'{surf_label}:\s*(良|稍重|重|不良)', str(baba_info))
+            if cond_m:
+                baba_cond = cond_m.group(1)[0]  # 良/稍/重/不
+
         race_context = {"type": race_type, "dist": dist_val, "total_horses": len(scraped_data),
-                        "venue": venue, "race_class": race_class, "age_cond": age_cond}
+                        "venue": venue, "race_class": race_class, "age_cond": age_cond,
+                        "baba_cond": baba_cond}
 
         # スコアリング用ファクター統計 (db-keiba由来) と重み設定
         factor_table = scoring.load_factor_table(venue, race_type, dist_val, base_dir)
@@ -554,13 +562,14 @@ def scrape():
                 course_image = img_map.get(venue, {}).get(key, "")
         except: pass
 
-        return jsonify({
+        return {
             "success": True,
             "race_info": race_label,
             "venue": venue,
             "race_type": race_type,
             "dist_val": dist_val,
             "race_class": race_class,
+            "baba_cond": baba_cond,
             "baba_info": baba_info,
             "course_record": course_record_text,
             "course_image": course_image,
@@ -577,7 +586,19 @@ def scrape():
             "has_double_circle": has_double_circle,
             "race_type": race_type,
             "dist_val": dist_val,
-        })
+        }
+    except Exception:
+        raise  # 呼び出し元 (ルート/WIN5アプリ) でハンドリング
+
+
+@app.route('/api/scrape', methods=['POST'])
+def scrape():
+    data = request.json or {}
+    url = data.get('url')
+    mode = data.get('mode', '簡易')
+    if not url: return jsonify({"error": "No URL provided"}), 400
+    try:
+        return jsonify(analyze_race_url(url, mode))
     except Exception as e:
         import traceback
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
