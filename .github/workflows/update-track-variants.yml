@@ -1,0 +1,40 @@
+name: Update track variants (馬場差)
+
+on:
+  schedule:
+    # 毎週月曜 07:00 JST (= 日曜 22:00 UTC)。日曜夜のDB登録の後に実行される想定
+    - cron: "0 22 * * 0"
+  workflow_dispatch: {}  # 手動実行も可
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install psycopg2-binary
+
+      - name: Regenerate recent track variants from Neon
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python gen_track_variants.py --update
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet api/data_files/common/track_variants.json; then
+            echo "変更なし — コミットをスキップ"
+          else
+            git add api/data_files/common/track_variants.json
+            git commit -m "Update track variants (weekly auto-update)"
+            git push
+          fi
