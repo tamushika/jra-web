@@ -129,7 +129,7 @@ def win5_analyze_one():
     try:
         result = analyze_race_url(url, "簡易")
 
-        # WIN5用スコア (勝率ベース) で上書き計算
+        # WIN5用スコアで上書き計算 (use_ml=true かつモデル配置済みならML、なければ手調整)
         cfg5 = scoring.load_score_weights(API_DIR, "win5_weights.json")
         venue = result.get("venue")
         race_type = result.get("race_type")
@@ -138,8 +138,12 @@ def win5_analyze_one():
         rc = {"type": race_type, "dist": dist_val, "venue": venue,
               "race_class": result.get("race_class", ""), "age_cond": "",
               "baba_cond": result.get("baba_cond", "")}
+        use_ml = cfg5.get("use_ml", False)
         for h in result.get("horses", []):
-            h["score"], h["score_details"] = scoring.compute_score(h, rc, factor_table, cfg5)
+            if use_ml:
+                h["score"], h["score_details"] = scoring.compute_score_ml(h, rc, factor_table, cfg5)
+            else:
+                h["score"], h["score_details"] = scoring.compute_score(h, rc, factor_table, cfg5)
 
         rank, score = get_upset(venue, race_type, dist_val)
         horses = [{

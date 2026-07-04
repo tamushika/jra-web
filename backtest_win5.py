@@ -323,6 +323,8 @@ def main():
     ap.add_argument("--from", dest="date_from", default="20240101")
     ap.add_argument("--to", dest="date_to", default="20251231")
     ap.add_argument("--write", action="store_true")
+    ap.add_argument("--ml", action="store_true",
+                    help="win5_ml_model.json のMLスコアで評価 (デフォルトは手調整スコア)")
     args = ap.parse_args()
 
     cfg = load_win5_cfg()
@@ -335,7 +337,20 @@ def main():
     conn.close()
     print(f"ロード: {len(runs)}行 / スコア付与中...")
 
-    races = score_all_runners(runs, args.date_from, cfg)
+    if args.ml:
+        import numpy as np
+        from backtest_ml import build_dataset, MODEL_PATH
+        with open(MODEL_PATH, "r", encoding="utf-8") as f:
+            model = json.load(f)
+        X, _y, race_keys, meta = build_dataset(runs, args.date_from, cfg)
+        z = (X - np.array(model["mean"])) / np.array(model["sd"])
+        scores = z @ np.array(model["coef"]) * model.get("display_scale", 10.0)
+        races = defaultdict(list)
+        for s, key, m in zip(scores, race_keys, meta):
+            races[key].append((float(s), m))
+        print(f"MLスコア使用 (win5_ml_model.json, {model['meta']['trained_at']})")
+    else:
+        races = score_all_runners(runs, args.date_from, cfg)
     print(f"評価レース: {len(races)}")
 
     coverage, n_races = measure_coverage(races, upset_map)

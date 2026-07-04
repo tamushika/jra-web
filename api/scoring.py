@@ -461,6 +461,184 @@ def eval_wet_aptitude(h, race_context, cfg):
     return pts, [detail]
 
 
+# ─── MLスコア (ロジスティック回帰, WIN5用) ───────────────────────────────────
+
+_ML_CACHE = {"model": None}
+
+_ML_LABELS = {
+    "j_pts": "騎手", "f_pts": "枠順", "tfeat": "タイム", "cfeat": "クラス実績",
+    "agari_flag": "上がり", "ln_odds": "市場", "prev_rank": "前走着順",
+    "ln_interval": "間隔", "age": "年齢", "is_male": "性別", "kinryo": "斤量",
+    "weight": "馬体重", "n_prior": "キャリア", "wet_match": "道悪適性",
+}
+
+
+def load_ml_model():
+    """win5_ml_model.json (backtest_ml.py --write が出力)。無ければ None。"""
+    if _ML_CACHE["model"] is not None:
+        return _ML_CACHE["model"] or None
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "data_files", "common", "win5_ml_model.json")
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            _ML_CACHE["model"] = json.load(f)
+    except Exception:
+        _ML_CACHE["model"] = {}
+    return _ML_CACHE["model"] or None
+
+
+def _ml_features(h, race_context, factor_table, cfg):
+    """ライブデータから backtest_ml.build_dataset と同一定義の特徴量を構築"""
+    import math
+    params = cfg.get("params", DEFAULT_CFG["params"])
+    weights = cfg.get("weights", DEFAULT_CFG["weights"])
+    ab = params.get("ability", DEFAULT_CFG["params"]["ability"])
+    recency = ab.get("recency", [1.0, 0.85, 0.7, 0.55])
+    f = {k: 0.0 for k in _ML_LABELS}
+
+    # バイアス (騎手/枠, 勝率ベースの点数そのもの)
+    if factor_table is not None:
+        baseline = factor_table["baseline"].get("win_rate")
+        if baseline is not None:
+            row = _match_entity(factor_table.get("jockey_w"), h.get("jock"))
+            if row is not None:
+                p, _ = _factor_points(row, baseline, params, weights.get("jockey_w", 0), "win_rate")
+                if p is not None:
+                    f["j_pts"] = p
+            w_num = h.get("w_num")
+            if w_num:
+                row = (factor_table.get("frame") or {}).get(_norm(f"{w_num}枠"))
+                if row is not None:
+                    p, _ = _factor_points(row, baseline, params, weights.get("frame", 0), "win_rate")
+                    if p is not None:
+                        f["f_pts"] = p
+
+    # 能力系 (backtestと同じ raw特徴量: clip(基準差, ±4秒)×recency の最良値)
+    hist = [r for r in (h.get("hist") or []) if r]
+    use_variant = ab.get("track_variant", False)
+    tbest, cbest, amin = None, None, None
+    for i, run in enumerate(hist[:4]):
+        rw = recency[i] if i < len(recency) else recency[-1]
+        tsec = parse_run_time(run.get("run_time", "-"))
+        info = _run_course_info(run)
+        if tsec is not None and info is not None:
+            place, track, dist, rclass, cond = info
+            base = std_time(place, track, dist, rclass, cond)
+            if base is not None:
+                variant = 0.0
+                if use_variant:
+                    dm = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", str(run.get("raw", "")))
+                    if dm:
+                        variant = track_variant(
+                            f"{dm.group(1)}{int(dm.group(2)):02d}{int(dm.group(3)):02d}",
+                            place, track)
+                diff = max(-4.0, min(4.0, base + variant - tsec))
+                v = diff * rw
+                tbest = v if tbest is None else max(tbest, v)
+        rank_s = str(run.get("rank", ""))
+        if rank_s.isdigit():
+            pf = {"1": 1.0, "2": 0.4, "3": 0.2}
+            pf = {int(k): v for k, v in ab.get("pos_factor", pf).items()}
+            p = pf.get(int(rank_s), 0.0)
+            if p:
+                crank = {"重賞": 70, "オープン": 60, "3勝クラス": 50, "2勝クラス": 40,
+                         "1勝クラス": 30, "未勝利": 20, "新馬": 10}.get(
+                             class_label(run.get("race_name", "")), 0)
+                v = crank * p * rw
+                cbest = v if cbest is None else max(cbest, v)
+    ratios = _hist_agari_ratios(h)
+    if ratios:
+        amin = min(ratios)
+    f["tfeat"] = tbest or 0.0
+    f["cfeat"] = cbest or 0.0
+    f["agari_flag"] = 1.0 if (amin is not None and amin <= ab.get("agari_best_ratio", 0.3)) else 0.0
+
+    # 市場
+    try:
+        odds = float(h.get("odds", 0))
+    except (TypeError, ValueError):
+        odds = 0
+    f["ln_odds"] = math.log(odds) if 1.0 < odds < 999 else math.log(30.0)
+
+    # 追加素性 (欠損時の埋め値は backtest_ml と同一)
+    prev_rank = 10
+    if hist and str(hist[0].get("rank", "")).isdigit():
+        prev_rank = min(int(hist[0]["rank"]), 18)
+    f["prev_rank"] = prev_rank
+    iv = str(h.get("iv", "-"))
+    if "連闘" in iv:
+        f["ln_interval"] = math.log(7)
+    else:
+        m = re.search(r"中(\d+)週", iv)
+        f["ln_interval"] = math.log((int(m.group(1)) + 1) * 7) if m else math.log(30)
+    age_m = re.search(r"(\d+)", str(h.get("sex_age", "")))
+    f["age"] = int(age_m.group(1)) if age_m else 4
+    f["is_male"] = 1.0 if str(h.get("sex_age", ""))[:1] in ("牡", "セ") else 0.0
+    kg_m = re.search(r"(\d+(?:\.\d+)?)", str(h.get("kg", "")))
+    f["kinryo"] = float(kg_m.group(1)) if kg_m else 55.0
+    wt = 470
+    if hist:
+        wt_m = re.search(r"(\d{3})", str(hist[0].get("weight", "")))
+        if wt_m:
+            wt = int(wt_m.group(1))
+    f["weight"] = wt
+    f["n_prior"] = len(hist[:4])
+
+    # 道悪適性 (eval_wet_aptitude と同じ定義を ±1/0 のフラグに)
+    cond = str(race_context.get("baba_cond", ""))[:1]
+    if cond in ("稍", "重", "不"):
+        wet_r, dry_r = [], []
+        for run in hist[:4]:
+            c = next((ch for ch in str(run.get("condition", "")) if ch in "良稍重不"), "")
+            rank_s = str(run.get("rank", ""))
+            if c and rank_s.isdigit():
+                (dry_r if c == "良" else wet_r).append(int(rank_s))
+        if wet_r and dry_r:
+            gap = min(wet_r) - min(dry_r)
+            if gap <= -2:
+                f["wet_match"] = 1.0
+            elif gap >= 2:
+                f["wet_match"] = -1.0
+    return f
+
+
+def compute_score_ml(h, race_context, factor_table, cfg):
+    """
+    MLスコア (ロジスティック回帰の線形結合)。モデル未配置・例外時は手調整スコアへフォールバック。
+    戻り値: (score, details)
+    """
+    model = load_ml_model()
+    if model is None:
+        return compute_score(h, race_context, factor_table, cfg)
+    try:
+        f = _ml_features(h, race_context, factor_table, cfg)
+        scale = model.get("display_scale", 10.0)
+        contribs = []
+        total = 0.0
+        for name, mean, sd, coef in zip(model["features"], model["mean"],
+                                        model["sd"], model["coef"]):
+            if not sd:
+                continue
+            c = (f.get(name, 0.0) - mean) / sd * coef * scale
+            total += c
+            contribs.append((abs(c), name, c))
+        contribs.sort(reverse=True)
+        details = []
+        for _, name, c in contribs[:6]:
+            label = _ML_LABELS.get(name, name)
+            extra = ""
+            if name == "ln_odds":
+                extra = f"(単勝{h.get('odds', '?')}倍)"
+            elif name == "prev_rank":
+                extra = f"({int(f['prev_rank'])}着)"
+            details.append(f"ML {label}{extra}: {c:+.1f}")
+        score = round(total, 1)
+        details.append(f"合計(ML): {score:+.1f}")
+        return score, details
+    except Exception:
+        return compute_score(h, race_context, factor_table, cfg)
+
+
 # ─── WIN5 買い目配分 (荒れランク別カバレッジの貪欲最適化) ────────────────────
 
 def allocate_picks(upset_ranks, coverage_map, budget, max_picks=8, fixed=None):
