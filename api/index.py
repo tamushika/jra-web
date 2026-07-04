@@ -17,6 +17,7 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import analysis
 import past_data_service
+import scoring
 
 app = Flask(__name__, static_folder='../', static_url_path='/')
 CORS(app)
@@ -430,7 +431,19 @@ def scrape():
             mawari_map = {str(row[0]).strip(): str(row[1]).strip() for _, row in df.iterrows()}
         except: pass
 
-        race_context = {"type": race_type, "dist": dist_val, "total_horses": len(scraped_data), "venue": venue}
+        # 年齢条件 (血統辞典の古馬混合戦/2〜3歳限定戦の判定用)
+        age_cond = ""
+        age_m = re.search(r'サラ系(?:障害)?\s*([2２3３4４])歳(以上)?', page_text)
+        if age_m:
+            age_digit = age_m.group(1).translate(str.maketrans('２３４', '234'))
+            age_cond = "古馬混合" if age_m.group(2) else f"{age_digit}歳限定"
+
+        race_context = {"type": race_type, "dist": dist_val, "total_horses": len(scraped_data),
+                        "venue": venue, "race_class": race_class, "age_cond": age_cond}
+
+        # スコアリング用ファクター統計 (db-keiba由来) と重み設定
+        factor_table = scoring.load_factor_table(venue, race_type, dist_val, base_dir)
+        score_cfg = scoring.load_score_weights(base_dir)
         
         criteria_lines = []
         for c in criteria:
@@ -460,7 +473,10 @@ def scrape():
                         h['dist_diff'] = "短縮"
                     else:
                         h['dist_diff'] = "同"
-            
+
+            # 評価点スコア (ファクター統計未整備の会場は None)
+            h['score'], h['score_details'] = scoring.compute_score(h, race_context, factor_table, score_cfg)
+
             horses_out.append(h)
 
         # Feature Course Memo

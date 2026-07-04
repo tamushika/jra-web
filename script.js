@@ -432,31 +432,63 @@ async function fetchWindData(venue) {
     }
 }
 
+let scoreSortActive = false;
+
+function setupScoreSortHeader() {
+    const ths = document.querySelectorAll('#horsesTable thead th');
+    ths.forEach(th => {
+        if (th.textContent.replace('▼', '').trim() !== 'スコア') return;
+        if (th.dataset.sortBound) return;
+        th.dataset.sortBound = '1';
+        th.style.cursor = 'pointer';
+        th.title = 'クリックでスコア順⇔馬番順を切替';
+        th.onclick = () => {
+            scoreSortActive = !scoreSortActive;
+            th.textContent = scoreSortActive ? 'スコア▼' : 'スコア';
+            const sorted = [...globalHorsesData];
+            if (scoreSortActive) {
+                sorted.sort((a, b) => (b.score ?? -999) - (a.score ?? -999));
+            } else {
+                sorted.sort((a, b) => a.num - b.num);
+            }
+            renderHorsesTable(sorted);
+        };
+    });
+}
+
 function renderHorsesTable(horses) {
     const tbody = document.getElementById('horsesTbody');
     tbody.innerHTML = '';
+    setupScoreSortHeader();
+
+    // スコア上位3頭 (nullは除外)
+    const scoreTop3 = [...horses]
+        .filter(x => x.score !== null && x.score !== undefined)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3)
+        .map(x => x.num);
 
     horses.forEach(h => {
         const tr = document.createElement('tr');
         tr.dataset.horseNum = h.num;
         updateRowMarkStyle(tr, h.num); // 既存の印を反映
-        
+
         const tdWaku = document.createElement('td');
         tdWaku.textContent = h.waku || h.w_num;
         tdWaku.className = `waku-${h.waku || h.w_num}`;
-        
+
         // Other Cols
         const cols = [
-            h.num, h.grade || '-', h.odds, h.pop || '-', h.iv, h.dist_diff || '-',
+            h.num, h.grade || '-', (h.score ?? '-'), h.odds, h.pop || '-', h.iv, h.dist_diff || '-',
             h.name, h.sex_age, h.kyakushitsu, h.kg, h.jock || h.jockey,
             h.affi, h.sire, h.bms
         ];
-        
+
         tr.appendChild(tdWaku);
         cols.forEach((val, idx) => {
             const td = document.createElement('td');
-            
-            if (idx === 6) { // idx 6 is now h.name
+
+            if (idx === 7) { // idx 7 is now h.name
                 td.style.textAlign = 'left';
                 const expandBtn = document.createElement('button');
                 expandBtn.textContent = '+';
@@ -478,7 +510,7 @@ function renderHorsesTable(horses) {
                         const histRow = document.createElement('tr');
                         histRow.className = 'history-row';
                         const histTd = document.createElement('td');
-                        histTd.colSpan = 16; // 枠+14列+印列 
+                        histTd.colSpan = 17; // 枠+15列+印列
                         histTd.innerHTML = buildMiniHistoryTable(h.hist);
                         histRow.appendChild(histTd);
                         tr.after(histRow);
@@ -498,14 +530,27 @@ function renderHorsesTable(horses) {
                 td.classList.add('grade-tooltip-target');
                 const tooltipSpan = document.createElement('span');
                 tooltipSpan.className = 'tooltip-text';
-                tooltipSpan.innerHTML = h.ultra_details && h.ultra_details.length > 0 
-                    ? h.ultra_details.join('<br>') 
+                tooltipSpan.innerHTML = h.ultra_details && h.ultra_details.length > 0
+                    ? h.ultra_details.join('<br>')
                     : '詳細データなし';
                 td.appendChild(tooltipSpan);
             }
-            
-            // Sire Ranking Highlight (idx 12 corresponds to h.sire now)
-            if (idx === 12 && h.sire_rank) {
+
+            // スコア列 (idx 2): 内訳tooltip + 上位3頭ハイライト
+            if (idx === 2) {
+                if (h.score_details && h.score_details.length > 0) {
+                    td.classList.add('grade-tooltip-target');
+                    const tooltipSpan = document.createElement('span');
+                    tooltipSpan.className = 'tooltip-text';
+                    tooltipSpan.innerHTML = h.score_details.join('<br>');
+                    td.appendChild(tooltipSpan);
+                }
+                const rankIdx = scoreTop3.indexOf(h.num);
+                if (rankIdx >= 0) td.classList.add(`score-top-${rankIdx + 1}`);
+            }
+
+            // Sire Ranking Highlight (idx 13 corresponds to h.sire now)
+            if (idx === 13 && h.sire_rank) {
                 if (h.sire_rank === 1) td.classList.add('sire-rank-1');
                 else if (h.sire_rank <= 5) td.classList.add('sire-rank-2-5');
                 else if (h.sire_rank <= 10) td.classList.add('sire-rank-6-10');

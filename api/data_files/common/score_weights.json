@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "params": {
+    "scale_k": 100,
+    "clamp_min": -8.0,
+    "clamp_max": 12.0,
+    "shrinkage_n0": 20,
+    "min_starts": 5,
+    "roi_bonus": {
+      "show_roi_threshold": 100,
+      "win_roi_threshold": 100,
+      "points": 1.5
+    },
+    "grade_bonus": {
+      "◎": 8.0,
+      "〇": 4.0,
+      "△": 1.5
+    },
+    "buysell_points": {
+      "買い": 3.0,
+      "消し": -2.0
+    },
+    "buysell_clamp": 6.0,
+    "ability": {
+      "time_k": 1.5,
+      "time_clamp": 8.0,
+      "recency": [
+        1.0,
+        0.85,
+        0.7,
+        0.55
+      ],
+      "class_k": 0.06,
+      "pos_factor": {
+        "1": 1.0,
+        "2": 0.7,
+        "3": 0.5,
+        "4": 0.25,
+        "5": 0.25
+      },
+      "agari_best_ratio": 0.3,
+      "agari_bonus": 3.0
+    }
+  },
+  "weights": {
+    "father_w": 0.5,
+    "jockey_w": 1.0,
+    "frame": 0.5,
+    "averunningstyle": 0.0,
+    "distance": 0.8,
+    "surface": 0.8,
+    "stable_trainer": 0.5,
+    "sire_buysell": 1.0,
+    "ability": 1.0
+  },
+  "style_map": {
+    "◀◁◁◁": [
+      "逃げ"
+    ],
+    "◀◀◁◁": [
+      "逃げ",
+      "先行"
+    ],
+    "◁◀◁◁": [
+      "先行"
+    ],
+    "◁◀◀◁": [
+      "先行",
+      "差し"
+    ],
+    "◁◁◀◁": [
+      "差し"
+    ],
+    "◁◁◀◀": [
+      "差し",
+      "追込"
+    ],
+    "◁◁◁◀": [
+      "追込"
+    ]
+  },
+  "backtest_meta": {
+    "tuned_factors": [
+      "jockey_w",
+      "frame",
+      "averunningstyle",
+      "father_w"
+    ],
+    "tuned_at": "2026-07-04",
+    "note": "backtest 2024-2025 (n=91572, グリッドサーチ125通り)。バケット複勝率16.1→35.9%で完全単調・最上位単回収88.8%。脚質はcorner_4実現値プロキシでは判別力なしのため0 (実運用の事前脚質とは別変数な点に留意、再有効化はこの値の変更のみ)。騎手照合率26.5% (db-keiba上位10騎手掲載の上限内)。種牡馬はOOS検証(sire_oos_check.py, year5シグナルvs2026年単年, 211ペア)でρ=+0.02〜+0.16と予測力弱・極端値は平均回帰のため1.0→0.5に半減 (2026-07-04)。血統辞典買い/消し(sire_buysell)は集計検証(buysell_validation.py)で買い=方向一致72%・ギャップ+2.0ptと支持→+3.0維持、消しは上位10種牡馬掲載の生存バイアスで検証不能(38%, 33セル)→-4.0を-2.0に緩和 (2026-07-04)。能力: per-runnerバックテスト(2024-2025, n=84354)でtime_k=1.5/class_k=0.06/agari=3.0に調整 (2026-07-04)"
+  }
+}

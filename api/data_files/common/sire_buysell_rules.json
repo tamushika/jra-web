@@ -1,0 +1,1242 @@
+{
+ "version": 1,
+ "source": "競馬血統総辞典 (sire_buysell.csv)",
+ "straight_map_note": "直線長短は scoring.py の STRAIGHT_MAP で判定",
+ "rules": [
+  {
+   "sire": "レイデオロ",
+   "kubun": "買い",
+   "text": "芝1800m・2200m・2500m以上で近走先行経験馬(テンパターン30以内) or 前走逃げ切り好走",
+   "segments": [
+    {
+     "dist_list": [
+      1800,
+      2200
+     ],
+     "dist_min_alt": 2500,
+     "surface": "芝",
+     "senko_recent": 0.3
+    },
+    {
+     "nigekiri_prev": true
+    }
+   ]
+  },
+  {
+   "sire": "レイデオロ",
+   "kubun": "消し",
+   "text": "1400m以下・牝馬",
+   "segments": [
+    {
+     "dist_max": 1400,
+     "sex": [
+      "牝"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "アジアエクスプレス",
+   "kubun": "買い",
+   "text": "芝1500m以下。特に2〜3歳限定戦",
+   "segments": [
+    {
+     "note": "特に2〜3歳限定戦",
+     "dist_max": 1500,
+     "surface": "芝"
+    }
+   ]
+  },
+  {
+   "sire": "アドマイヤマーズ",
+   "kubun": "買い",
+   "text": "ダートで母父が米国型 or 大型馬(前走馬体重500キロ以上)",
+   "segments": [
+    {
+     "surface": "ダート",
+     "unknown_notes": [
+      "母父米国型"
+     ]
+    },
+    {
+     "prev_weight_min": 500
+    }
+   ]
+  },
+  {
+   "sire": "アメリカンペイトリオット",
+   "kubun": "買い",
+   "text": "芝1400m以下。母父が米国型以外",
+   "segments": [
+    {
+     "dist_max": 1400,
+     "surface": "芝",
+     "unknown_notes": [
+      "母父米国型以外"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "イスラボニータ",
+   "kubun": "買い",
+   "text": "牡馬。母父が欧州型。芝1800m以上",
+   "segments": [
+    {
+     "dist_min": 1800,
+     "surface": "芝",
+     "sex": [
+      "牡"
+     ],
+     "unknown_notes": [
+      "母父欧州型"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "イスラボニータ",
+   "kubun": "買い",
+   "text": "牝馬。母父が欧州型以外。芝1400m以下",
+   "segments": [
+    {
+     "dist_max": 1400,
+     "surface": "芝",
+     "sex": [
+      "牝"
+     ],
+     "unknown_notes": [
+      "母父欧州型以外"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "イスラボニータ",
+   "kubun": "消し",
+   "text": "牝馬。ダート。母父が米国型以外",
+   "segments": [
+    {
+     "surface": "ダート",
+     "sex": [
+      "牝"
+     ],
+     "unknown_notes": [
+      "母父米国型以外"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "エピファネイア",
+   "kubun": "買い",
+   "text": "直線が長いコースの芝1800m以上。母父が米国型以外。2〜3歳限定戦。特に牡馬",
+   "segments": [
+    {
+     "note": "特に牡馬",
+     "straight": "long",
+     "dist_min": 1800,
+     "surface": "芝",
+     "class_cond": "nisai_sansai",
+     "unknown_notes": [
+      "母父米国型以外"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "エピファネイア",
+   "kubun": "買い",
+   "text": "芝1600m以上。新馬戦",
+   "segments": [
+    {
+     "dist_min": 1600,
+     "surface": "芝",
+     "class_cond": "shinba"
+    }
+   ]
+  },
+  {
+   "sire": "エピファネイア",
+   "kubun": "消し",
+   "text": "1200m以下。古馬混合戦",
+   "segments": [
+    {
+     "dist_max": 1200,
+     "class_cond": "kobakongo"
+    }
+   ]
+  },
+  {
+   "sire": "エピファネイア",
+   "kubun": "消し",
+   "text": "ダート。牝馬",
+   "segments": [
+    {
+     "surface": "ダート",
+     "sex": [
+      "牝"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "オルフェーヴル",
+   "kubun": "買い",
+   "text": "芝2000m以上で直線が短いコース。母父が欧州型か日本型",
+   "segments": [
+    {
+     "straight": "short",
+     "dist_min": 2000,
+     "surface": "芝",
+     "unknown_notes": [
+      "母父欧州型か日本型"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "オルフェーヴル",
+   "kubun": "買い",
+   "text": "ダート1900m以上。大型馬(前走馬体重480キロ以上)",
+   "segments": [
+    {
+     "dist_min": 1900,
+     "surface": "ダート",
+     "prev_weight_min": 480
+    }
+   ]
+  },
+  {
+   "sire": "オルフェーヴル",
+   "kubun": "消し",
+   "text": "芝1500m以下。古馬混合戦",
+   "segments": [
+    {
+     "dist_max": 1500,
+     "surface": "芝",
+     "class_cond": "kobakongo"
+    }
+   ]
+  },
+  {
+   "sire": "カリフォルニアクローム",
+   "kubun": "買い",
+   "text": "芝1600m以上で直線が長いコース。母父米国型以外",
+   "segments": [
+    {
+     "straight": "long",
+     "dist_min": 1600,
+     "surface": "芝",
+     "unknown_notes": [
+      "母父米国型以外"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "カリフォルニアクローム",
+   "kubun": "買い",
+   "text": "東京ダート1600m以上。母父米国型以外",
+   "segments": [
+    {
+     "dist_min": 1600,
+     "venue": "東京",
+     "surface": "ダート",
+     "unknown_notes": [
+      "母父米国型以外"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "カリフォルニアクローム",
+   "kubun": "消し",
+   "text": "芝1200m以下",
+   "segments": [
+    {
+     "dist_max": 1200,
+     "surface": "芝"
+    }
+   ]
+  },
+  {
+   "sire": "キズナ",
+   "kubun": "買い",
+   "text": "芝1600m以上の2〜3歳限定戦で直線が長いコース。母父が欧州型。特に牡馬",
+   "segments": [
+    {
+     "note": "特に牡馬",
+     "straight": "long",
+     "dist_min": 1600,
+     "surface": "芝",
+     "class_cond": "nisai_sansai",
+     "unknown_notes": [
+      "母父欧州型"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "キズナ",
+   "kubun": "買い",
+   "text": "ダート1800m以上。母父米国型",
+   "segments": [
+    {
+     "dist_min": 1800,
+     "surface": "ダート",
+     "unknown_notes": [
+      "母父米国型"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "キタサンブラック",
+   "kubun": "買い",
+   "text": "ダート1600m以上で母父米国型 or 大型馬(前走馬体重480キロ以上)",
+   "segments": [
+    {
+     "dist_min": 1600,
+     "surface": "ダート",
+     "unknown_notes": [
+      "母父米国型"
+     ]
+    },
+    {
+     "prev_weight_min": 480
+    }
+   ]
+  },
+  {
+   "sire": "キタサンブラック",
+   "kubun": "消し",
+   "text": "芝1800m以下。近走先行経験のない馬 (テンパターン50以内を未経験)",
+   "segments": [
+    {
+     "dist_max": 1800,
+     "surface": "芝",
+     "senko_never": 0.5
+    }
+   ]
+  },
+  {
+   "sire": "キタサンブラック",
+   "kubun": "消し",
+   "text": "ダート1400m以下。牝馬",
+   "segments": [
+    {
+     "dist_max": 1400,
+     "surface": "ダート",
+     "sex": [
+      "牝"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "ゴールドシップ",
+   "kubun": "買い",
+   "text": "芝2200m以上の直線が短いコース。下級条件(1勝クラスより下)",
+   "segments": [
+    {
+     "straight": "short",
+     "dist_min": 2200,
+     "surface": "芝",
+     "class_cond": "below_1win"
+    }
+   ]
+  },
+  {
+   "sire": "サートゥルナーリア",
+   "kubun": "買い",
+   "text": "芝1800m以上で直線長いコース or 前走から距離延長 or 近走上がり上位馬(上がりパターン30以内)",
+   "segments": [
+    {
+     "straight": "long",
+     "dist_min": 1800,
+     "surface": "芝"
+    },
+    {
+     "dist_extend": true
+    },
+    {
+     "agari_recent": 0.3
+    }
+   ]
+  },
+  {
+   "sire": "サトノダイヤモンド",
+   "kubun": "買い",
+   "text": "ダート1700m以上。牡馬",
+   "segments": [
+    {
+     "dist_min": 1700,
+     "surface": "ダート",
+     "sex": [
+      "牡"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "サンダースノー",
+   "kubun": "買い",
+   "text": "ダート1400m以下で母父が欧州型以外",
+   "segments": [
+    {
+     "dist_max": 1400,
+     "surface": "ダート",
+     "unknown_notes": [
+      "母父欧州型以外"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "サンダースノー",
+   "kubun": "買い",
+   "text": "牡馬、セン馬。ダート1800m以上で母父がサンデー系",
+   "segments": [
+    {
+     "dist_min": 1800,
+     "surface": "ダート",
+     "sex": [
+      "牡",
+      "セ"
+     ],
+     "bms_group": {
+      "group": "sunday_all",
+      "negate": false
+     }
+    }
+   ]
+  },
+  {
+   "sire": "サンダースノー",
+   "kubun": "消し",
+   "text": "芝1800m以上",
+   "segments": [
+    {
+     "dist_min": 1800,
+     "surface": "芝"
+    }
+   ]
+  },
+  {
+   "sire": "シニスターミニスター",
+   "kubun": "買い",
+   "text": "ダート1400m以上。牡馬 or 近走先行経験馬(テンパターン50以内) or 大型馬(前走馬体重460キロ以上)",
+   "segments": [
+    {
+     "dist_min": 1400,
+     "surface": "ダート",
+     "sex": [
+      "牡"
+     ]
+    },
+    {
+     "senko_recent": 0.5
+    },
+    {
+     "prev_weight_min": 460
+    }
+   ]
+  },
+  {
+   "sire": "ジャスタウェイ",
+   "kubun": "買い",
+   "text": "芝の古馬混合戦。母父欧州型の牡馬、セン馬",
+   "segments": [
+    {
+     "surface": "芝",
+     "sex": [
+      "牡",
+      "セ"
+     ],
+     "class_cond": "kobakongo",
+     "unknown_notes": [
+      "母父欧州型"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "ジャスタウェイ",
+   "kubun": "買い",
+   "text": "直線が長いコースのダート。古馬混合戦。母父が米国型の牡馬、セン馬",
+   "segments": [
+    {
+     "straight": "long",
+     "surface": "ダート",
+     "sex": [
+      "牡",
+      "セ"
+     ],
+     "class_cond": "kobakongo",
+     "unknown_notes": [
+      "母父米国型"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "シルバーステート",
+   "kubun": "買い",
+   "text": "芝2000m以上の条件戦。近走先行経験馬(テンパターン50以内)",
+   "segments": [
+    {
+     "dist_min": 2000,
+     "surface": "芝",
+     "senko_recent": 0.5,
+     "class_cond": "joken"
+    }
+   ]
+  },
+  {
+   "sire": "シルバーステート",
+   "kubun": "消し",
+   "text": "小型馬(前走馬体重480キロ未満)",
+   "segments": [
+    {
+     "prev_weight_max": 479
+    }
+   ]
+  },
+  {
+   "sire": "ダノンレジェンド",
+   "kubun": "買い",
+   "text": "ダートの新馬戦",
+   "segments": [
+    {
+     "surface": "ダート",
+     "class_cond": "shinba"
+    }
+   ]
+  },
+  {
+   "sire": "ダノンレジェンド",
+   "kubun": "買い",
+   "text": "ダート。母父が米国型以外。近走先行経験馬(テンパターン50以内) or 前走から距離延長 or 大型馬(前走馬体重500キロ以上)",
+   "segments": [
+    {
+     "surface": "ダート",
+     "senko_recent": 0.5,
+     "unknown_notes": [
+      "母父米国型以外"
+     ]
+    },
+    {
+     "dist_extend": true
+    },
+    {
+     "prev_weight_min": 500
+    }
+   ]
+  },
+  {
+   "sire": "ダノンレジェンド",
+   "kubun": "買い",
+   "text": "芝1200m以下。2、3歳限定戦",
+   "segments": [
+    {
+     "dist_max": 1200,
+     "surface": "芝",
+     "class_cond": "nisai_sansai"
+    }
+   ]
+  },
+  {
+   "sire": "タリスマニック",
+   "kubun": "買い",
+   "text": "芝1500m以下",
+   "segments": [
+    {
+     "dist_max": 1500,
+     "surface": "芝"
+    }
+   ]
+  },
+  {
+   "sire": "タリスマニック",
+   "kubun": "消し",
+   "text": "ダート・母父欧州型",
+   "segments": [
+    {
+     "surface": "ダート",
+     "unknown_notes": [
+      "母父欧州型"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "タワーオブロンドン",
+   "kubun": "買い",
+   "text": "芝1400m以下。近走先行経験馬(テンパターン30以内)",
+   "segments": [
+    {
+     "dist_max": 1400,
+     "surface": "芝",
+     "senko_recent": 0.3
+    }
+   ]
+  },
+  {
+   "sire": "デクラレーションオブウォー",
+   "kubun": "買い",
+   "text": "芝。母父米国型以外。近走上がり上位馬(上がりパターン30以内) or 大型馬(前走馬体重480キロ以上)",
+   "segments": [
+    {
+     "surface": "芝",
+     "agari_recent": 0.3,
+     "unknown_notes": [
+      "母父米国型以外"
+     ]
+    },
+    {
+     "prev_weight_min": 480
+    }
+   ]
+  },
+  {
+   "sire": "デクラレーションオブウォー",
+   "kubun": "買い",
+   "text": "ダート。母父米国型。近走上がり上位馬(上がりパターン50以内)",
+   "segments": [
+    {
+     "surface": "ダート",
+     "agari_recent": 0.5,
+     "unknown_notes": [
+      "母父米国型"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "デクラレーションオブウォー",
+   "kubun": "消し",
+   "text": "ダート1800m以上。母父サンデー系(大系統)の牝馬",
+   "segments": [
+    {
+     "dist_min": 1800,
+     "surface": "ダート",
+     "sex": [
+      "牝"
+     ],
+     "bms_group": {
+      "group": "sunday_all",
+      "negate": false
+     }
+    }
+   ]
+  },
+  {
+   "sire": "ドレフォン",
+   "kubun": "買い",
+   "text": "母父が米国型。ダート1600m以上。特に牡馬",
+   "segments": [
+    {
+     "note": "特に牡馬",
+     "dist_min": 1600,
+     "surface": "ダート",
+     "unknown_notes": [
+      "母父米国型"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "ドレフォン",
+   "kubun": "買い",
+   "text": "母父がTサンデー系かディープ系。芝1600m以上で直線の長いコース",
+   "segments": [
+    {
+     "straight": "long",
+     "dist_min": 1600,
+     "surface": "芝",
+     "bms_group": {
+      "group": "deep_tsunday",
+      "negate": false
+     }
+    }
+   ]
+  },
+  {
+   "sire": "ドレフォン",
+   "kubun": "消し",
+   "text": "芝1200m以下。特に古馬混合戦",
+   "segments": [
+    {
+     "note": "特に古馬混合戦",
+     "dist_max": 1200,
+     "surface": "芝"
+    }
+   ]
+  },
+  {
+   "sire": "ナダル",
+   "kubun": "買い",
+   "text": "ダートの新馬戦 or キャリア5戦以内のダート1800m以上",
+   "segments": [
+    {
+     "surface": "ダート",
+     "class_cond": "shinba"
+    },
+    {
+     "dist_min": 1800,
+     "surface": "ダート",
+     "unknown_notes": [
+      "キャリア5戦以内"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "ナダル",
+   "kubun": "消し",
+   "text": "芝・牡馬",
+   "segments": [
+    {
+     "surface": "芝",
+     "sex": [
+      "牡"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "ニューイヤーズデイ",
+   "kubun": "買い",
+   "text": "芝1500m以下",
+   "segments": [
+    {
+     "dist_max": 1500,
+     "surface": "芝"
+    }
+   ]
+  },
+  {
+   "sire": "ニューイヤーズデイ",
+   "kubun": "買い",
+   "text": "芝1600m以上。近走先行経験馬(テンパターン50以内)",
+   "segments": [
+    {
+     "dist_min": 1600,
+     "surface": "芝",
+     "senko_recent": 0.5
+    }
+   ]
+  },
+  {
+   "sire": "ニューイヤーズデイ",
+   "kubun": "買い",
+   "text": "直線が長いコースのダート。",
+   "segments": [
+    {
+     "straight": "long",
+     "surface": "ダート"
+    }
+   ]
+  },
+  {
+   "sire": "ニューイヤーズデイ",
+   "kubun": "買い",
+   "text": "近走で先行していない馬(テンパターン50以内を未経験)",
+   "segments": [
+    {
+     "senko_never": 0.5
+    }
+   ]
+  },
+  {
+   "sire": "バレスマリス",
+   "kubun": "買い",
+   "text": "芝1600m以上で直線が長いコース",
+   "segments": [
+    {
+     "straight": "long",
+     "dist_min": 1600,
+     "surface": "芝"
+    }
+   ]
+  },
+  {
+   "sire": "ビッグアーサー",
+   "kubun": "買い",
+   "text": "芝1200m以下の古馬混合戦 or 近走先行経験馬(テンパターン30以内)",
+   "segments": [
+    {
+     "dist_max": 1200,
+     "surface": "芝",
+     "class_cond": "kobakongo"
+    },
+    {
+     "senko_recent": 0.3
+    }
+   ]
+  },
+  {
+   "sire": "ビッグアーサー",
+   "kubun": "消し",
+   "text": "芝1400m以上",
+   "segments": [
+    {
+     "dist_min": 1400,
+     "surface": "芝"
+    }
+   ]
+  },
+  {
+   "sire": "ブリックスアンドモルタル",
+   "kubun": "買い",
+   "text": "芝の下級条件(1勝クラスより下)で母父が非サンデー系。近走先行経験馬(テンパターン50以内)",
+   "segments": [
+    {
+     "surface": "芝",
+     "senko_recent": 0.5,
+     "class_cond": "below_1win",
+     "bms_group": {
+      "group": "sunday_all",
+      "negate": true
+     }
+    }
+   ]
+  },
+  {
+   "sire": "ヘニーヒューズ",
+   "kubun": "買い",
+   "text": "ダート1700m以下。母父欧州型以外。牡馬、セン馬 or 2〜3歳限定戦",
+   "segments": [
+    {
+     "dist_max": 1700,
+     "surface": "ダート",
+     "sex": [
+      "牡",
+      "セ"
+     ],
+     "unknown_notes": [
+      "母父欧州型以外"
+     ]
+    },
+    {
+     "class_cond": "nisai_sansai"
+    }
+   ]
+  },
+  {
+   "sire": "ホッコータルマエ",
+   "kubun": "買い",
+   "text": "ダート1900m以上。近走先行経験馬(テンパターン50以内) or 大型馬(前走馬体重480キロ以上)",
+   "segments": [
+    {
+     "dist_min": 1900,
+     "surface": "ダート",
+     "senko_recent": 0.5
+    },
+    {
+     "prev_weight_min": 480
+    }
+   ]
+  },
+  {
+   "sire": "ホッコータルマエ",
+   "kubun": "消し",
+   "text": "ダート1400m以下。母父サンデー系(大系統)",
+   "segments": [
+    {
+     "dist_max": 1400,
+     "surface": "ダート",
+     "bms_group": {
+      "group": "sunday_all",
+      "negate": false
+     }
+    }
+   ]
+  },
+  {
+   "sire": "マインドユアビスケッツ",
+   "kubun": "買い",
+   "text": "ダート1700m以上で外枠(5〜8枠) or 2〜3歳限定戦",
+   "segments": [
+    {
+     "dist_min": 1700,
+     "surface": "ダート",
+     "waku_min": 5
+    },
+    {
+     "class_cond": "nisai_sansai"
+    }
+   ]
+  },
+  {
+   "sire": "マインドユアビスケッツ",
+   "kubun": "消し",
+   "text": "ダート1200m以下で内枠(1〜4枠)",
+   "segments": [
+    {
+     "dist_max": 1200,
+     "surface": "ダート",
+     "waku_max": 4
+    }
+   ]
+  },
+  {
+   "sire": "マジェスティックウォリアー",
+   "kubun": "買い",
+   "text": "ダート1800m以上。牡馬、セン馬。外枠(5〜8枠)",
+   "segments": [
+    {
+     "dist_min": 1800,
+     "surface": "ダート",
+     "sex": [
+      "牡",
+      "セ"
+     ],
+     "waku_min": 5
+    }
+   ]
+  },
+  {
+   "sire": "マジェスティックウォリアー",
+   "kubun": "消し",
+   "text": "1200m以下。内枠(1〜4枠)",
+   "segments": [
+    {
+     "dist_max": 1200,
+     "waku_max": 4
+    }
+   ]
+  },
+  {
+   "sire": "ミスターメロディ",
+   "kubun": "買い",
+   "text": "芝で直線が長いコース。特に1400m以下",
+   "segments": [
+    {
+     "note": "特に1400m以下",
+     "straight": "long",
+     "surface": "芝"
+    }
+   ]
+  },
+  {
+   "sire": "ミッキーアイル",
+   "kubun": "買い",
+   "text": "牝馬芝1600m以下",
+   "segments": [
+    {
+     "dist_max": 1600,
+     "surface": "芝",
+     "sex": [
+      "牝"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "ミッキーアイル",
+   "kubun": "買い",
+   "text": "牡馬で母父米国型ダート1600m以下",
+   "segments": [
+    {
+     "dist_max": 1600,
+     "surface": "ダート",
+     "sex": [
+      "牡"
+     ],
+     "unknown_notes": [
+      "母父米国型"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "ミッキーアイル",
+   "kubun": "消し",
+   "text": "牡馬芝1800m以上",
+   "segments": [
+    {
+     "dist_min": 1800,
+     "surface": "芝",
+     "sex": [
+      "牡"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "モーリス",
+   "kubun": "買い",
+   "text": "母父ディープ系、Tサンデー系。芝1600m以上で直線が長いコース",
+   "segments": [
+    {
+     "straight": "long",
+     "dist_min": 1600,
+     "surface": "芝",
+     "bms_group": {
+      "group": "deep_tsunday",
+      "negate": false
+     }
+    }
+   ]
+  },
+  {
+   "sire": "モーリス",
+   "kubun": "消し",
+   "text": "ダート1400m以下",
+   "segments": [
+    {
+     "dist_max": 1400,
+     "surface": "ダート"
+    }
+   ]
+  },
+  {
+   "sire": "モズアスコット",
+   "kubun": "買い",
+   "text": "牡馬。母父が米国型以外。芝1800m以上で直線が短いコース",
+   "segments": [
+    {
+     "straight": "short",
+     "dist_min": 1800,
+     "surface": "芝",
+     "sex": [
+      "牡"
+     ],
+     "unknown_notes": [
+      "母父米国型以外"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "モズアスコット",
+   "kubun": "買い",
+   "text": "牡馬。ダート1700m以上",
+   "segments": [
+    {
+     "dist_min": 1700,
+     "surface": "ダート",
+     "sex": [
+      "牡"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "モズアスコット",
+   "kubun": "買い",
+   "text": "東京ダート",
+   "segments": [
+    {
+     "venue": "東京",
+     "surface": "ダート"
+    }
+   ]
+  },
+  {
+   "sire": "モズアスコット",
+   "kubun": "買い",
+   "text": "牝馬。芝1400m以下",
+   "segments": [
+    {
+     "dist_max": 1400,
+     "surface": "芝",
+     "sex": [
+      "牝"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "リアルスティール",
+   "kubun": "買い",
+   "text": "芝1800m以上。牡馬",
+   "segments": [
+    {
+     "dist_min": 1800,
+     "surface": "芝",
+     "sex": [
+      "牡"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "リアルスティール",
+   "kubun": "買い",
+   "text": "ダート1800m以上。母父米国型の牡馬",
+   "segments": [
+    {
+     "dist_min": 1800,
+     "surface": "ダート",
+     "sex": [
+      "牡"
+     ],
+     "unknown_notes": [
+      "母父米国型"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "ルヴァンスレーヴ",
+   "kubun": "買い",
+   "text": "ダート1600m以上。母父米国型",
+   "segments": [
+    {
+     "dist_min": 1600,
+     "surface": "ダート",
+     "unknown_notes": [
+      "母父米国型"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "ルヴァンスレーヴ",
+   "kubun": "買い",
+   "text": "牡馬、セン馬。",
+   "segments": [
+    {
+     "sex": [
+      "牡",
+      "セ"
+     ]
+    }
+   ]
+  },
+  {
+   "sire": "ルーラーシップ",
+   "kubun": "買い",
+   "text": "母父がサンデー系(大系統)の牡馬。芝2000m以上で直線が長いコース。古馬混合戦",
+   "segments": [
+    {
+     "straight": "long",
+     "dist_min": 2000,
+     "surface": "芝",
+     "sex": [
+      "牡"
+     ],
+     "class_cond": "kobakongo",
+     "bms_group": {
+      "group": "sunday_all",
+      "negate": false
+     }
+    }
+   ]
+  },
+  {
+   "sire": "ロードカナロア",
+   "kubun": "買い",
+   "text": "牡馬、セン馬。ダート1600m以下の古馬混合戦",
+   "segments": [
+    {
+     "dist_max": 1600,
+     "surface": "ダート",
+     "sex": [
+      "牡",
+      "セ"
+     ],
+     "class_cond": "kobakongo"
+    }
+   ]
+  },
+  {
+   "sire": "ロードカナロア",
+   "kubun": "買い",
+   "text": "牡馬、セン馬。母父サンデー系(大系統)以外。芝1400m以下の古馬混合戦",
+   "segments": [
+    {
+     "dist_max": 1400,
+     "surface": "芝",
+     "sex": [
+      "牡",
+      "セ"
+     ],
+     "class_cond": "kobakongo",
+     "bms_group": {
+      "group": "sunday_all",
+      "negate": true
+     }
+    }
+   ]
+  },
+  {
+   "sire": "ロードカナロア",
+   "kubun": "買い",
+   "text": "牝馬。母父ディープ系、Tサンデー系。芝1600〜1800m",
+   "segments": [
+    {
+     "dist_min": 1600,
+     "dist_max": 1800,
+     "surface": "芝",
+     "sex": [
+      "牝"
+     ],
+     "bms_group": {
+      "group": "deep_tsunday",
+      "negate": false
+     }
+    }
+   ]
+  },
+  {
+   "sire": "ロードカナロア",
+   "kubun": "買い",
+   "text": "芝1600m以下の2勝クラス以上",
+   "segments": [
+    {
+     "dist_max": 1600,
+     "surface": "芝",
+     "class_cond": "ge_2win"
+    }
+   ]
+  },
+  {
+   "sire": "Dark Angel",
+   "kubun": "買い",
+   "text": "芝1200m以下",
+   "segments": [
+    {
+     "dist_max": 1200,
+     "surface": "芝"
+    }
+   ]
+  },
+  {
+   "sire": "Dark Angel",
+   "kubun": "消し",
+   "text": "ダート",
+   "segments": [
+    {
+     "surface": "ダート"
+    }
+   ]
+  },
+  {
+   "sire": "Frankel",
+   "kubun": "買い",
+   "text": "芝1600m以上で直線が長いコース",
+   "segments": [
+    {
+     "straight": "long",
+     "dist_min": 1600,
+     "surface": "芝"
+    }
+   ]
+  },
+  {
+   "sire": "Frankel",
+   "kubun": "消し",
+   "text": "ダート1400m以下",
+   "segments": [
+    {
+     "dist_max": 1400,
+     "surface": "ダート"
+    }
+   ]
+  }
+ ]
+}

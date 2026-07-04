@@ -3,3 +3,18 @@ api/past_data.db
 *.db
 data_source/
 __pycache__/
+# 環境変数 (Neon接続文字列などの秘密情報)
+.env
+
+# ローカル専用の大容量データ (能力バックテスト用)
+1980.csv
+ability.db
+
+# 分析の一時出力
+sire_oos_pairs.csv
+_scrape_res.json
+
+# ローカル環境
+venv/
+.claude/
+jra-web/
