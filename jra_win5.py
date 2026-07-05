@@ -201,7 +201,11 @@ def win5_analyze_one():
 @app.route("/api/win5_kaime", methods=["POST"])
 def win5_kaime():
     """5レースのスコア + 荒れランク + 点数上限 → 買い目配分。
-    single_axis=true で「スコア1-2位差が最大のレース」を1頭固定(軸)にする。"""
+    MLモデルが conditional logit の場合は「レース固有のsoftmax勝率」で配分
+    (2025年OOSで荒れランク平均配分の的中率5.0%→7.9% (150点))。
+    それ以外は従来の荒れランク別カバレッジ平均で配分。
+    single_axis=true で軸レースを1頭固定 (prob配分では最大勝率レース /
+    rank配分ではスコア1-2位差最大レース)。"""
     data = request.json or {}
     races = data.get("races", [])
     points = int(data.get("points", 100))
@@ -216,30 +220,47 @@ def win5_kaime():
         max_picks = alloc.get("max_picks_per_race", 8)
 
         ranks = [r.get("upset_rank") for r in races]
+        sorted_horses = []
+        for race in races:
+            horses = [h for h in race.get("horses", []) if h.get("score") is not None]
+            horses.sort(key=lambda h: -h["score"])
+            sorted_horses.append(horses)
 
-        # 軸レース選定: スコア1位と2位の差 (マージン) が最大のレース
+        # レース固有勝率 (conditional logit モデル時のみ算出可能)
+        prob_lists = [scoring.win_probs_from_ml_scores([h["score"] for h in hs]) if hs else None
+                      for hs in sorted_horses]
+        use_prob = all(p for p in prob_lists)
+        alloc_method = "prob" if use_prob else "rank"
+
+        # 軸レース選定
         axis_idx, axis_margin = None, None
         if single_axis:
-            margins = []
-            for race in races:
-                hs = sorted([h["score"] for h in race.get("horses", [])
-                             if h.get("score") is not None], reverse=True)
-                margins.append(hs[0] - hs[1] if len(hs) >= 2 else -999)
-            axis_idx = max(range(5), key=lambda i: margins[i])
-            axis_margin = round(margins[axis_idx], 1)
+            if use_prob:
+                axis_idx = max(range(5), key=lambda i: prob_lists[i][0])
+                axis_margin = round(prob_lists[axis_idx][0] * 100, 1)  # 勝率%
+            else:
+                margins = []
+                for hs in sorted_horses:
+                    margins.append(hs[0]["score"] - hs[1]["score"] if len(hs) >= 2 else -999)
+                axis_idx = max(range(5), key=lambda i: margins[i])
+                axis_margin = round(margins[axis_idx], 1)
 
-        picks, est = scoring.allocate_picks(
-            ranks, coverage, points, max_picks,
-            fixed={axis_idx} if axis_idx is not None else None)
+        fixed = {axis_idx} if axis_idx is not None else None
+        if use_prob:
+            picks, est = scoring.allocate_picks_prob(prob_lists, points, max_picks, fixed=fixed)
+        else:
+            picks, est = scoring.allocate_picks(ranks, coverage, points, max_picks, fixed=fixed)
 
         out = []
         for i, race in enumerate(races):
-            horses = [h for h in race.get("horses", []) if h.get("score") is not None]
-            horses.sort(key=lambda h: -h["score"])
+            horses = sorted_horses[i]
             k = min(picks[i], len(horses)) if horses else 0
             sel = horses[:k]
-            curve = coverage.get(ranks[i]) or coverage.get("default") or []
-            cov = curve[k - 1] if 0 < k <= len(curve) else None
+            if use_prob:
+                cov = round(sum(prob_lists[i][:k]), 4) if k else None
+            else:
+                curve = coverage.get(ranks[i]) or coverage.get("default") or []
+                cov = curve[k - 1] if 0 < k <= len(curve) else None
             out.append({
                 "idx": i, "venue": race.get("venue"),
                 "race_info": race.get("race_info", ""),
@@ -247,7 +268,9 @@ def win5_kaime():
                 "coverage": cov,
                 "is_axis": i == axis_idx,
                 "horses": [{"num": h["num"], "name": h["name"], "score": h["score"],
-                            "odds": h.get("odds"), "pop": h.get("pop")} for h in sel],
+                            "odds": h.get("odds"), "pop": h.get("pop"),
+                            "win_prob": (round(prob_lists[i][j], 4) if use_prob else None)}
+                           for j, h in enumerate(sel)],
             })
 
         total = 1
@@ -261,6 +284,7 @@ def win5_kaime():
             "budget": points,
             "single_axis": single_axis,
             "axis_idx": axis_idx, "axis_margin": axis_margin,
+            "alloc_method": alloc_method,
         })
     except Exception as e:
         import traceback

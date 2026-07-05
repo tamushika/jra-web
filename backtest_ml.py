@@ -174,6 +174,156 @@ def coverage_from_scores(scores, race_keys, meta, upset_map):
     return measure_coverage(races, upset_map)
 
 
+def fit_conditional_logit(Xz, y, race_keys, l2=1.0, max_iter=300):
+    """
+    conditional logit (レース内softmax / Plackett-Luce top-1) を L-BFGS で学習。
+    通常のロジスティック回帰と違い「同レースの他馬との相対比較」を直接最適化する。
+    softmax(w·x) がそのままレース内勝率になる (確率キャリブレーション込み)。
+    同着は勝ち馬ごとに1イベントとして扱う。勝ち馬が特徴量構築から漏れたレース
+    (勝ち馬が初出走等) は尤度に寄与しない。
+    """
+    from scipy.optimize import minimize
+
+    rid_map = {}
+    rid = np.empty(len(race_keys), dtype=np.int64)
+    for i, k in enumerate(race_keys):
+        rid[i] = rid_map.setdefault(k, len(rid_map))
+    order = np.argsort(rid, kind="stable")
+    Xs, ys, rs = Xz[order], np.asarray(y)[order].astype(float), rid[order]
+    starts = np.flatnonzero(np.r_[True, rs[1:] != rs[:-1]])
+    seg = np.repeat(np.arange(len(starts)), np.diff(np.r_[starts, len(rs)]))
+    nwin = np.add.reduceat(ys, starts)          # レースごとの勝ち馬数 (通常1, 同着2)
+    xwin_sum = Xs[ys == 1].sum(axis=0)
+
+    def negll(w):
+        s = Xs @ w
+        smax = np.maximum.reduceat(s, starts)
+        e = np.exp(s - smax[seg])
+        z = np.add.reduceat(e, starts)
+        lse = smax + np.log(z)
+        ll = float(s[ys == 1].sum() - (nwin * lse).sum()) - 0.5 * l2 * float(w @ w)
+        p = e / z[seg]
+        grad = Xs.T @ (p * nwin[seg]) - xwin_sum + l2 * w
+        return -ll, grad
+
+    res = minimize(negll, np.zeros(Xs.shape[1]), jac=True,
+                   method="L-BFGS-B", options={"maxiter": max_iter})
+    if not res.success:
+        print(f"  [WARN] conditional logit 収束警告: {res.message}")
+    return res.x
+
+
+def build_prob_races(scores, race_keys, meta):
+    """スコア → レースごとに softmax 勝率を付与。
+    戻り値: {key: [(score, prob, meta), ...] スコア降順}"""
+    races = defaultdict(list)
+    for s, k, m in zip(scores, race_keys, meta):
+        races[k].append((float(s), m))
+    out = {}
+    for k, mem in races.items():
+        mem.sort(key=lambda x: -x[0])
+        mx = mem[0][0]
+        es = [math.exp(s - mx) for s, _ in mem]
+        z = sum(es)
+        out[k] = [(s, e / z, m) for (s, m), e in zip(mem, es)]
+    return out
+
+
+def report_calibration(prob_races, kmax=4, min_r=9):
+    """予測カバレッジ (上位k頭の勝率和の平均) と実測カバレッジを比較"""
+    pred_sum = [0.0] * kmax
+    act_cnt = [0] * kmax
+    n = 0
+    for (date, place, r), mem in prob_races.items():
+        if r is None or r < min_r or len(mem) < 8:
+            continue
+        wpos = next((i + 1 for i, (_, _, m) in enumerate(mem) if m["rank"] == 1), None)
+        if wpos is None:
+            continue
+        n += 1
+        cum = 0.0
+        for k in range(kmax):
+            if k < len(mem):
+                cum += mem[k][1]
+            pred_sum[k] += min(cum, 1.0)
+            if wpos <= k + 1:
+                act_cnt[k] += 1
+    if not n:
+        return
+    print(f"\n===== 確率キャリブレーション (検証セット, n={n}) =====")
+    print("  k | 予測カバレッジ | 実測カバレッジ")
+    for k in range(kmax):
+        print(f"  {k+1} | {100.0*pred_sum[k]/n:12.1f}% | {100.0*act_cnt[k]/n:12.1f}%")
+
+
+def simulate_win5_compare(prob_races, upset_map, coverage, budgets, min_r=9):
+    """土日・R降順5レース近似のWIN5で、荒れランク平均配分 vs レース固有確率配分を比較。
+    軸固定は rank版=スコア1-2位差最大 / prob版=最大勝率レース を1点固定。"""
+    from backtest_win5 import upset_rank_of
+
+    by_day = defaultdict(list)
+    for (date, place, r), mem in prob_races.items():
+        if r is None or r < min_r or len(mem) < 8:
+            continue
+        try:
+            if datetime.strptime(date, "%Y%m%d").weekday() not in (5, 6):
+                continue
+        except ValueError:
+            continue
+        by_day[date].append((r, place, mem))
+
+    strategies = ["rank通常", "rank軸", "prob通常", "prob軸"]
+    results = {b: {s: {"hits": 0, "pts": 0} for s in strategies} for b in budgets}
+    n_days = 0
+
+    for date, cands in sorted(by_day.items()):
+        if len(cands) < 5:
+            continue
+        cands.sort(key=lambda x: (-x[0], x[1]))
+        sel = cands[:5]
+        winner_pos, ranks, prob_lists, margins, top1 = [], [], [], [], []
+        ok = True
+        for r, place, mem in sel:
+            wpos = next((i + 1 for i, (_, _, m) in enumerate(mem) if m["rank"] == 1), None)
+            if wpos is None:
+                ok = False
+                break
+            winner_pos.append(wpos)
+            m0 = mem[0][2]
+            ranks.append(upset_rank_of(upset_map, place, m0["track_type"], m0["distance"]))
+            prob_lists.append([p for _, p, _ in mem])
+            margins.append(mem[0][0] - mem[1][0] if len(mem) > 1 else 0.0)
+            top1.append(mem[0][1])
+        if not ok:
+            continue
+        n_days += 1
+        axis_rank = {max(range(5), key=lambda i: margins[i])}
+        axis_prob = {max(range(5), key=lambda i: top1[i])}
+
+        for b in budgets:
+            allocs = {
+                "rank通常": scoring.allocate_picks(ranks, coverage, b)[0],
+                "rank軸": scoring.allocate_picks(ranks, coverage, b, fixed=axis_rank)[0],
+                "prob通常": scoring.allocate_picks_prob(prob_lists, b)[0],
+                "prob軸": scoring.allocate_picks_prob(prob_lists, b, fixed=axis_prob)[0],
+            }
+            for name, picks in allocs.items():
+                results[b][name]["pts"] += scoring._pts_of(picks)
+                if all(wp <= k for wp, k in zip(winner_pos, picks)):
+                    results[b][name]["hits"] += 1
+
+    print(f"\n===== WIN5配分比較 (検証セット, 土日R降順5R近似, {n_days}日) =====")
+    print("点数  | " + " | ".join(f"{s:14s}" for s in strategies))
+    for b in budgets:
+        cells = []
+        for s in strategies:
+            rr = results[b][s]
+            cells.append(f"{100.0*rr['hits']/n_days:5.1f}% /{rr['pts']/n_days:6.1f}点"
+                         if n_days else "n/a")
+        print(f"  {b:4d}| " + " | ".join(cells))
+    return results, n_days
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--write", action="store_true",
@@ -195,57 +345,82 @@ def main():
     print(f"特徴量: {len(FEATURES)}次元 / 学習 {tr.sum()}出走 / 検証 {te.sum()}出走")
 
     scaler = StandardScaler().fit(X[tr])
-    model = LogisticRegression(max_iter=2000, C=1.0)
-    model.fit(scaler.transform(X[tr]), y[tr])
-
-    print("\n===== 学習された係数 (標準化後、絶対値順) =====")
-    coefs = sorted(zip(FEATURES, model.coef_[0]), key=lambda x: -abs(x[1]))
-    for name, c in coefs:
-        print(f"  {name:12s}: {c:+.3f}")
-
-    # ── 検証セットでのカバレッジ比較 ──
-    # (1) ML
-    proba = model.decision_function(scaler.transform(X[te]))
+    Xz_tr = scaler.transform(X[tr])
+    Xz_te = scaler.transform(X[te])
+    tr_keys = [k for k, t in zip(race_keys, tr) if t]
     te_keys = [k for k, t in zip(race_keys, te) if t]
     te_meta = [m for m, t in zip(meta, te) if t]
-    cov_ml, n_ml = coverage_from_scores(proba, te_keys, te_meta, upset_map)
 
-    # (2) 現行の手調整スコア (同じ検証期間。履歴なし馬の扱いが僅かに異なる点は誤差)
+    model = LogisticRegression(max_iter=2000, C=1.0)
+    model.fit(Xz_tr, y[tr])
+    w_cl = fit_conditional_logit(Xz_tr, y[tr], tr_keys)
+
+    print("\n===== 学習された係数 (標準化後、|LR|順): LR vs conditional logit =====")
+    coefs = sorted(zip(FEATURES, model.coef_[0], w_cl), key=lambda x: -abs(x[1]))
+    for name, c_lr, c_cl in coefs:
+        print(f"  {name:12s}: LR {c_lr:+.3f} / CL {c_cl:+.3f}")
+
+    # ── 検証セットでのカバレッジ比較 ──
+    proba = model.decision_function(Xz_te)
+    scores_cl = Xz_te @ w_cl
+    cov_ml, n_ml = coverage_from_scores(proba, te_keys, te_meta, upset_map)
+    cov_cl, n_cl = coverage_from_scores(scores_cl, te_keys, te_meta, upset_map)
+
+    # 現行の手調整スコア (同じ検証期間。履歴なし馬の扱いが僅かに異なる点は誤差)
     races_cur = score_all_runners(runs, TEST_FROM, cfg)
     cov_cur, n_cur = measure_coverage(races_cur, upset_map)
 
     print(f"\n===== 検証セット (2025年) の勝ち馬カバレッジ =====")
-    print(f"{'model':24s} | k=1   k=2   k=3   k=4   (n)")
-    for label, cov, n in (("現行 (手調整)", cov_cur, n_cur), ("ロジスティック回帰", cov_ml, n_ml)):
+    print(f"{'model':26s} | k=1   k=2   k=3   k=4   (n)")
+    for label, cov, n in (("現行 (手調整)", cov_cur, n_cur),
+                          ("ロジスティック回帰", cov_ml, n_ml),
+                          ("conditional logit", cov_cl, n_cl)):
         d = cov.get("default", [])
         row = "  ".join(f"{c*100:4.1f}" for c in d[:4]) if d else "n/a"
-        print(f"{label:24s} | {row}  ({n.get('default_all', 0)})")
+        print(f"{label:26s} | {row}  ({n.get('default_all', 0)})")
+
+    # ── 確率キャリブレーション + WIN5配分比較 (CLのsoftmax勝率を使用) ──
+    prob_races = build_prob_races(scores_cl, te_keys, te_meta)
+    report_calibration(prob_races)
+    simulate_win5_compare(prob_races, upset_map, cov_cl, budgets=[50, 100, 150, 200])
+
+    mean_lr = sum(cov_ml.get("default", [0] * 4)[:4]) / 4
+    mean_cl = sum(cov_cl.get("default", [0] * 4)[:4]) / 4
+    best_obj = "conditional_logit" if mean_cl >= mean_lr else "logistic_regression"
+    print(f"\nOOS平均カバレッジ(k1-4): LR {mean_lr*100:.1f}% / CL {mean_cl*100:.1f}% → 採用候補: {best_obj}")
 
     # ── 本番モデル出力 (全期間で再学習) ──
     if args.write:
         scaler_f = StandardScaler().fit(X)
-        model_f = LogisticRegression(max_iter=2000, C=1.0)
-        model_f.fit(scaler_f.transform(X), y)
+        Xz_f = scaler_f.transform(X)
+        if best_obj == "conditional_logit":
+            coef_f = fit_conditional_logit(Xz_f, y, race_keys)
+        else:
+            model_f = LogisticRegression(max_iter=2000, C=1.0)
+            model_f.fit(Xz_f, y)
+            coef_f = model_f.coef_[0]
         out = {
             "meta": {
                 "trained_at": datetime.now().strftime("%Y-%m-%d"),
                 "train_period": f"{TRAIN_FROM}-{TEST_TO}",
                 "n_samples": int(len(y)),
-                "oos_note": f"時系列検証(学習21-24/検証25): ML k1-4 = "
-                            f"{[round(c*100,1) for c in cov_ml.get('default', [])[:4]]} vs "
+                "oos_note": f"時系列検証(学習21-24/検証25): CL k1-4 = "
+                            f"{[round(c*100,1) for c in cov_cl.get('default', [])[:4]]} / LR "
+                            f"{[round(c*100,1) for c in cov_ml.get('default', [])[:4]]} / "
                             f"手調整 {[round(c*100,1) for c in cov_cur.get('default', [])[:4]]}",
                 "missing_fill": {"ln_odds": "ln(30)", "prev_rank": 10, "ln_interval": "ln(30)",
                                  "age": 4, "kinryo": 55.0, "weight": 470},
             },
+            "objective": best_obj,
             "features": FEATURES,
             "mean": [round(float(v), 6) for v in scaler_f.mean_],
             "sd": [round(float(v), 6) for v in scaler_f.scale_],
-            "coef": [round(float(v), 6) for v in model_f.coef_[0]],
+            "coef": [round(float(v), 6) for v in coef_f],
             "display_scale": 10.0,
         }
         with open(MODEL_PATH, "w", encoding="utf-8") as fp:
             json.dump(out, fp, ensure_ascii=False, indent=1)
-        print(f"\n[OK] 本番モデル (全期間再学習, n={len(y)}) -> {MODEL_PATH}")
+        print(f"\n[OK] 本番モデル ({best_obj}, 全期間再学習, n={len(y)}) -> {MODEL_PATH}")
 
 
 if __name__ == "__main__":

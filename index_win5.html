@@ -216,7 +216,8 @@ async function generateKaime() {
             p.horses.forEach(h => document.getElementById(`r${p.idx}h${h.num}`)?.classList.add('w5-selected-row'));
             const chips = p.horses.map(h => {
                 const pop = h.pop ? ` / ${esc(h.pop)}人気` : '';
-                return `<span class="w5-horse-chip"><b>${esc(h.num)}</b> ${esc(h.name)} (${h.score}${pop})</span>`;
+                const wp = h.win_prob != null ? ` / 勝率${(h.win_prob * 100).toFixed(0)}%` : '';
+                return `<span class="w5-horse-chip"><b>${esc(h.num)}</b> ${esc(h.name)} (${h.score}${pop}${wp})</span>`;
             }).join('');
             const cov = p.coverage != null ? `カバー率 ${(p.coverage * 100).toFixed(1)}%` : '';
             const axisBadge = p.is_axis
@@ -231,7 +232,9 @@ async function generateKaime() {
         area.innerHTML = `
             <div class="w5-formula">${esc(data.formula)} <span style="font-size:13px;color:var(--text-muted);">(上限${data.budget}点)</span></div>
             <div class="w5-est">推定的中率: ${(data.est_hit_rate * 100).toFixed(2)}%
-                (2024-2025バックテストのカバレッジ実測に基づく)</div>
+                ${data.alloc_method === 'prob'
+                    ? '(レース固有のML勝率分布に基づく配分)'
+                    : '(2024-2025バックテストのカバレッジ実測に基づく)'}</div>
             <div style="margin-top:10px;">${blocks}</div>`;
     } catch (e) {
         area.innerHTML = `<span style="color:#ff6b6b;">エラー: ${esc(e.message)}</span>`;

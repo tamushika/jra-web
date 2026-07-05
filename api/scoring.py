@@ -677,6 +677,57 @@ def allocate_picks(upset_ranks, coverage_map, budget, max_picks=8, fixed=None):
     return best_picks, best_est
 
 
+def allocate_picks_prob(prob_lists, budget, max_picks=8, fixed=None):
+    """
+    レース固有の勝率分布から頭数配分を全探索で決定する (荒れランク平均の代替)。
+    - prob_lists: 各レースの「スコア順に並べた推定勝率」のリスト
+      (conditional logit モデルの softmax 出力。合計≒1)
+    - budget / fixed: allocate_picks と同じ
+    戻り値: (picks[], est_hit_rate)
+    Πk <= budget の制約下で Π(上位k頭の勝率和) を最大化する。
+    """
+    import itertools as _it
+    fixed = set(fixed or ())
+    curves = []
+    for probs in prob_lists:
+        cum, curve = 0.0, []
+        for p in probs[:max_picks]:
+            cum += max(float(p), 0.0)
+            curve.append(min(cum, 1.0))
+        curves.append(curve or [0.3])
+    n = len(prob_lists)
+    kmax = [1 if i in fixed else len(c) for i, c in enumerate(curves)]
+
+    best_picks, best_est = [1] * n, 0.0
+    for combo in _it.product(*[range(1, km + 1) for km in kmax]):
+        pts = 1
+        for k in combo:
+            pts *= k
+        if pts > budget:
+            continue
+        est = 1.0
+        for i, k in enumerate(combo):
+            est *= curves[i][k - 1]
+        if est > best_est + 1e-12 or (abs(est - best_est) <= 1e-12 and pts < _pts_of(best_picks)):
+            best_picks, best_est = list(combo), est
+    return best_picks, best_est
+
+
+def win_probs_from_ml_scores(scores):
+    """MLスコア(表示スケール)のリスト → レース内勝率 (softmax)。
+    conditional logit で学習したモデルのみ確率として妥当。"""
+    import math as _m
+    model = load_ml_model()
+    if not scores or model is None or model.get("objective") != "conditional_logit":
+        return None
+    scale = model.get("display_scale", 10.0) or 10.0
+    raw = [s / scale for s in scores]
+    mx = max(raw)
+    e = [_m.exp(r - mx) for r in raw]
+    z = sum(e)
+    return [v / z for v in e] if z > 0 else None
+
+
 def _pts_of(ks):
     p = 1
     for k in ks:
