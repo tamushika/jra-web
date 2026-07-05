@@ -63,7 +63,7 @@ def main():
         SELECT date, place, race_num, race_name, "馬名" AS horse, sex_age,
                jockey, "斤量" AS kinryo, total_horses, horse_number, popularity,
                rank, track_type, distance, condition, time, corner_4, agari_3f,
-               weight, "所属" AS affi, odds
+               weight, "所属" AS affi, odds, horse_odds
         FROM races
         WHERE "馬名" IS NOT NULL AND date > %s AND race_name NOT LIKE %s
     ''', (cutoff_neon, "%障%"))
@@ -97,6 +97,13 @@ def main():
         age_m = re.search(r"(\d+)", sex_age)
         c4_m = re.search(r"\d+", str(d.get("corner_4") or ""))
         pop_m = re.search(r"\d+", str(d.get("popularity") or ""))
+        # win_pay: TARGET互換形式。勝ち馬=払戻円 '260' / 他馬=確定オッズ '(3.7)'
+        # (horse_odds は backfill_odds_netkeiba.py / 将来のupdater改修で充填)
+        if int(rank) == 1:
+            win_pay = str(d.get("odds") or "")
+        else:
+            ho = to_float(d.get("horse_odds"))
+            win_pay = f"({ho:g})" if ho else ""
         batch.append((
             date8, d.get("place"), int(d["race_num"]) if d.get("race_num") else None,
             d.get("race_name") or "", parse_race_class(d.get("race_name") or ""),
@@ -111,7 +118,7 @@ def main():
             int(c4_m.group()) if c4_m else None,
             agari, pci,
             int(to_float(d.get("weight")) or 0) or None,
-            (d.get("affi") or "").strip(), str(d.get("odds") or ""),
+            (d.get("affi") or "").strip(), win_pay,
         ))
 
     # 冪等: 対象期間を消してから挿入 (再実行時は前回追記分を置き換え)
@@ -123,7 +130,12 @@ def main():
     cur_sq.execute("SELECT MAX(date), COUNT(*) FROM runs")
     new_max, total = cur_sq.fetchone()
     conn_sq.close()
+    n_odds = sum(1 for b in batch if b[-1])
     print(f"追記: {len(batch)}行 (置換削除 {deleted}行, PCI計算済み {n_pci}行)")
+    print(f"win_pay(オッズ)充填: {n_odds}/{len(batch)}行 ({100.0 * n_odds / len(batch):.0f}%)")
+    if n_odds < len(batch) * 0.9:
+        print("[WARN] オッズ欠損が多い → 先に python backfill_odds_netkeiba.py を実行してください"
+              " (欠損のままML再学習すると ln_odds 特徴量が壊れます)")
     print(f"ability.db: 計{total}行, 最終日 {new_max}")
 
 

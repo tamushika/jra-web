@@ -18,7 +18,11 @@ set "PYEXE=%LocalAppData%\Python\bin\python.exe"
 if not exist "%PYEXE%" set "PYEXE=python"
 
 echo.
-echo  [1/4] Extending ability.db from Neon (2026+ rows with horse names) ...
+echo  [1/5] Backfilling final win odds from netkeiba (all runners) ...
+"%PYEXE%" backfill_odds_netkeiba.py || goto :fail
+
+echo.
+echo  [2/5] Extending ability.db from Neon (2026+ rows with horse names) ...
 "%PYEXE%" extend_ability_from_neon.py || goto :fail
 
 rem -- Optional: full rebuild to slide the standard-time window (January).
@@ -27,15 +31,15 @@ rem "%PYEXE%" build_ability_db.py --std-from %STD_FROM% --std-to %STD_TO% || got
 rem "%PYEXE%" extend_ability_from_neon.py || goto :fail
 
 echo.
-echo  [2/4] Regenerating track variants (full) ...
+echo  [3/5] Regenerating track variants (full) ...
 "%PYEXE%" gen_track_variants.py || goto :fail
 
 echo.
-echo  [3/4] Retraining ML model (check the OOS validation output!) ...
+echo  [4/5] Retraining ML model (check the OOS validation output!) ...
 "%PYEXE%" backtest_ml.py --write || goto :fail
 
 echo.
-echo  [4/4] Re-measuring coverage + WIN5 simulation with the new model ...
+echo  [5/5] Re-measuring coverage + WIN5 simulation with the new model ...
 "%PYEXE%" backtest_win5.py --from 20210101 --ml --write || goto :fail
 
 echo.
