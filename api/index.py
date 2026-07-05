@@ -463,9 +463,10 @@ def analyze_race_url(url, mode='簡易'):
         horses_out = []
         for h in scraped_data:
             h['w_num'] = calculate_waku(h['num'], len(scraped_data))
-            grade, det = analysis.evaluate_ultra(h, race_context, criteria, sire_lineage, mawari_map)
+            grade, det, matches = analysis.evaluate_ultra(h, race_context, criteria, sire_lineage, mawari_map)
             h['grade'] = grade
             h['ultra_details'] = det
+            h['ultra_matches'] = matches
             if grade == "◎": has_double_circle = True
             
             # Distance comparison

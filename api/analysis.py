@@ -1,3 +1,4 @@
+import json
 import re
 import pandas as pd
 import os
@@ -21,18 +22,44 @@ VENUE_SLUG_MAP = {
     "札幌": "sapporo", "函館": "hakodate", "共通": "common"
 }
 
+_criteria_weights_cache = None
+
+def _clean_rule_id(raw):
+    """pandas経由のid (29, 29.0, '29') を '29' に正規化"""
+    s = str(raw).strip()
+    return s[:-2] if s.endswith(".0") else s
+
+def load_criteria_weights():
+    """criteria_weights.json (backtest_criteria.py --gen-weights で生成) を読む。
+    無ければ空dict = 全ルール重み1.0。"""
+    global _criteria_weights_cache
+    if _criteria_weights_cache is not None:
+        return _criteria_weights_cache
+    current_script_dir = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(current_script_dir, "data_files", "common", "criteria_weights.json")
+    weights = {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        weights = {k: v for k, v in data.items() if not k.startswith("_")}
+    except Exception:
+        pass
+    _criteria_weights_cache = weights
+    return weights
+
 def load_csv_criteria(venue_name, base_dir):
     current_script_dir = os.path.dirname(os.path.abspath(__file__))
     venue_slug = VENUE_SLUG_MAP.get(venue_name, "kyoto")
-    
+
     # 同階層の data_files を参照 (Zero Config 最適化)
     file_path = os.path.join(current_script_dir, "data_files", venue_slug, "criteria", "criteria.csv")
-    
+
     if not os.path.exists(file_path):
         return []
 
+    auto_weights = load_criteria_weights().get(venue_name) or {}
     try:
-        df = pd.read_csv(file_path, header=None, encoding='utf-8-sig') 
+        df = pd.read_csv(file_path, header=None, encoding='utf-8-sig')
         criteria = []
         for _, row in df.iterrows():
             dist_str = str(row[2])
@@ -40,9 +67,20 @@ def load_csv_criteria(venue_name, base_dir):
             if not dist_range: continue
             dist_min = int(dist_range[0])
             dist_max = int(dist_range[1]) if len(dist_range) > 1 else dist_min
+            rid = _clean_rule_id(row[0])
+            # 重み: CSV7列目 (手動) > criteria_weights.json (バックテスト自動算出) > 1.0
+            weight = None
+            try:
+                cell = row.get(6)
+                if cell is not None and pd.notna(cell) and str(cell).strip() != "":
+                    weight = float(cell)
+            except (ValueError, TypeError):
+                pass
+            if weight is None:
+                weight = float(auto_weights.get(rid, 1.0))
             criteria.append({
-                "id": row[0], "type": row[1], "dist_min": dist_min, "dist_max": dist_max, 
-                "c1": str(row[3]), "c2": str(row[4]), "c3": str(row[5])
+                "id": rid, "type": row[1], "dist_min": dist_min, "dist_max": dist_max,
+                "c1": str(row[3]), "c2": str(row[4]), "c3": str(row[5]), "weight": weight
             })
         return criteria
     except: return []
@@ -638,8 +676,9 @@ def check_condition(cond, h, r, sire_lineage, mawari_map):
     except: return False
 
 def evaluate_ultra(h, r, criteria, sire_lineage, mawari_map):
-    """馬1頭に対してすべての好走条件をチェックし、結果を返す"""
-    best_grade, details = "", []
+    """馬1頭に対してすべての好走条件をチェックし、
+    (最良判定, 詳細文リスト, 該当ルールリスト[{id, grade, weight}]) を返す"""
+    best_grade, details, matches = "", [], []
     for rule in criteria:
         if rule['type'] != r['type'] or not (rule['dist_min'] <= r['dist'] <= rule['dist_max']): continue
         v2, v3 = is_valid_cond(rule['c2']), is_valid_cond(rule['c3'])
@@ -657,7 +696,10 @@ def evaluate_ultra(h, r, criteria, sire_lineage, mawari_map):
         else:
             if res1: grade = "△"
         if grade:
-            details.append(f"項番{rule['id']}: {grade} ({rule['c1']} | {rule['c2']} | {rule['c3']})")
+            weight = float(rule.get('weight', 1.0))
+            w_txt = f" [重み{weight:g}]" if abs(weight - 1.0) >= 0.005 else ""
+            details.append(f"項番{rule['id']}: {grade} ({rule['c1']} | {rule['c2']} | {rule['c3']}){w_txt}")
+            matches.append({"id": rule['id'], "grade": grade, "weight": weight})
             if grade == "◎" or (grade == "〇" and best_grade != "◎") or (grade == "△" and not best_grade):
                 best_grade = grade
-    return best_grade, details
+    return best_grade, details, matches

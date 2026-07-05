@@ -7,6 +7,8 @@
 【使い方】
   python backtest_criteria.py                 # 2024-2025 レポート
   python backtest_criteria.py --from 20220101 --to 20231231
+  python backtest_criteria.py --gen-weights   # ルール別重みを算出して
+                                              # api/data_files/common/criteria_weights.json に保存
 
 【制約 (レポートにも表示)】
   - 血統(父/母父/系)・生産者・減量記号の条件は ability.db に無いため、
@@ -118,10 +120,60 @@ def build_h(cur, prev):
     return h
 
 
+WEIGHTS_PATH = os.path.join(API_DIR, "data_files", "common", "criteria_weights.json")
+
+
+def gen_weights(by_rule, by_venue, args):
+    """ルール別複勝率のベースライン乖離から重みを算出し JSON 保存。
+    weight = clamp(1 + k × shrunk_dev, wmin, wmax)
+    shrunk_dev = (ルール複勝率 − 場複勝率) × n / (n + n0)   ※小サンプル収縮"""
+    import json
+    weights, report = {}, []
+    for (venue, rid), b in sorted(by_rule.items()):
+        vb = by_venue.get(venue)
+        if not vb or not vb["n"] or not b["n"]:
+            continue
+        base = vb["top3"] / vb["n"]
+        rate = b["top3"] / b["n"]
+        shrunk = (rate - base) * (b["n"] / (b["n"] + args.n0))
+        w = round(min(args.wmax, max(args.wmin, 1.0 + args.k * shrunk)), 2)
+        weights.setdefault(venue, {})[rid] = w
+        report.append((w, venue, rid, b["n"], 100.0 * rate, 100.0 * base))
+
+    payload = {
+        "_meta": {
+            "generated": datetime.now().strftime("%Y-%m-%d"),
+            "period": f"{args.date_from}-{args.date_to}",
+            "formula": "1 + k*(rule_top3 - venue_top3)*n/(n+n0)",
+            "params": {"k": args.k, "n0": args.n0, "wmin": args.wmin, "wmax": args.wmax},
+            "note": "血統・生産者・減量条件を含むルールは検証不能のため未収録 (重み1.0扱い)。CSV7列目の手動重みが優先される。",
+        },
+    }
+    payload.update(weights)
+    with open(WEIGHTS_PATH, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=1)
+    n_rules = sum(len(v) for v in weights.values())
+    print(f"\n重みを保存: {WEIGHTS_PATH} ({n_rules}ルール)")
+
+    report.sort(reverse=True)
+    print("\n===== ルール別重み 上位/下位 (重み | 場 項番 | 該当n | 複勝率 vs 場平均) =====")
+    for w, venue, rid, n, rate, base in report[:10]:
+        print(f"  {w:.2f} | {venue} 項番{rid:4s}| n={n:5d} | {rate:5.1f}% vs {base:4.1f}%")
+    print("  ...")
+    for w, venue, rid, n, rate, base in report[-10:]:
+        print(f"  {w:.2f} | {venue} 項番{rid:4s}| n={n:5d} | {rate:5.1f}% vs {base:4.1f}%")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--from", dest="date_from", default="20240101")
     ap.add_argument("--to", dest="date_to", default="20251231")
+    ap.add_argument("--gen-weights", action="store_true",
+                    help="ルール別重みを算出して criteria_weights.json に保存")
+    ap.add_argument("--n0", type=float, default=20.0, help="収縮パラメータ (デフォルト20)")
+    ap.add_argument("--k", type=float, default=4.0, help="乖離→重み変換係数 (デフォルト4)")
+    ap.add_argument("--wmin", type=float, default=0.5)
+    ap.add_argument("--wmax", type=float, default=1.5)
     args = ap.parse_args()
 
     criteria_map = load_filtered_criteria()
@@ -146,6 +198,8 @@ def main():
 
     by_grade = defaultdict(bucket)
     by_count = defaultdict(bucket)
+    by_rule = defaultdict(bucket)   # (場, 項番) 別 — 重み算出用
+    by_venue = defaultdict(bucket)  # 場別ベースライン
     n_eval = 0
 
     for horse, lst in by_horse.items():
@@ -160,16 +214,19 @@ def main():
             r_ctx = {"type": cur["track_type"], "dist": cur["distance"],
                      "venue": cur["place"], "total_horses": cur["total_horses"],
                      "class": cur["race_class"]}
-            grade, details = analysis.evaluate_ultra(h, r_ctx, crits, {}, mawari_map)
+            grade, details, matches = analysis.evaluate_ultra(h, r_ctx, crits, {}, mawari_map)
             n_eval += 1
 
             pay = parse_win_payout(cur["win_pay"], cur["rank"])
-            for key, table in ((grade or "無印", by_grade),
-                               (min(len(details), 3), by_count)):
-                b = table[key]
+            is_win = 1 if cur["rank"] == 1 else 0
+            is_top3 = 1 if cur["rank"] <= 3 else 0
+            buckets = [by_grade[grade or "無印"], by_count[min(len(details), 3)],
+                       by_venue[cur["place"]]]
+            buckets.extend(by_rule[(cur["place"], str(m["id"]))] for m in matches)
+            for b in buckets:
                 b["n"] += 1
-                b["win"] += 1 if cur["rank"] == 1 else 0
-                b["top3"] += 1 if cur["rank"] <= 3 else 0
+                b["win"] += is_win
+                b["top3"] += is_top3
                 b["payout"] += pay
 
     print(f"評価出走: {n_eval}")
@@ -186,6 +243,9 @@ def main():
 
     show(by_grade, ["◎", "〇", "△", "無印"], "判定グレード別 (血統以外ルールのみ)")
     show(by_count, [0, 1, 2, 3], "該当ルール数別 (3=3件以上)")
+
+    if args.gen_weights:
+        gen_weights(by_rule, by_venue, args)
 
     print("\n[注意] 血統・生産者・減量条件を含むルールは対象外 (実運用の◎はこれらも含む) / "
           "騎手名はDB側4文字切詰のため部分一致で判定")

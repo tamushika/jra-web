@@ -1098,20 +1098,40 @@ def _compute_score_inner(h, race_context, factor_table, cfg):
         total += mk_pts
         details.extend(mk_details)
 
-    # 既存◎〇△判定ボーナス
+    # 既存◎〇△判定ボーナス (ルール別重みを反映: グレード点 × 該当ルールの重み の最大値)
     gb = params.get("grade_bonus", {})
-    grade = h.get("grade", "")
-    if grade in gb and gb[grade]:
-        total += gb[grade]
-        details.append(f"判定{grade} → {gb[grade]:+.1f}")
+    matches = h.get("ultra_matches") or []
+    if matches:
+        best = max(matches, key=lambda m: gb.get(m.get("grade", ""), 0.0) * m.get("weight", 1.0))
+        bw = best.get("weight", 1.0)
+        pts = gb.get(best.get("grade", ""), 0.0) * bw
+        if pts:
+            total += pts
+            w_txt = f", 重み{bw:.2f}" if abs(bw - 1.0) >= 0.005 else ""
+            details.append(f"判定{best['grade']} (項番{best['id']}{w_txt}) → {pts:+.1f}")
+    else:
+        # ultra_matches 未対応の呼び出し元 (バックテスト等) 向けフォールバック
+        grade = h.get("grade", "")
+        if grade in gb and gb[grade]:
+            total += gb[grade]
+            details.append(f"判定{grade} → {gb[grade]:+.1f}")
 
-    # 好走条件の該当数ボーナス (2件目以降を加点。バックテストで該当数と勝率の単調増加を確認済)
+    # 好走条件の該当数ボーナス (2件目以降を加点。バックテストで該当数と勝率の単調増加を確認済。
+    # ルール別重みがある場合は2件目以降の重み合計で加点)
     cc = params.get("criteria_count", {})
-    n_match = len(h.get("ultra_details") or [])
-    if cc.get("per_extra") and n_match > 1:
-        pts = min(cc.get("cap", 6.0), cc["per_extra"] * (n_match - 1))
-        total += pts
-        details.append(f"好走条件 該当{n_match}件 → {pts:+.1f}")
+    if cc.get("per_extra"):
+        if matches:
+            if len(matches) > 1:
+                w_sorted = sorted((m.get("weight", 1.0) for m in matches), reverse=True)
+                pts = min(cc.get("cap", 6.0), cc["per_extra"] * sum(w_sorted[1:]))
+                total += pts
+                details.append(f"好走条件 該当{len(matches)}件 → {pts:+.1f}")
+        else:
+            n_match = len(h.get("ultra_details") or [])
+            if n_match > 1:
+                pts = min(cc.get("cap", 6.0), cc["per_extra"] * (n_match - 1))
+                total += pts
+                details.append(f"好走条件 該当{n_match}件 → {pts:+.1f}")
 
     if not details:  # 算出根拠が1つも無い (履歴なし かつ factors未整備 等)
         return None, []
