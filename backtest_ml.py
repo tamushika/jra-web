@@ -46,19 +46,41 @@ TEST_FROM, TEST_TO = "20250101", "20251231"
 
 FEATURES = ["j_pts", "f_pts", "tfeat", "cfeat", "agari_flag", "ln_odds",
             "prev_rank", "ln_interval", "age", "is_male", "kinryo", "weight",
-            "n_prior", "wet_match"]
+            "n_prior", "wet_match",
+            # 2026-07 追加パック
+            "dist_pts",    # 距離変更バイアス点 (db-keiba)
+            "surf_pts",    # コース替わりバイアス点 (db-keiba)
+            "affi_pts",    # 所属バイアス点 (db-keiba)
+            "pace_fit",    # 型PCI偏差 × メンバー予測ペース (backtest_pace C検証定義)
+            "course_fit",  # 直近4走に同場同芝ダ同距離での3着以内あり
+            "grade_pts"]   # 好走条件判定 ◎3/〇2/△1 (血統以外ルール)
 
 WET = {"稍", "重", "不"}
+PCI_TRACK_MEAN = {"芝": 51.96, "ダート": 45.83}  # backtest_pace.TRACK_MEAN と同値
 MODEL_PATH = os.path.join(API_DIR, "data_files", "common", "win5_ml_model.json")
+
+
+def _pci_dev(run):
+    if run.get("pci") is None or run["track_type"] not in PCI_TRACK_MEAN:
+        return None
+    return run["pci"] - PCI_TRACK_MEAN[run["track_type"]]
 
 
 def build_dataset(runs, date_from, cfg):
     """評価出走ごとに特徴量ベクトルを構築 (score_all_runners と同じ部品を使用)"""
+    from backtest_criteria import (load_filtered_criteria, load_mawari,
+                                   build_h, attach_agari_rank)
+    import analysis
+
     params = cfg["params"]
     weights = cfg["weights"]
     ab = params["ability"]
     pos_factor = {int(k): v for k, v in ab["pos_factor"].items()}
     use_variant = ab.get("track_variant", False)
+
+    criteria_map = load_filtered_criteria()
+    mawari_map = load_mawari()
+    attach_agari_rank(runs)
 
     by_horse = defaultdict(list)
     for r in runs:
@@ -66,6 +88,17 @@ def build_dataset(runs, date_from, cfg):
             by_horse[r["horse"]].append(r)
     for lst in by_horse.values():
         lst.sort(key=lambda x: x["date"])
+
+    # ── 1パス目: レースごとの予測ペース (出走馬の直近4走PCI偏差平均の平均) ──
+    race_pre = defaultdict(list)
+    for horse, lst in by_horse.items():
+        for i, cur in enumerate(lst):
+            if cur["date"] < date_from or cur["rank"] is None:
+                continue
+            devs = [d for d in (_pci_dev(p) for p in lst[max(0, i - 4):i]) if d is not None]
+            if devs:
+                race_pre[(cur["date"], cur["place"], cur["r"])].append(sum(devs) / len(devs))
+    pred_pace = {k: sum(v) / len(v) for k, v in race_pre.items() if len(v) >= 5}
 
     ftables = {}
 
@@ -88,11 +121,18 @@ def build_dataset(runs, date_from, cfg):
 
             f = dict.fromkeys(FEATURES, 0.0)
 
-            # バイアス (騎手/枠) — 現行と同じ点数を特徴量として使用
+            # バイアス (騎手/枠/距離変更/コース替わり/所属) — db-keiba統計点を特徴量に
             table = get_ftable(cur["place"], cur["track_type"], cur["distance"])
             if table:
                 baseline = table["baseline"].get("win_rate")
                 if baseline is not None:
+                    def bias_pts(fmap, key, w=1.0):
+                        row = (fmap or {}).get(key) if key else None
+                        if row is None:
+                            return None
+                        p, _ = scoring._factor_points(row, baseline, params, w, "win_rate")
+                        return p
+
                     row = jmatcher.match(table.get("jockey_w") or {}, cur["jockey"])
                     if row is not None:
                         p, _ = scoring._factor_points(row, baseline, params,
@@ -101,12 +141,26 @@ def build_dataset(runs, date_from, cfg):
                             f["j_pts"] = p
                     waku = calculate_waku(cur["umaban"], cur["total_horses"])
                     if waku:
-                        row = (table.get("frame") or {}).get(f"{waku}枠")
-                        if row is not None:
-                            p, _ = scoring._factor_points(row, baseline, params,
-                                                          weights.get("frame", 0), "win_rate")
-                            if p is not None:
-                                f["f_pts"] = p
+                        p = bias_pts(table.get("frame"), f"{waku}枠", weights.get("frame", 0))
+                        if p is not None:
+                            f["f_pts"] = p
+                    # 距離変更 (前走距離との実差分 → db-keibaの7段階ラベル)
+                    d_label = scoring._distance_label(cur["distance"], prior[0]["distance"])
+                    p = bias_pts(table.get("distance"), scoring._norm(d_label) if d_label else None)
+                    if p is not None:
+                        f["dist_pts"] = p
+                    # コース替わり (前走芝ダ → 今回芝ダ)
+                    s_label = (f"{'芝' if prior[0]['track_type'] == '芝' else 'ダ'}"
+                               f"→{'芝' if cur['track_type'] == '芝' else 'ダ'}")
+                    p = bias_pts(table.get("surface"), scoring._norm(s_label))
+                    if p is not None:
+                        f["surf_pts"] = p
+                    # 所属 (美浦/栗東)
+                    affi = "美浦" if "美" in str(cur.get("affi") or "") else \
+                           ("栗東" if "栗" in str(cur.get("affi") or "") else None)
+                    p = bias_pts(table.get("stable_trainer"), scoring._norm(affi) if affi else None)
+                    if p is not None:
+                        f["affi_pts"] = p
 
             # 能力系
             tbest, cbest, amin = None, None, None
@@ -159,6 +213,28 @@ def build_dataset(runs, date_from, cfg):
                         f["wet_match"] = 1.0
                     elif gap >= 2:
                         f["wet_match"] = -1.0
+
+            # ペース適性: 型PCI偏差 × メンバー予測ペース (backtest_pace C定義)
+            pv = pred_pace.get((cur["date"], cur["place"], cur["r"]))
+            devs = [d for d in (_pci_dev(p) for p in prior) if d is not None]
+            if pv is not None and devs:
+                f["pace_fit"] = (sum(devs) / len(devs)) * pv
+
+            # 同コース実績: 直近4走に同場・同芝ダ・同距離で3着以内
+            f["course_fit"] = 1.0 if any(
+                p["place"] == cur["place"] and p["track_type"] == cur["track_type"]
+                and p["distance"] == cur["distance"] and p["rank"] and p["rank"] <= 3
+                for p in prior) else 0.0
+
+            # 好走条件判定 (criteria.csv 血統以外ルール): ◎3 / 〇2 / △1
+            crits = criteria_map.get(cur["place"])
+            if crits:
+                h_c = build_h(cur, prior[0])
+                r_ctx = {"type": cur["track_type"], "dist": cur["distance"],
+                         "venue": cur["place"], "total_horses": cur["total_horses"],
+                         "class": cur["race_class"]}
+                grade, _det, _mt = analysis.evaluate_ultra(h_c, r_ctx, crits, {}, mawari_map)
+                f["grade_pts"] = {"◎": 3.0, "〇": 2.0, "△": 1.0}.get(grade, 0.0)
 
             X.append([f[k] for k in FEATURES])
             y.append(1 if cur["rank"] == 1 else 0)
@@ -213,8 +289,32 @@ def fit_conditional_logit(Xz, y, race_keys, l2=1.0, max_iter=300):
     return res.x
 
 
-def build_prob_races(scores, race_keys, meta):
-    """スコア → レースごとに softmax 勝率を付与。
+def fit_temperature(scores, y, race_keys, grid=None):
+    """softmax温度 τ をキャリブレーション用データの条件付き対数尤度最大化で決定。
+    τ>1 = モデルが過信気味 (確率を平滑化)。"""
+    rid_map = {}
+    rid = np.empty(len(race_keys), dtype=np.int64)
+    for i, k in enumerate(race_keys):
+        rid[i] = rid_map.setdefault(k, len(rid_map))
+    order = np.argsort(rid, kind="stable")
+    s, ys, rs = np.asarray(scores)[order], np.asarray(y)[order].astype(float), rid[order]
+    starts = np.flatnonzero(np.r_[True, rs[1:] != rs[:-1]])
+    seg = np.repeat(np.arange(len(starts)), np.diff(np.r_[starts, len(rs)]))
+    nwin = np.add.reduceat(ys, starts)
+
+    def nll(tau):
+        st = s / tau
+        smax = np.maximum.reduceat(st, starts)
+        lse = smax + np.log(np.add.reduceat(np.exp(st - smax[seg]), starts))
+        return -(st[ys == 1].sum() - (nwin * lse).sum())
+
+    grid = grid if grid is not None else np.arange(0.70, 1.61, 0.02)
+    best = min(grid, key=nll)
+    return float(round(best, 2))
+
+
+def build_prob_races(scores, race_keys, meta, temp=1.0):
+    """スコア → レースごとに softmax(スコア/τ) 勝率を付与。
     戻り値: {key: [(score, prob, meta), ...] スコア降順}"""
     races = defaultdict(list)
     for s, k, m in zip(scores, race_keys, meta):
@@ -223,7 +323,7 @@ def build_prob_races(scores, race_keys, meta):
     for k, mem in races.items():
         mem.sort(key=lambda x: -x[0])
         mx = mem[0][0]
-        es = [math.exp(s - mx) for s, _ in mem]
+        es = [math.exp((s - mx) / temp) for s, _ in mem]
         z = sum(es)
         out[k] = [(s, e / z, m) for (s, m), e in zip(mem, es)]
     return out
@@ -379,15 +479,28 @@ def main():
         row = "  ".join(f"{c*100:4.1f}" for c in d[:4]) if d else "n/a"
         print(f"{label:26s} | {row}  ({n.get('default_all', 0)})")
 
-    # ── 確率キャリブレーション + WIN5配分比較 (CLのsoftmax勝率を使用) ──
-    prob_races = build_prob_races(scores_cl, te_keys, te_meta)
+    # ── 温度キャリブレーション (内部分割: 学習21-23 → 温度調整24。検証25は使わない) ──
+    inner_tr = dates[tr] <= "20231231"
+    w_inner = fit_conditional_logit(Xz_tr[inner_tr], y[tr][inner_tr],
+                                    [k for k, t in zip(tr_keys, inner_tr) if t])
+    cal = ~inner_tr
+    temp = fit_temperature(Xz_tr[cal] @ w_inner, y[tr][cal],
+                           [k for k, t in zip(tr_keys, cal) if t])
+    print(f"\n温度キャリブレーション (21-23学習→24調整): τ = {temp:.2f} "
+          f"({'過信を平滑化' if temp > 1 else '据え置き' if temp == 1 else '先鋭化'})")
+
+    # ── 確率キャリブレーション + WIN5配分比較 (CLのsoftmax勝率, τ適用) ──
+    prob_races = build_prob_races(scores_cl, te_keys, te_meta, temp=temp)
     report_calibration(prob_races)
     simulate_win5_compare(prob_races, upset_map, cov_cl, budgets=[50, 100, 150, 200])
 
+    # CL はキャリブレーション済み勝率を提供し、レース固有配分 (WIN5的中率+3pt級) の
+    # 前提になるため、LR がカバレッジで 1pt 以上明確に勝る場合のみ LR を採用する
     mean_lr = sum(cov_ml.get("default", [0] * 4)[:4]) / 4
     mean_cl = sum(cov_cl.get("default", [0] * 4)[:4]) / 4
-    best_obj = "conditional_logit" if mean_cl >= mean_lr else "logistic_regression"
-    print(f"\nOOS平均カバレッジ(k1-4): LR {mean_lr*100:.1f}% / CL {mean_cl*100:.1f}% → 採用候補: {best_obj}")
+    best_obj = "logistic_regression" if mean_lr - mean_cl > 0.01 else "conditional_logit"
+    print(f"\nOOS平均カバレッジ(k1-4): LR {mean_lr*100:.1f}% / CL {mean_cl*100:.1f}% → 採用候補: {best_obj}"
+          f" (CLは勝率配分の前提のため1pt差までCL優先)")
 
     # ── 本番モデル出力 (全期間で再学習) ──
     if args.write:
@@ -417,6 +530,7 @@ def main():
             "sd": [round(float(v), 6) for v in scaler_f.scale_],
             "coef": [round(float(v), 6) for v in coef_f],
             "display_scale": 10.0,
+            "prob_temperature": temp,
         }
         with open(MODEL_PATH, "w", encoding="utf-8") as fp:
             json.dump(out, fp, ensure_ascii=False, indent=1)

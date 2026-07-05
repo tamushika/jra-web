@@ -470,6 +470,8 @@ _ML_LABELS = {
     "agari_flag": "上がり", "ln_odds": "市場", "prev_rank": "前走着順",
     "ln_interval": "間隔", "age": "年齢", "is_male": "性別", "kinryo": "斤量",
     "weight": "馬体重", "n_prior": "キャリア", "wet_match": "道悪適性",
+    "dist_pts": "距離変更", "surf_pts": "コース替わり", "affi_pts": "所属",
+    "pace_fit": "ペース適性", "course_fit": "同コース実績", "grade_pts": "好走条件",
 }
 
 
@@ -496,10 +498,23 @@ def _ml_features(h, race_context, factor_table, cfg):
     recency = ab.get("recency", [1.0, 0.85, 0.7, 0.55])
     f = {k: 0.0 for k in _ML_LABELS}
 
-    # バイアス (騎手/枠, 勝率ベースの点数そのもの)
+    # 前走のコース情報 (距離変更/コース替わり/同コース実績で使用)
+    hist_all = [r for r in (h.get("hist") or []) if r]
+    prev_info = _run_course_info(hist_all[0]) if hist_all else None  # (場,芝ダ,距離,クラス,馬場)
+    cur_type = race_context.get("race_type") or race_context.get("type")
+    cur_dist = race_context.get("distance") or race_context.get("dist")
+
+    # バイアス (騎手/枠/距離変更/コース替わり/所属, 勝率ベースの点数そのもの)
     if factor_table is not None:
         baseline = factor_table["baseline"].get("win_rate")
         if baseline is not None:
+            def _bias(fmap, key):
+                row = (fmap or {}).get(key) if key else None
+                if row is None:
+                    return None
+                p, _ = _factor_points(row, baseline, params, 1.0, "win_rate")
+                return p
+
             row = _match_entity(factor_table.get("jockey_w"), h.get("jock"))
             if row is not None:
                 p, _ = _factor_points(row, baseline, params, weights.get("jockey_w", 0), "win_rate")
@@ -512,6 +527,22 @@ def _ml_features(h, race_context, factor_table, cfg):
                     p, _ = _factor_points(row, baseline, params, weights.get("frame", 0), "win_rate")
                     if p is not None:
                         f["f_pts"] = p
+            if prev_info and cur_dist:
+                d_label = _distance_label(int(cur_dist), prev_info[2])
+                p = _bias(factor_table.get("distance"), _norm(d_label) if d_label else None)
+                if p is not None:
+                    f["dist_pts"] = p
+            if prev_info and cur_type:
+                s_label = (f"{'芝' if prev_info[1] == '芝' else 'ダ'}"
+                           f"→{'芝' if cur_type == '芝' else 'ダ'}")
+                p = _bias(factor_table.get("surface"), _norm(s_label))
+                if p is not None:
+                    f["surf_pts"] = p
+            affi = h.get("affi")
+            if affi in ("美浦", "栗東"):
+                p = _bias(factor_table.get("stable_trainer"), _norm(affi))
+                if p is not None:
+                    f["affi_pts"] = p
 
     # 能力系 (backtestと同じ raw特徴量: clip(基準差, ±4秒)×recency の最良値)
     hist = [r for r in (h.get("hist") or []) if r]
@@ -599,6 +630,25 @@ def _ml_features(h, race_context, factor_table, cfg):
                 f["wet_match"] = 1.0
             elif gap >= 2:
                 f["wet_match"] = -1.0
+
+    # 同コース実績: 直近4走に同場・同芝ダ・同距離で3着以内
+    cur_venue = race_context.get("venue")
+    if cur_venue and cur_type and cur_dist:
+        for run in hist[:4]:
+            info = _run_course_info(run)
+            rank_s = str(run.get("rank", ""))
+            if (info and rank_s.isdigit() and int(rank_s) <= 3
+                    and info[0] == cur_venue and info[1] == cur_type
+                    and info[2] == int(cur_dist)):
+                f["course_fit"] = 1.0
+                break
+
+    # 好走条件判定 (アプリ側で評価済みの h["grade"] を使用。
+    # 学習は血統以外ルールのみだが、ライブは血統込み判定 — 方向は同一)
+    f["grade_pts"] = {"◎": 3.0, "〇": 2.0, "△": 1.0}.get(h.get("grade", ""), 0.0)
+
+    # pace_fit はレース全馬の集計が必要なためライブでは 0 埋め
+    # (conditional logit はレース内の一様シフトに不変なので勝率に歪みは出ない)
     return f
 
 
@@ -721,7 +771,8 @@ def win_probs_from_ml_scores(scores):
     if not scores or model is None or model.get("objective") != "conditional_logit":
         return None
     scale = model.get("display_scale", 10.0) or 10.0
-    raw = [s / scale for s in scores]
+    temp = model.get("prob_temperature", 1.0) or 1.0
+    raw = [s / scale / temp for s in scores]
     mx = max(raw)
     e = [_m.exp(r - mx) for r in raw]
     z = sum(e)
