@@ -102,15 +102,47 @@ def get_upset(venue, race_type, dist):
 
 # ─── API ─────────────────────────────────────────────────────────────────────
 
+VENUE_CODE = {"札幌": "01", "函館": "02", "福島": "03", "新潟": "04", "東京": "05",
+              "中山": "06", "中京": "07", "京都": "08", "阪神": "09", "小倉": "10"}
+
+
+def _fill_missing_from_siblings(races, url_map, date8):
+    """URL未解決のレースを、同場・同日の取得済みカードページのレースナビから補完する。"""
+    import requests as _rq
+    for r in races:
+        if url_map.get(r["idx"]):
+            continue
+        v_code = VENUE_CODE.get(r["venue"])
+        if not v_code:
+            continue
+        sibling = next((url_map[o["idx"]] for o in races
+                        if o["venue"] == r["venue"] and url_map.get(o["idx"])), None)
+        if not sibling:
+            continue
+        try:
+            res = _rq.get(sibling, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+            res.encoding = "shift_jis"
+            pat = (rf'accessD\.html\?CNAME=(pw01dde\d{{2}}{v_code}\d{{8}}'
+                   rf'{int(r["race_num"]):02d}{date8}/\w+)')
+            m = re.search(pat, res.text)
+            if m:
+                url_map[r["idx"]] = f"https://www.jra.go.jp/JRADB/accessD.html?CNAME={m.group(1)}"
+        except Exception:
+            continue
+    return url_map
+
+
 @app.route("/api/win5_races", methods=["GET"])
 def win5_races():
-    """WIN5対象5レースの取得 + カードURL解決 (web版と同形状)"""
+    """WIN5対象5レースの取得 + カードURL解決 (web版と同形状 + 兄弟レース補完)"""
     try:
         target, err = _scrape_win5_target()
         if not target:
             return jsonify({"success": False,
                             "error": err or "WIN5対象レース情報を取得できませんでした (発表前の可能性)。URLを手入力してください。"})
-        url_map = _find_win5_urls(target["races"], target.get("date_yyyymmdd", ""))
+        date8 = target.get("date_yyyymmdd", "")
+        url_map = _find_win5_urls(target["races"], date8)
+        url_map = _fill_missing_from_siblings(target["races"], url_map, date8)
         for r in target["races"]:
             r["url"] = url_map.get(r["idx"], "")
         return jsonify({"success": True, **target})

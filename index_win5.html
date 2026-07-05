@@ -214,8 +214,10 @@ async function generateKaime() {
         document.querySelectorAll('.w5-selected-row').forEach(el => el.classList.remove('w5-selected-row'));
         const blocks = data.picks.map(p => {
             p.horses.forEach(h => document.getElementById(`r${p.idx}h${h.num}`)?.classList.add('w5-selected-row'));
-            const chips = p.horses.map(h =>
-                `<span class="w5-horse-chip"><b>${esc(h.num)}</b> ${esc(h.name)} (${h.score})</span>`).join('');
+            const chips = p.horses.map(h => {
+                const pop = h.pop ? ` / ${esc(h.pop)}人気` : '';
+                return `<span class="w5-horse-chip"><b>${esc(h.num)}</b> ${esc(h.name)} (${h.score}${pop})</span>`;
+            }).join('');
             const cov = p.coverage != null ? `カバー率 ${(p.coverage * 100).toFixed(1)}%` : '';
             const axisBadge = p.is_axis
                 ? '<span class="upset-badge" style="background:#1976d2;color:#fff;">軸 1点</span>' : '';
