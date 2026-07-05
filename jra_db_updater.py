@@ -285,6 +285,7 @@ def insert_into_db(data: dict, url: str) -> dict:
             "race_name": r_name,
             "total_horses": total_horses,
             "horse_number": r.get("馬番"),
+            "馬名": r.get("馬名"),
             "rank": float(m_r.group()) if m_r else 99.0,
             "corner_4": c4_val,
             "jockey": r.get("騎手"),
