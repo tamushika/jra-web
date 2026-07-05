@@ -488,6 +488,14 @@ def analyze_race_url(url, mode='簡易'):
 
             horses_out.append(h)
 
+        # 血統の受動的蓄積 (将来のML血統特徴量用)。失敗しても解析は継続
+        if os.environ.get("PEDIGREE_COLLECT", "1") != "0":
+            try:
+                import pedigree_store
+                pedigree_store.upsert_horses(horses_out)
+            except Exception:
+                pass
+
         # Feature Course Memo
         feature_text = analysis.load_course_feature(venue, race_type, dist_val, base_dir)
 

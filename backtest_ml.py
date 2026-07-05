@@ -313,6 +313,38 @@ def fit_temperature(scores, y, race_keys, grid=None):
     return float(round(best, 2))
 
 
+def _group_by_race(Xz, y, race_keys):
+    """レース順に整列した (X, y, グループサイズ配列) を返す (LightGBM group用)"""
+    rid_map = {}
+    rid = np.empty(len(race_keys), dtype=np.int64)
+    for i, k in enumerate(race_keys):
+        rid[i] = rid_map.setdefault(k, len(rid_map))
+    order = np.argsort(rid, kind="stable")
+    rs = rid[order]
+    starts = np.flatnonzero(np.r_[True, rs[1:] != rs[:-1]])
+    sizes = np.diff(np.r_[starts, len(rs)])
+    return Xz[order], np.asarray(y)[order], sizes
+
+
+def fit_lgbm_rank(Xz_tr, y_tr, keys_tr, Xz_va, y_va, keys_va, seed=7):
+    """LambdaRank (レース内ランキング学習)。検証セットで早期停止し、
+    (booster, best_iteration) を返す。"""
+    import lightgbm as lgb
+    Xs, ys, gs = _group_by_race(Xz_tr, y_tr, keys_tr)
+    Xv, yv, gv = _group_by_race(Xz_va, y_va, keys_va)
+    params = {
+        "objective": "lambdarank", "metric": "ndcg", "ndcg_eval_at": [1, 3],
+        "learning_rate": 0.05, "num_leaves": 31, "min_data_in_leaf": 100,
+        "feature_fraction": 0.9, "bagging_fraction": 0.8, "bagging_freq": 1,
+        "lambdarank_truncation_level": 8, "verbosity": -1, "seed": seed,
+    }
+    ds_tr = lgb.Dataset(Xs, label=ys, group=gs)
+    ds_va = lgb.Dataset(Xv, label=yv, group=gv, reference=ds_tr)
+    booster = lgb.train(params, ds_tr, num_boost_round=800, valid_sets=[ds_va],
+                        callbacks=[lgb.early_stopping(50, verbose=False)])
+    return booster, booster.best_iteration
+
+
 def build_prob_races(scores, race_keys, meta, temp=1.0):
     """スコア → レースごとに softmax(スコア/τ) 勝率を付与。
     戻り値: {key: [(score, prob, meta), ...] スコア降順}"""
@@ -428,6 +460,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--write", action="store_true",
                     help="全期間で再学習してモデルJSONを出力")
+    ap.add_argument("--lgbm", action="store_true",
+                    help="LightGBM LambdaRank も学習して比較 (要 lightgbm)")
     args = ap.parse_args()
 
     cfg = load_win5_cfg()
@@ -493,6 +527,32 @@ def main():
     prob_races = build_prob_races(scores_cl, te_keys, te_meta, temp=temp)
     report_calibration(prob_races)
     simulate_win5_compare(prob_races, upset_map, cov_cl, budgets=[50, 100, 150, 200])
+
+    # ── LightGBM LambdaRank (オプション比較) ──
+    if args.lgbm:
+        inner_keys = [k for k, t in zip(tr_keys, inner_tr) if t]
+        cal_keys = [k for k, t in zip(tr_keys, cal) if t]
+        booster, best_it = fit_lgbm_rank(
+            Xz_tr[inner_tr], y[tr][inner_tr], inner_keys,
+            Xz_tr[cal], y[tr][cal], cal_keys)
+        print(f"\nLightGBM LambdaRank: best_iteration = {best_it}")
+        scores_gb = booster.predict(Xz_te, num_iteration=best_it)
+        cov_gb, n_gb = coverage_from_scores(scores_gb, te_keys, te_meta, upset_map)
+        d_cl = cov_cl.get("default", [0] * 4)
+        d_gb = cov_gb.get("default", [0] * 4)
+        print("model                      | k=1   k=2   k=3   k=4")
+        print(f"{'conditional logit':26s} | " + "  ".join(f"{c*100:4.1f}" for c in d_cl[:4]))
+        print(f"{'LightGBM LambdaRank':26s} | " + "  ".join(f"{c*100:4.1f}" for c in d_gb[:4]))
+        gain = sorted(zip(FEATURES, booster.feature_importance("gain")), key=lambda x: -x[1])
+        print("特徴量重要度(gain上位8):", ", ".join(f"{n}={g:.0f}" for n, g in gain[:8]))
+        # 温度 (rankスコアは非確率のためキャリブレーション必須)
+        temp_gb = fit_temperature(booster.predict(Xz_tr[cal], num_iteration=best_it),
+                                  y[tr][cal], cal_keys,
+                                  grid=np.arange(0.2, 3.01, 0.05))
+        print(f"LGBM 温度: τ = {temp_gb:.2f}")
+        prob_races_gb = build_prob_races(scores_gb, te_keys, te_meta, temp=temp_gb)
+        report_calibration(prob_races_gb)
+        simulate_win5_compare(prob_races_gb, upset_map, cov_gb, budgets=[50, 100, 150, 200])
 
     # CL はキャリブレーション済み勝率を提供し、レース固有配分 (WIN5的中率+3pt級) の
     # 前提になるため、LR がカバレッジで 1pt 以上明確に勝る場合のみ LR を採用する
