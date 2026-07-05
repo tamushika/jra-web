@@ -203,6 +203,12 @@ def insert_into_db(data: dict, url: str) -> dict:
     date_val = None
     if dates_in_url:
         date_val = dates_in_url[-1]
+
+    # レース番号 (CNAME: pw01sde <開催回> <場コード> <年> <回日> <R番号> <日付8桁>)
+    race_num_val = None
+    m_rn = re.search(r'pw01sde\d{2}\d{2}\d{4}\d{4}(\d{2})20\d{6}', url)
+    if m_rn:
+        race_num_val = int(m_rn.group(1))
     
     m_date = re.search(r'20(\d{2})年(\d{1,2})月(\d{1,2})日', r_info)
     if m_date:
@@ -265,6 +271,10 @@ def insert_into_db(data: dict, url: str) -> dict:
         except ValueError:
             horse_odds_val = None
 
+        # 斤量 (負担重量) を数値化
+        kinryo_raw = (r.get("斤量") or r.get("負担重量") or "").strip()
+        m_kin = re.search(r'(\d+(?:\.\d+)?)', kinryo_raw)
+
         row_dict = {
             "date": date_val,
             "place": place_val,
@@ -283,7 +293,13 @@ def insert_into_db(data: dict, url: str) -> dict:
             "popularity": r.get("人気") or r.get("単勝人気"),
             "odds": tansho_str,
             "horse_odds": horse_odds_val,
-            "weight": w_val
+            "weight": w_val,
+            "race_num": race_num_val,
+            # ML再学習用: 馬名で履歴連結できるよう馬情報も保存 (2026-07追加, 列型はすべてtext)
+            "馬名": (r.get("馬名") or "").strip() or None,
+            "sex_age": (r.get("性齢") or "").strip() or None,
+            "斤量": m_kin.group(1) if m_kin else None,
+            "所属": (r.get("調教師名") or r.get("調教師") or r.get("厩舎") or r.get("所属") or "").strip() or None,
         }
         df_rows.append(row_dict)
         
