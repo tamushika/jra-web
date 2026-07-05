@@ -325,6 +325,8 @@ def main():
     ap.add_argument("--write", action="store_true")
     ap.add_argument("--ml", action="store_true",
                     help="win5_ml_model.json のMLスコアで評価 (デフォルトは手調整スコア)")
+    ap.add_argument("--ninki", action="store_true",
+                    help="ベースライン: 人気順 (popularity列) をスコアとして評価")
     args = ap.parse_args()
 
     cfg = load_win5_cfg()
@@ -337,7 +339,17 @@ def main():
     conn.close()
     print(f"ロード: {len(runs)}行 / スコア付与中...")
 
-    if args.ml:
+    if args.ninki:
+        # ベースライン: 人気順そのまま (1番人気=最高スコア)。人気欠損は最下位扱い
+        races = defaultdict(list)
+        for cur in runs:
+            if cur["date"] < args.date_from or cur["rank"] is None:
+                continue
+            pop = cur.get("popularity")
+            score = -float(pop) if pop else -99.0
+            races[(cur["date"], cur["place"], cur["r"])].append((score, cur))
+        print("人気順ベースライン使用 (popularity列)")
+    elif args.ml:
         import numpy as np
         from backtest_ml import build_dataset, MODEL_PATH
         with open(MODEL_PATH, "r", encoding="utf-8") as f:
