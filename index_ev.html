@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>期待値レース監視</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .ev-container { max-width: 1100px; margin: 0 auto; padding: 16px; }
+        .ev-section { background: rgba(0,0,0,0.25); border: 1px solid var(--border-color);
+                      border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+        .ev-step-title { font-size: 16px; font-weight: bold; color: var(--primary); margin-bottom: 10px; }
+        .ev-progress { color: var(--text-muted); margin-left: 10px; }
+        .ev-race { border: 1px solid var(--border-color); border-radius: 8px;
+                   padding: 10px 14px; margin-bottom: 8px; }
+        .ev-race.has-pick { border-color: #f5c842; background: rgba(245,200,66,0.06); }
+        .ev-race.finished { opacity: 0.45; }
+        .ev-race-head { font-weight: bold; }
+        .ev-chips { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+        .ev-chip { background: rgba(255,255,255,0.08); border: 1px solid var(--border-color);
+                   border-radius: 6px; padding: 3px 10px; font-size: 13px; }
+        .ev-chip b { color: var(--primary); }
+        .ev-chip .ev-val { color: #f5c842; font-weight: bold; }
+        .ev-badge { display: inline-block; padding: 1px 8px; border-radius: 10px;
+                    font-weight: bold; font-size: 11px; margin-left: 4px; }
+        .ev-badge-web { background: #1976d2; color: #fff; }
+        .ev-badge-stage { background: #d32f2f; color: #fff; }
+        .ev-meta { color: var(--text-muted); font-size: 12px; }
+        .ev-alert-log { max-height: 220px; overflow-y: auto; font-size: 13px; }
+        .ev-alert-row { padding: 6px 8px; border-bottom: 1px solid var(--border-color); }
+        .ev-none { color: var(--text-muted); font-size: 12px; margin-left: 8px; }
+        .ev-summary { font-size: 14px; margin: 8px 0; }
+        .ev-summary b { color: #f5c842; font-size: 18px; }
+        select, input[type=checkbox] { accent-color: var(--primary); }
+        .ev-select { background: var(--bg-color, #222); color: var(--text-color, #eee);
+                     border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 8px; }
+    </style>
+</head>
+<body>
+<div class="ev-container">
+    <h2 style="margin: 12px 0;">期待値レース監視
+        <span style="font-size:13px;color:var(--text-muted);">Web版スコア(回収率) × MLスコア(的中率) / ローカル専用</span>
+    </h2>
+
+    <div class="ev-section">
+        <div class="ev-step-title">解析 &amp; 監視設定</div>
+        <div style="margin-bottom:10px;">
+            EV閾値 (ML勝率×オッズ):
+            <select id="evTh" class="ev-select">
+                <option value="1.0">1.0以上</option>
+                <option value="1.1">1.1以上</option>
+                <option value="1.2" selected>1.2以上 (推奨)</option>
+                <option value="1.3">1.3以上</option>
+                <option value="1.5">1.5以上</option>
+            </select>
+            <button class="primary-btn" id="notifBtn" onclick="enableNotif()" style="margin-left:10px;">🔔 通知を許可</button>
+            <span id="notifState" class="ev-meta"></span>
+        </div>
+        <button class="primary-btn" id="startBtn" onclick="startAnalyze()">解析開始 (本日の全レース)</button>
+        <span class="ev-progress" id="progress"></span>
+        <div class="ev-meta" style="margin-top:8px;">
+            発走15分前と5分前にオッズを自動更新し、期待値馬がいればブラウザ通知します。<b>このタブを開いたままにしてください。</b>
+        </div>
+    </div>
+
+    <div class="ev-section">
+        <div class="ev-step-title">🔔 通知ログ</div>
+        <div class="ev-alert-log" id="alertLog"><span class="ev-meta">まだ通知はありません</span></div>
+    </div>
+
+    <div class="ev-section">
+        <div class="ev-step-title">本日のレースと期待値ピックアップ</div>
+        <div class="ev-summary" id="summary"></div>
+        <label class="ev-meta"><input type="checkbox" id="onlyPicks" checked onchange="render()"> 期待値馬のいるレースのみ表示</label>
+        <div id="raceArea" style="margin-top:10px;"></div>
+    </div>
+</div>
+
+<script>
+let lastAlertId = 0;
+let stateCache = null;
+let pollTimer = null;
+
+function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ── 通知 ─────────────────────────────────────────────
+function updateNotifState() {
+    const el = document.getElementById('notifState');
+    if (!('Notification' in window)) { el.textContent = 'このブラウザは通知非対応'; return; }
+    el.textContent = Notification.permission === 'granted' ? '通知: 許可済み ✅'
+                   : Notification.permission === 'denied' ? '通知: ブロック中 (ブラウザ設定で許可してください)'
+                   : '通知: 未許可';
+}
+async function enableNotif() {
+    if ('Notification' in window) await Notification.requestPermission();
+    updateNotifState();
+}
+function beep() {
+    try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.frequency.value = 880; g.gain.value = 0.15;
+        o.start(); o.stop(ctx.currentTime + 0.5);
+    } catch (e) {}
+}
+function notify(alert) {
+    const title = `⏰ ${alert.stage}分前 期待値あり: ${alert.label}`;
+    const body = alert.picks.map(p =>
+        `${p.num}番 ${p.name} EV${p.ev} (勝率${(p.win_prob*100).toFixed(0)}%×${p.odds}倍)${p.web_value ? ' [Web妙味]' : ''}`
+    ).join('\n');
+    if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification(title, { body, tag: `ev-${alert.rid}-${alert.stage}` });
+    }
+    beep();
+}
+
+// ── 解析開始・ポーリング ──────────────────────────────
+async function startAnalyze() {
+    document.getElementById('startBtn').disabled = true;
+    try {
+        const res = await fetch('/api/analyze_start', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ ev_threshold: parseFloat(document.getElementById('evTh').value) })
+        });
+        const d = await res.json();
+        if (d.error) { document.getElementById('progress').textContent = d.error; }
+        lastAlertId = 0;
+        document.getElementById('alertLog').innerHTML = '<span class="ev-meta">まだ通知はありません</span>';
+        schedulePoll(3000);
+    } catch (e) {
+        document.getElementById('progress').textContent = 'エラー: ' + e.message;
+        document.getElementById('startBtn').disabled = false;
+    }
+}
+
+function schedulePoll(ms) {
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(poll, ms);
+}
+
+async function poll() {
+    try {
+        const st = await (await fetch('/api/state')).json();
+        stateCache = st;
+        const p = document.getElementById('progress');
+        if (st.status === 'analyzing') {
+            p.textContent = `解析中... ${st.progress.done}/${st.progress.total}`;
+            document.getElementById('startBtn').disabled = true;
+        } else if (st.status === 'error') {
+            p.textContent = 'エラー: ' + st.error;
+            document.getElementById('startBtn').disabled = false;
+        } else if (st.status === 'ready') {
+            p.textContent = `監視中 (${st.started_at}に解析、EV閾値${st.params.ev_threshold})`;
+            document.getElementById('startBtn').disabled = false;
+        } else {
+            p.textContent = '';
+            document.getElementById('startBtn').disabled = false;
+        }
+        render();
+
+        const al = await (await fetch('/api/alerts?after=' + lastAlertId)).json();
+        for (const a of al.alerts) {
+            lastAlertId = Math.max(lastAlertId, a.id);
+            appendAlertLog(a);
+            notify(a);
+        }
+    } catch (e) { /* サーバー停止中など */ }
+    schedulePoll(stateCache && stateCache.status === 'analyzing' ? 3000 : 20000);
+}
+
+function appendAlertLog(a) {
+    const log = document.getElementById('alertLog');
+    if (log.querySelector('.ev-meta')) log.innerHTML = '';
+    const picks = a.picks.map(p =>
+        `<b>${esc(p.num)}</b> ${esc(p.name)} <span class="ev-val">EV${esc(p.ev)}</span>` +
+        ` (勝率${(p.win_prob*100).toFixed(0)}%×${esc(p.odds)}倍)` +
+        (p.web_value ? '<span class="ev-badge ev-badge-web">Web妙味</span>' : '')
+    ).join(' / ');
+    log.insertAdjacentHTML('afterbegin',
+        `<div class="ev-alert-row">[${esc(a.ts)}] <span class="ev-badge ev-badge-stage">${esc(a.stage)}分前</span>
+         <b>${esc(a.label)}</b> — ${picks}</div>`);
+}
+
+// ── レース一覧描画 ────────────────────────────────────
+function render() {
+    if (!stateCache) return;
+    const races = stateCache.races || [];
+    const nPick = races.filter(r => r.n_picked > 0).length;
+    document.getElementById('summary').innerHTML =
+        races.length ? `期待値馬のいるレース: <b>${nPick}</b> / ${races.length}レース` : '';
+    const onlyPicks = document.getElementById('onlyPicks').checked;
+    const area = document.getElementById('raceArea');
+    area.innerHTML = '';
+    for (const r of races) {
+        if (onlyPicks && r.n_picked === 0) continue;
+        const picks = r.horses.filter(h => h.picked);
+        const chips = picks.map(h =>
+            `<span class="ev-chip"><b>${esc(h.num)}</b> ${esc(h.name)}
+             <span class="ev-val">EV${esc(h.ev)}</span>
+             <span class="ev-meta">(勝率${(h.win_prob*100).toFixed(0)}% × ${esc(h.odds)}倍 / ${esc(h.pop)}人気)</span>
+             ${h.web_value ? '<span class="ev-badge ev-badge-web">Web妙味</span>' : ''}
+             ${h.grade ? esc(h.grade) : ''}</span>`).join('');
+        const checkBadges =
+            (r.checked15 ? ' <span class="ev-meta">✓15分前</span>' : '') +
+            (r.checked5 ? ' <span class="ev-meta">✓5分前</span>' : '');
+        area.insertAdjacentHTML('beforeend', `
+            <div class="ev-race ${r.n_picked ? 'has-pick' : ''} ${r.finished ? 'finished' : ''}">
+                <span class="ev-race-head">${esc(r.start_time)} ${esc(r.venue)}${esc(r.race_num)}R</span>
+                <span class="ev-meta">${esc(r.race_info.replace(/【[^】]*】/, ''))}</span>
+                ${checkBadges}
+                <span class="ev-meta" style="float:right;">更新 ${esc(r.last_update)}</span>
+                ${r.n_picked ? `<div class="ev-chips">${chips}</div>`
+                             : '<span class="ev-none">期待値馬なし</span>'}
+            </div>`);
+    }
+    if (!area.innerHTML && races.length) {
+        area.innerHTML = '<span class="ev-meta">条件に合うレースがありません (チェックを外すと全レース表示)</span>';
+    }
+}
+
+updateNotifState();
+schedulePoll(500);
+</script>
+</body>
+</html>
