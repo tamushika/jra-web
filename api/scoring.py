@@ -786,6 +786,138 @@ def _pts_of(ks):
     return p
 
 
+# ─── 発掘条件 (mine_criteria.py がOOS検証済みで出力) ─────────────────────────
+
+_MINED_CACHE = {"rules": None}
+
+
+def _load_mined_rules():
+    """mined_rules.csv → {場: [rule]}。rule = {type, dist, conds[], kind, pts}"""
+    if _MINED_CACHE["rules"] is not None:
+        return _MINED_CACHE["rules"]
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "data_files", "common", "mined_rules.csv")
+    rules = {}
+    try:
+        import csv as _csv
+        with open(path, "r", encoding="utf-8-sig", newline="") as f:
+            for row in _csv.DictReader(f):
+                try:
+                    rules.setdefault(row["場"], []).append({
+                        "type": row["芝ダ"], "dist": int(row["距離"]),
+                        "conds": [c for c in (row.get("条件1"), row.get("条件2"),
+                                              row.get("条件3")) if c and c.strip()],
+                        "kind": row["種別"], "pts": float(row["点数"]),
+                    })
+                except (KeyError, ValueError, TypeError):
+                    continue
+    except Exception:
+        pass
+    _MINED_CACHE["rules"] = rules
+    return rules
+
+
+def eval_mined_rules(h, race_context, cfg):
+    """発掘条件 (買い/消し) の該当チェック。分析エンジンは本番と同じ check_condition。
+    該当ルールの点数×重みを合算 (±クランプ)。"""
+    params = cfg.get("params", DEFAULT_CFG["params"])
+    weights = cfg.get("weights", DEFAULT_CFG["weights"])
+    w = weights.get("mined_rules", 0.0)
+    if not w:
+        return 0.0, []
+    venue = race_context.get("venue")
+    race_type = race_context.get("race_type") or race_context.get("type")
+    dist = race_context.get("distance") or race_context.get("dist")
+    rules = _load_mined_rules().get(venue)
+    if not rules or not race_type or not dist:
+        return 0.0, []
+    try:
+        import analysis
+    except ImportError:
+        return 0.0, []
+    total, details = 0.0, []
+    clamp = params.get("mined_clamp", 4.0)
+    for rule in rules:
+        if rule["type"] != race_type or rule["dist"] != int(dist):
+            continue
+        try:
+            if all(analysis.check_condition(c, h, race_context, {}, {})
+                   for c in rule["conds"]):
+                pts = rule["pts"] * w * (1 if rule["kind"] == "買い" else -1)
+                total += pts
+                details.append(f"発掘条件[{rule['kind']}] {'×'.join(rule['conds'])} → {pts:+.1f}")
+        except Exception:
+            continue
+    total = max(-clamp, min(clamp, total))
+    return total, details[:4]
+
+
+# ─── 枠×使用コース (コース辞典由来) ──────────────────────────────────────────
+
+_WAKU_RAIL_CACHE = {"data": None}
+
+
+def _load_waku_rail():
+    """waku_rail_bias.json (extract_waku_rail.py が生成)。無ければ空dict。"""
+    if _WAKU_RAIL_CACHE["data"] is not None:
+        return _WAKU_RAIL_CACHE["data"]
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "data_files", "common", "waku_rail_bias.json")
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+        _WAKU_RAIL_CACHE["data"] = {k: v for k, v in data.items() if not k.startswith("_")}
+    except Exception:
+        _WAKU_RAIL_CACHE["data"] = {}
+    return _WAKU_RAIL_CACHE["data"]
+
+
+def eval_waku_rail(h, race_context, cfg):
+    """当日の使用コース (A/B/C) に対応する枠グループ成績から加減点。
+    pts = clamp((枠グループ複勝率 − 表内平均) × weight, ±clamp)
+    使用コース不明・表なし・中間枠 (グループ範囲外) は 0。"""
+    params = cfg.get("params", DEFAULT_CFG["params"])
+    weights = cfg.get("weights", DEFAULT_CFG["weights"])
+    w = weights.get("waku_rail", 0.0)
+    rail = race_context.get("rail")
+    w_num = h.get("w_num")
+    if not w or not rail or not w_num:
+        return 0.0, []
+    venue = race_context.get("venue")
+    race_type = race_context.get("race_type") or race_context.get("type")
+    dist = race_context.get("distance") or race_context.get("dist")
+    if not (venue and race_type and dist):
+        return 0.0, []
+    base_key = f"{'芝' if race_type == '芝' else 'ダート'}{dist}"
+    course_map = _load_waku_rail().get(venue) or {}
+    table = course_map.get(base_key)
+    if table is None:  # 内/外回りの付記付きキーが1つだけならそれを採用
+        cands = [v for k, v in course_map.items() if k.startswith(base_key)]
+        table = cands[0] if len(cands) == 1 else None
+    rows = (table or {}).get(str(rail).upper())
+    if not rows:
+        return 0.0, []
+
+    group_show = None
+    group_label = None
+    for label, rates in rows.items():
+        m = re.match(r"^(\d+)-(\d+)$", str(label))
+        if m and int(m.group(1)) <= int(w_num) <= int(m.group(2)):
+            group_show = rates.get("show")
+            group_label = label
+            break
+    shows = [r.get("show") for r in rows.values() if r.get("show") is not None]
+    if group_show is None or len(shows) < 2:
+        return 0.0, []
+    avg = sum(shows) / len(shows)
+    clamp = params.get("waku_rail_clamp", 3.0)
+    pts = max(-clamp, min(clamp, (group_show - avg) * w))
+    if abs(pts) < 0.05:
+        return 0.0, []
+    return pts, [f"枠×{str(rail).upper()}コース {group_label}枠: "
+                 f"複勝{group_show:.1f}% (表平均{avg:.1f}%) → {pts:+.1f}"]
+
+
 # ─── 能力サブスコア (タイム指数 / クラス実績 / 上がり質) ────────────────────
 
 _STD_TIMES_CACHE = {"data": None, "variants": None}
@@ -1175,6 +1307,18 @@ def _compute_score_inner(h, race_context, factor_table, cfg):
     if affi in ("美浦", "栗東"):
         tmap = (factor_table or {}).get("stable_trainer") or {}
         add("stable_trainer", affi, tmap.get(_norm(affi)))
+
+    # 枠×使用コース (コース辞典の A/B/C コース別枠成績。書籍集計値のため控えめな重み)
+    wr_pts, wr_details = eval_waku_rail(h, race_context, cfg)
+    if wr_details:
+        total += wr_pts
+        details.extend(wr_details)
+
+    # 発掘条件 (mine_criteria.py がOOS検証済みで出力した買い/消しルール)
+    mr_pts, mr_details = eval_mined_rules(h, race_context, cfg)
+    if mr_details:
+        total += mr_pts
+        details.extend(mr_details)
 
     # 血統辞典 買い/消し (競馬血統総辞典)
     bs_pts, bs_details = eval_sire_buysell(h, race_context, cfg)

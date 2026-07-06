@@ -46,7 +46,9 @@
       "rank_gap": 2,
       "bonus_better": 2.0,
       "penalty_worse": -1.5
-    }
+    },
+    "waku_rail_clamp": 3.0,
+    "mined_clamp": 4.0
   },
   "weights": {
     "father_w": 0.5,
@@ -57,7 +59,9 @@
     "surface": 0.8,
     "stable_trainer": 0.5,
     "sire_buysell": 1.0,
-    "ability": 1.0
+    "ability": 1.0,
+    "waku_rail": 0.4,
+    "mined_rules": 0.5
   },
   "style_map": {
     "◀◁◁◁": [
