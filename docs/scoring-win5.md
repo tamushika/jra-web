@@ -143,6 +143,11 @@ prob配分では「最大勝率レース」、rank配分では「スコア1-2位
   `horse_pedigree` へ自動upsert(`api/pedigree_store.py`。`PEDIGREE_COLLECT=0`で無効化)。
   開催日に `python collect_pedigree.py` を実行すると全会場・全レースを一括収集できる。
   学習期間の出走馬を十分カバーした時点で血統をML特徴量に追加する(現状ability.dbに父が無いのが最大のデータ制約)
+- **血統の過去分バックフィル**: `python backfill_pedigree_netkeiba.py --limit 8000` を
+  数晩に分けて実行すると、2021年以降の全出走馬(約3.2万頭)の父/母父を netkeiba から収集できる
+  (Phase A: 成績ページから馬ID収集 → Phase B: 馬ページから血統取得 → Neonへ。
+  冪等・`--status`で進捗確認・連続失敗10回でブロック判定して自動停止)。
+  全馬そろったら血統特徴量を backtest_ml に追加し LightGBM も再評価する
 - **半年ごと**: GitHub Actionsがdb-keiba統計を自動更新+リマインダーIssueを起票 → ローカルで `retrain_all.bat` を実行(①netkeibaから全馬確定オッズをNeonに埋め戻し → ②Neonから馬名つき新データを ability.db に自動取込 → ③馬場差 → ④ML再学習(OOS検証つき) → ⑤カバレッジ再計測)。**TARGET等の外部エクスポートは不要**
 - **オッズ埋め戻しが必須な理由**: JRA成績ページには勝ち馬の払戻しか無く、勝ち馬以外の確定オッズが欠損する。欠損のまま再学習すると支配的特徴量 ln_odds がリークして壊れる(2026-07に検出・修正)。`extend_ability_from_neon.py` は充填率90%未満で警告を出す
 - 再学習時は出力される OOS検証結果が劣化していないことを確認してからコミットする
