@@ -49,7 +49,7 @@ def load_runs(conn, date_from, date_to):
     cur.execute(
         """SELECT date, place, r, race_name, race_class, horse, total_horses,
                   popularity, rank, track_type, distance, condition,
-                  time_sec, agari, win_pay, jockey, umaban, pci, affi
+                  time_sec, agari, win_pay, jockey, umaban, pci, affi, c4
            FROM runs WHERE date >= ? AND date <= ?""",
         (lookback, date_to),
     )
