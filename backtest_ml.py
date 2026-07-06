@@ -406,6 +406,7 @@ def simulate_win5_compare(prob_races, upset_map, coverage, budgets, min_r=9):
 
     strategies = ["rank通常", "rank軸", "prob通常", "prob軸"]
     results = {b: {s: {"hits": 0, "pts": 0} for s in strategies} for b in budgets}
+    day_records = {b: [] for b in budgets}  # prob通常の日別記録 (見送り基準分析用)
     n_days = 0
 
     for date, cands in sorted(by_day.items()):
@@ -414,6 +415,7 @@ def simulate_win5_compare(prob_races, upset_map, coverage, budgets, min_r=9):
         cands.sort(key=lambda x: (-x[0], x[1]))
         sel = cands[:5]
         winner_pos, ranks, prob_lists, margins, top1 = [], [], [], [], []
+        winner_odds = []
         ok = True
         for r, place, mem in sel:
             wpos = next((i + 1 for i, (_, _, m) in enumerate(mem) if m["rank"] == 1), None)
@@ -426,23 +428,37 @@ def simulate_win5_compare(prob_races, upset_map, coverage, budgets, min_r=9):
             prob_lists.append([p for _, p, _ in mem])
             margins.append(mem[0][0] - mem[1][0] if len(mem) > 1 else 0.0)
             top1.append(mem[0][1])
+            wmeta = next(m for _, _, m in mem if m["rank"] == 1)
+            odds = parse_final_odds(wmeta.get("win_pay"), 1)
+            winner_odds.append(odds)
         if not ok:
             continue
         n_days += 1
         axis_rank = {max(range(5), key=lambda i: margins[i])}
         axis_prob = {max(range(5), key=lambda i: top1[i])}
+        odds_proxy = None
+        if all(winner_odds):
+            odds_proxy = 1.0
+            for o in winner_odds:
+                odds_proxy *= o
 
         for b in budgets:
+            picks_p, est_p = scoring.allocate_picks_prob(prob_lists, b)
             allocs = {
                 "rank通常": scoring.allocate_picks(ranks, coverage, b)[0],
                 "rank軸": scoring.allocate_picks(ranks, coverage, b, fixed=axis_rank)[0],
-                "prob通常": scoring.allocate_picks_prob(prob_lists, b)[0],
+                "prob通常": picks_p,
                 "prob軸": scoring.allocate_picks_prob(prob_lists, b, fixed=axis_prob)[0],
             }
             for name, picks in allocs.items():
                 results[b][name]["pts"] += scoring._pts_of(picks)
                 if all(wp <= k for wp, k in zip(winner_pos, picks)):
                     results[b][name]["hits"] += 1
+            day_records[b].append({
+                "date": date, "est": est_p, "pts": scoring._pts_of(picks_p),
+                "hit": all(wp <= k for wp, k in zip(winner_pos, picks_p)),
+                "odds_proxy": odds_proxy,
+            })
 
     print(f"\n===== WIN5配分比較 (検証セット, 土日R降順5R近似, {n_days}日) =====")
     print("点数  | " + " | ".join(f"{s:14s}" for s in strategies))
@@ -453,7 +469,31 @@ def simulate_win5_compare(prob_races, upset_map, coverage, budgets, min_r=9):
             cells.append(f"{100.0*rr['hits']/n_days:5.1f}% /{rr['pts']/n_days:6.1f}点"
                          if n_days else "n/a")
         print(f"  {b:4d}| " + " | ".join(cells))
-    return results, n_days
+    return results, n_days, day_records
+
+
+def report_skip_analysis(day_records, budgets):
+    """見送り基準: 推定的中率が閾値未満の日をスキップした場合の成績。
+    回収プロキシ = 的中日の勝ち馬単勝オッズ積 (WIN5配当の近似) × 100円 / 投入点数"""
+    for b in budgets:
+        recs = day_records.get(b, [])
+        if not recs:
+            continue
+        ests = sorted(r["est"] for r in recs)
+        print(f"\n===== 見送り基準スイープ ({b}点, 全{len(recs)}日, "
+              f"推定的中率の分布 中央値{100*ests[len(ests)//2]:.1f}% / "
+              f"上位25%点{100*ests[int(len(ests)*0.75)]:.1f}%) =====")
+        print("  閾値   | 購入日数 | 的中  | 的中率  | 回収プロキシ")
+        for th in (0.0, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.10, 0.12):
+            buy = [r for r in recs if r["est"] >= th]
+            if not buy:
+                continue
+            hits = [r for r in buy if r["hit"]]
+            cost = sum(r["pts"] for r in buy) * 100.0
+            ret = sum((r["odds_proxy"] or 0.0) * 100.0 for r in hits)
+            roi = 100.0 * ret / cost if cost else 0.0
+            print(f"  {100*th:5.1f}% | {len(buy):7d} | {len(hits):4d} | "
+                  f"{100.0*len(hits)/len(buy):5.1f}% | {roi:6.1f}%")
 
 
 def main():
@@ -526,7 +566,9 @@ def main():
     # ── 確率キャリブレーション + WIN5配分比較 (CLのsoftmax勝率, τ適用) ──
     prob_races = build_prob_races(scores_cl, te_keys, te_meta, temp=temp)
     report_calibration(prob_races)
-    simulate_win5_compare(prob_races, upset_map, cov_cl, budgets=[50, 100, 150, 200])
+    _res, _nd, day_records = simulate_win5_compare(
+        prob_races, upset_map, cov_cl, budgets=[50, 100, 150, 200])
+    report_skip_analysis(day_records, budgets=[100, 150, 200])
 
     # ── LightGBM LambdaRank (オプション比較) ──
     if args.lgbm:

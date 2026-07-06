@@ -229,12 +229,30 @@ async function generateKaime() {
                 <div class="w5-pick-horses">${chips}</div>
             </div>`;
         }).join('');
+        let refLine = '';
+        if (data.est_reference) {
+            const [med, p75] = data.est_reference;
+            const est = data.est_hit_rate;
+            const level = est >= p75 ? '<b style="color:#66bb6a;">高め (上位25%圏)</b>'
+                        : est >= med ? '中央値以上' : '<b style="color:#f5a742;">低め (中央値未満)</b>';
+            refLine = `<div class="w5-est">今週の確信度: ${level}
+                （2025年実測: 中央値${(med*100).toFixed(1)}% / 上位25% ${(p75*100).toFixed(1)}%。
+                ※堅い週ほど配当は安い傾向 — 見送り判断の参考値）</div>`;
+        }
+        const skipBanner = data.skip_recommended
+            ? `<div style="border:1px solid #d32f2f;background:rgba(211,47,47,0.12);border-radius:8px;
+                 padding:8px 12px;margin:8px 0;font-weight:bold;">
+                 ⚠️ 見送り推奨: 推定的中率${(data.est_hit_rate*100).toFixed(2)}% が
+                 設定基準${(data.skip_threshold*100).toFixed(1)}% を下回っています</div>`
+            : '';
         area.innerHTML = `
             <div class="w5-formula">${esc(data.formula)} <span style="font-size:13px;color:var(--text-muted);">(上限${data.budget}点)</span></div>
+            ${skipBanner}
             <div class="w5-est">推定的中率: ${(data.est_hit_rate * 100).toFixed(2)}%
                 ${data.alloc_method === 'prob'
                     ? '(レース固有のML勝率分布に基づく配分)'
                     : '(2024-2025バックテストのカバレッジ実測に基づく)'}</div>
+            ${refLine}
             <div style="margin-top:10px;">${blocks}</div>`;
     } catch (e) {
         area.innerHTML = `<span style="color:#ff6b6b;">エラー: ${esc(e.message)}</span>`;

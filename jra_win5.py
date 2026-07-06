@@ -277,14 +277,24 @@ def win5_kaime():
         for r in out:
             total *= max(r["k"], 1)
         formula = "×".join(str(max(r["k"], 1)) for r in out) + f"={total}点"
+
+        # 見送り基準 (オプトイン): skip_threshold 設定時のみ見送り推奨を表示。
+        # 2025年検証では閾値導入で回収プロキシが悪化 (堅い週ほど配当が安い) → デフォルト無効
+        skip_th = alloc.get("skip_threshold") if use_prob else None
+        skip_recommended = bool(skip_th) and est < skip_th
+        est_ref = (alloc.get("est_reference") or {}).get(str(points)) if use_prob else None
+
         return jsonify({
             "success": True, "picks": out,
             "total_points": total, "formula": formula,
             "est_hit_rate": round(est, 5),
+            "est_reference": est_ref,  # [2025年実測の中央値, 上位25%点]
             "budget": points,
             "single_axis": single_axis,
             "axis_idx": axis_idx, "axis_margin": axis_margin,
             "alloc_method": alloc_method,
+            "skip_threshold": skip_th,
+            "skip_recommended": skip_recommended,
         })
     except Exception as e:
         import traceback
