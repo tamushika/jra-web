@@ -81,6 +81,18 @@
         <button class="primary-btn" id="kaimeBtn" onclick="generateKaime()" disabled>買い目を生成</button>
         <div id="kaimeArea" style="margin-top:12px;"></div>
     </div>
+
+    <!-- STEP 4 -->
+    <div class="w5-section">
+        <div class="w5-step-title">STEP 4: 締切前の自動再計算 (推奨)</div>
+        <div style="color:var(--text-muted);font-size:13px;margin-bottom:8px;">
+            MLスコアの最重要因子はオッズのため、購入直前の再計算ほど精度が出ます (バックテストは確定オッズ基準)。
+            1レース目発走の15分前に全5レースのオッズを再取得して買い目を計算し直し、ブラウザ通知します。
+        </div>
+        <button class="primary-btn" onclick="armWatch()">⏰ 自動再計算を予約</button>
+        <span class="w5-progress" id="watchStatus"></span>
+        <div id="watchArea" style="margin-top:12px;"></div>
+    </div>
 </div>
 
 <script>
@@ -210,6 +222,13 @@ async function generateKaime() {
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
+        renderKaimeData(data, area);
+    } catch (e) {
+        area.innerHTML = `<span style="color:#ff6b6b;">エラー: ${esc(e.message)}</span>`;
+    }
+}
+
+function renderKaimeData(data, area) {
         // 選択行のハイライト
         document.querySelectorAll('.w5-selected-row').forEach(el => el.classList.remove('w5-selected-row'));
         const blocks = data.picks.map(p => {
@@ -254,9 +273,62 @@ async function generateKaime() {
                     : '(2024-2025バックテストのカバレッジ実測に基づく)'}</div>
             ${refLine}
             <div style="margin-top:10px;">${blocks}</div>`;
-    } catch (e) {
-        area.innerHTML = `<span style="color:#ff6b6b;">エラー: ${esc(e.message)}</span>`;
+}
+
+// ── STEP 4: 締切前の自動再計算 ──────────────────────────
+let watchTimer = null;
+
+async function armWatch() {
+    const st = document.getElementById('watchStatus');
+    const urls = [];
+    for (let i = 0; i < 5; i++) {
+        const u = (document.getElementById(`url${i}`)?.value || '').trim();
+        if (!u) { st.textContent = `WIN5-${i + 1} のURLが未入力です (STEP1を先に)`; return; }
+        urls.push(u);
     }
+    const times = raceList.map(r => r.time).filter(t => /^\d{1,2}:\d{2}$/.test(t || ''));
+    const firstTime = times.sort()[0];
+    if (!firstTime) { st.textContent = '発走時刻が取得できていません (STEP1を再実行)'; return; }
+    if ('Notification' in window && Notification.permission === 'default') {
+        await Notification.requestPermission();
+    }
+    const pts = document.querySelector('input[name="pts"]:checked').value;
+    const singleAxis = document.getElementById('singleAxis').checked;
+    const res = await fetch('/api/win5_watch', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({urls, first_time: firstTime, points: Number(pts), single_axis: singleAxis})
+    });
+    const d = await res.json();
+    if (d.error) { st.textContent = 'エラー: ' + d.error; return; }
+    st.textContent = `予約済み: 1レース目 ${d.first_time} 発走の15分前に自動再計算します (このタブを開いたままに)`;
+    clearInterval(watchTimer);
+    watchTimer = setInterval(pollWatch, 30000);
+}
+
+async function pollWatch() {
+    try {
+        const d = await (await fetch('/api/win5_watch')).json();
+        const st = document.getElementById('watchStatus');
+        if (d.status === 'running') st.textContent = '再計算中... (オッズ再取得)';
+        if (d.status === 'error') { st.textContent = 'エラー: ' + d.error; clearInterval(watchTimer); }
+        if (d.status === 'done' && d.result) {
+            clearInterval(watchTimer);
+            st.textContent = `再計算完了 (${d.updated_at} 時点のオッズ)`;
+            renderKaimeData(d.result, document.getElementById('watchArea'));
+            if ('Notification' in window && Notification.permission === 'granted') {
+                new Notification('⏰ WIN5 締切前の最終買い目', {
+                    body: `${d.result.formula} / 推定的中率 ${(d.result.est_hit_rate * 100).toFixed(2)}%`,
+                    tag: 'win5-watch'});
+            }
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const o = ctx.createOscillator(), g = ctx.createGain();
+                o.connect(g); g.connect(ctx.destination);
+                o.frequency.value = 880; g.gain.value = 0.15;
+                o.start(); o.stop(ctx.currentTime + 0.5);
+            } catch (e) {}
+        }
+    } catch (e) { /* サーバー停止中など */ }
 }
 </script>
 </body>

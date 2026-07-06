@@ -65,6 +65,10 @@
 
     <div class="ev-section">
         <div class="ev-step-title">🔔 通知ログ</div>
+        <div class="ev-meta" style="margin-bottom:6px;">
+            💡 買い方ガイド: <b>単勝+複勝の併用</b>が検証上最も堅い (EV≥1.3: 単勝回収158.6%/100.1%、複勝は両年102-103%)。
+            通知内容はNeonに自動記録され、<code>python ev_log_report.py</code> で実測回収率を確認できます。
+        </div>
         <div class="ev-alert-log" id="alertLog"><span class="ev-meta">まだ通知はありません</span></div>
     </div>
 
@@ -110,7 +114,7 @@ function notify(alert) {
     const title = `⏰ ${alert.stage}分前 期待値あり: ${alert.label}`;
     const body = alert.picks.map(p =>
         `${p.num}番 ${p.name} EV${p.ev} (勝率${(p.win_prob*100).toFixed(0)}%×${p.odds}倍)${p.web_value ? ' [Web妙味]' : ''}`
-    ).join('\n');
+    ).join('\n') + '\n※単勝+複勝の併用が検証上最も堅い';
     if ('Notification' in window && Notification.permission === 'granted') {
         new Notification(title, { body, tag: `ev-${alert.rid}-${alert.stage}` });
     }

@@ -41,6 +41,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 API_DIR = os.path.join(BASE_DIR, "api")
 sys.path.insert(0, API_DIR)
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(BASE_DIR, ".env"))
+except ImportError:
+    pass
+
 import scoring  # noqa: E402
 from index import analyze_race_url, build_matrix_data  # noqa: E402
 
@@ -234,6 +240,61 @@ def worker_analyze_all(params):
             STATE["error"] = str(e)
 
 
+# ─── 通知の外部連携 (実測ログ / Discord) ─────────────────────────────────────
+
+def _log_alert_to_neon(alert):
+    """通知時点のオッズ・勝率・EVを Neon ev_alert_log へ記録 (実運用回収率の検証用)。
+    後日 ev_log_report.py が races テーブルの確定結果と突き合わせる。失敗しても無視。"""
+    try:
+        import past_data_service as pds
+        conn = pds.get_db_connection(API_DIR)
+        if conn is None or not getattr(conn, "is_pg", False):
+            return
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS ev_alert_log (
+                    id SERIAL PRIMARY KEY,
+                    date TEXT, venue TEXT, race_num INTEGER, stage INTEGER,
+                    horse_num INTEGER, horse_name TEXT,
+                    odds_alert DOUBLE PRECISION, win_prob DOUBLE PRECISION,
+                    ev DOUBLE PRECISION, web_value BOOLEAN,
+                    created_at TIMESTAMP DEFAULT NOW())""")
+            date6 = datetime.now().strftime("%y%m%d")
+            venue = alert["rid"].split("_")[0]
+            race_num = int(alert["rid"].split("_")[1])
+            for p in alert["picks"]:
+                cur.execute("""INSERT INTO ev_alert_log
+                    (date, venue, race_num, stage, horse_num, horse_name,
+                     odds_alert, win_prob, ev, web_value)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                            (date6, venue, race_num, alert["stage"], p["num"],
+                             p["name"], _to_float(p["odds"]), p["win_prob"],
+                             p["ev"], bool(p["web_value"])))
+            conn._conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[WARN] ev_alert_log 記録失敗: {e}")
+
+
+def _send_discord(alert):
+    """.env の EV_DISCORD_WEBHOOK が設定されていればスマホへも通知"""
+    url = os.environ.get("EV_DISCORD_WEBHOOK", "").strip()
+    if not url:
+        return
+    try:
+        lines = [f"⏰ **{alert['stage']}分前 期待値あり: {alert['label']}**"]
+        for p in alert["picks"]:
+            lines.append(f"{p['num']}番 {p['name']} EV{p['ev']} "
+                         f"(勝率{round((p['win_prob'] or 0) * 100)}%×{p['odds']}倍)"
+                         + (" [Web妙味]" if p.get("web_value") else ""))
+        lines.append("-# 単勝+複勝の併用が検証上最も堅い (複勝回収102-103%)")
+        requests.post(url, json={"content": "\n".join(lines)}, timeout=10)
+    except Exception as e:
+        print(f"[WARN] Discord通知失敗: {e}")
+
+
 # ─── スケジューラ (15分前/5分前チェック) ─────────────────────────────────────
 
 def refresh_and_alert(rec, stage):
@@ -244,12 +305,13 @@ def refresh_and_alert(rec, stage):
     except Exception as e:
         print(f"[WARN] 再取得失敗 {_rid(rec)}: {e}")
         return False
+    alert = None
     with _LOCK:
         for k in ("horses", "n_picked", "last_update"):
             rec[k] = new_rec[k]
         picks = [h for h in rec["horses"] if h["picked"]]
         if picks:
-            STATE["alerts"].append({
+            alert = {
                 "id": next(_ALERT_SEQ),
                 "ts": datetime.now().strftime("%H:%M:%S"),
                 "stage": stage,
@@ -258,7 +320,11 @@ def refresh_and_alert(rec, stage):
                 "picks": [{"num": h["num"], "name": h["name"], "odds": h["odds"],
                            "win_prob": h["win_prob"], "ev": h["ev"],
                            "web_value": h["web_value"]} for h in picks],
-            })
+            }
+            STATE["alerts"].append(alert)
+    if alert:
+        _log_alert_to_neon(alert)
+        _send_discord(alert)
     return True
 
 
@@ -341,6 +407,20 @@ def api_alerts():
         return jsonify({"alerts": [a for a in STATE["alerts"] if a["id"] > after]})
 
 
+def _auto_start():
+    """--auto-start 指定時: 起動6秒後に解析を自動開始 (週末タスクスケジューラ用)"""
+    with _LOCK:
+        if STATE["status"] == "analyzing":
+            return
+        STATE["status"] = "analyzing"
+        STATE["error"] = ""
+        STATE["races"] = {}
+        STATE["alerts"] = []
+        STATE["started_at"] = datetime.now().strftime("%H:%M:%S")
+    threading.Thread(target=worker_analyze_all, args=(STATE["params"],), daemon=True).start()
+    print("  [auto-start] 解析を自動開始しました")
+
+
 if __name__ == "__main__":
     url = f"http://localhost:{PORT}"
     print("=" * 55)
@@ -348,7 +428,11 @@ if __name__ == "__main__":
     print("=" * 55)
     print(f"  URL: {url}")
     print("  ブラウザのタブを開いたままにすると 15分前/5分前に通知します")
+    if os.environ.get("EV_DISCORD_WEBHOOK", "").strip():
+        print("  Discord通知: 有効")
     print("  終了: Ctrl+C")
     print("-" * 55)
     threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    if "--auto-start" in sys.argv:
+        threading.Timer(6.0, _auto_start).start()
     app.run(host="127.0.0.1", port=PORT, debug=False)

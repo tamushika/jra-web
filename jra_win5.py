@@ -150,6 +150,12 @@ def win5_races():
         return jsonify({"success": False, "error": str(e)})
 
 
+def analyze_one_core(idx, url):
+    """1レースを解析し WIN5用スコアを付与した dict を返す (エンドポイント/監視共用)"""
+    result = analyze_race_url(url, "簡易")
+    return _analyze_one_body(idx, url, result)
+
+
 @app.route("/api/win5_analyze_one", methods=["POST"])
 def win5_analyze_one():
     """1レースを解析し WIN5用スコアを付与して返す (フロントが5回呼ぶ)"""
@@ -159,7 +165,14 @@ def win5_analyze_one():
     if not url:
         return jsonify({"error": "urlが必要です"}), 400
     try:
-        result = analyze_race_url(url, "簡易")
+        return jsonify(analyze_one_core(idx, url))
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
+def _analyze_one_body(idx, url, result):
+    if True:  # 旧エンドポイント本体 (インデント維持のため)
 
         # WIN5用スコアで上書き計算 (use_ml=true かつモデル配置済みならML、なければ手調整)
         cfg5 = scoring.load_score_weights(API_DIR, "win5_weights.json")
@@ -185,17 +198,14 @@ def win5_analyze_one():
             "score": h.get("score"), "score_details": h.get("score_details", []),
         } for h in result.get("horses", [])]
 
-        return jsonify({
+        return {
             "success": True, "idx": idx,
             "race_info": result.get("race_info"),
             "venue": venue, "race_type": race_type, "dist_val": dist_val,
             "race_class": result.get("race_class"),
             "upset_rank": rank, "upset_score": score,
             "horses": horses,
-        })
-    except Exception as e:
-        import traceback
-        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+        }
 
 
 @app.route("/api/win5_kaime", methods=["POST"])
@@ -212,8 +222,16 @@ def win5_kaime():
     single_axis = bool(data.get("single_axis"))
     if len(races) != 5:
         return jsonify({"error": "5レース分のデータが必要です"}), 400
-
     try:
+        return jsonify(build_kaime(races, points, single_axis))
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
+def build_kaime(races, points, single_axis):
+    """買い目配分の本体 (エンドポイント/締切前監視の共用)"""
+    if True:
         cfg5 = scoring.load_score_weights(API_DIR, "win5_weights.json")
         alloc = cfg5.get("allocation", {})
         coverage = alloc.get("coverage", {})
@@ -284,7 +302,7 @@ def win5_kaime():
         skip_recommended = bool(skip_th) and est < skip_th
         est_ref = (alloc.get("est_reference") or {}).get(str(points)) if use_prob else None
 
-        return jsonify({
+        return {
             "success": True, "picks": out,
             "total_points": total, "formula": formula,
             "est_hit_rate": round(est, 5),
@@ -295,10 +313,90 @@ def win5_kaime():
             "alloc_method": alloc_method,
             "skip_threshold": skip_th,
             "skip_recommended": skip_recommended,
+        }
+
+
+# ─── 締切前の自動再スコア (発走15分前にオッズ込みで再計算) ────────────────────
+
+WATCH = {"status": "idle", "deadline": "", "first_time": "", "urls": [],
+         "points": 100, "single_axis": False, "result": None, "races": None,
+         "error": "", "updated_at": ""}
+_WATCH_LOCK = threading.Lock()
+_WATCH_THREAD = [False]
+
+
+def _watch_loop():
+    from datetime import datetime, timedelta
+    import time as _time
+    while True:
+        _time.sleep(20)
+        with _WATCH_LOCK:
+            armed = WATCH["status"] == "armed"
+            first_time = WATCH["first_time"]
+            urls = list(WATCH["urls"])
+            points, single_axis = WATCH["points"], WATCH["single_axis"]
+        if not armed or not first_time:
+            continue
+        try:
+            hh, mm = first_time.split(":")
+            start = datetime.now().replace(hour=int(hh), minute=int(mm),
+                                           second=0, microsecond=0)
+        except ValueError:
+            with _WATCH_LOCK:
+                WATCH["status"] = "error"
+                WATCH["error"] = f"発走時刻を解釈できません: {first_time}"
+            continue
+        if datetime.now() < start - timedelta(minutes=15):
+            continue
+        with _WATCH_LOCK:
+            WATCH["status"] = "running"
+        try:
+            races = [analyze_one_core(i, u) for i, u in enumerate(urls)]
+            kaime = build_kaime(races, points, single_axis)
+            slim = [{"idx": r["idx"], "venue": r["venue"],
+                     "race_info": r["race_info"], "upset_rank": r["upset_rank"],
+                     "horses": [{k: h.get(k) for k in
+                                 ("num", "name", "score", "odds", "pop", "grade")}
+                                for h in r["horses"]]} for r in races]
+            with _WATCH_LOCK:
+                WATCH["status"] = "done"
+                WATCH["result"] = kaime
+                WATCH["races"] = slim
+                WATCH["updated_at"] = datetime.now().strftime("%H:%M:%S")
+        except Exception as e:
+            with _WATCH_LOCK:
+                WATCH["status"] = "error"
+                WATCH["error"] = str(e)
+
+
+@app.route("/api/win5_watch", methods=["POST"])
+def win5_watch_arm():
+    """締切15分前の自動再計算を予約。body: {urls[5], first_time "HH:MM", points, single_axis}"""
+    data = request.json or {}
+    urls = data.get("urls", [])
+    first_time = str(data.get("first_time", "")).strip()
+    if len(urls) != 5 or not all(urls):
+        return jsonify({"error": "5レース分のURLが必要です"}), 400
+    if not first_time:
+        return jsonify({"error": "1レース目の発走時刻 (HH:MM) が必要です"}), 400
+    with _WATCH_LOCK:
+        WATCH.update({
+            "status": "armed", "first_time": first_time, "urls": urls,
+            "points": int(data.get("points", 100)),
+            "single_axis": bool(data.get("single_axis")),
+            "result": None, "races": None, "error": "", "updated_at": "",
         })
-    except Exception as e:
-        import traceback
-        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+        if not _WATCH_THREAD[0]:
+            _WATCH_THREAD[0] = True
+            threading.Thread(target=_watch_loop, daemon=True).start()
+    return jsonify({"success": True, "first_time": first_time})
+
+
+@app.route("/api/win5_watch")
+def win5_watch_state():
+    with _WATCH_LOCK:
+        return jsonify({k: WATCH[k] for k in
+                        ("status", "first_time", "result", "races", "error", "updated_at")})
 
 
 # ─── 起動 ────────────────────────────────────────────────────────────────────
