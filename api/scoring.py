@@ -472,6 +472,7 @@ _ML_LABELS = {
     "weight": "馬体重", "n_prior": "キャリア", "wet_match": "道悪適性",
     "dist_pts": "距離変更", "surf_pts": "コース替わり", "affi_pts": "所属",
     "pace_fit": "ペース適性", "course_fit": "同コース実績", "grade_pts": "好走条件",
+    "sire_pts": "種牡馬",
 }
 
 
@@ -543,6 +544,14 @@ def _ml_features(h, race_context, factor_table, cfg):
                 p = _bias(factor_table.get("stable_trainer"), _norm(affi))
                 if p is not None:
                     f["affi_pts"] = p
+            # 種牡馬 (モデルが sire_pts を持つ場合のみ寄与。カードに父が載るためライブは常時計算可)
+            sire = h.get("sire")
+            if sire and sire != "-":
+                row = _match_entity(factor_table.get("father_w"), sire)
+                if row is not None:
+                    p, _ = _factor_points(row, baseline, params, 1.0, "win_rate")
+                    if p is not None:
+                        f["sire_pts"] = p
 
     # 能力系 (backtestと同じ raw特徴量: clip(基準差, ±4秒)×recency の最良値)
     hist = [r for r in (h.get("hist") or []) if r]

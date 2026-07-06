@@ -53,7 +53,12 @@ FEATURES = ["j_pts", "f_pts", "tfeat", "cfeat", "agari_flag", "ln_odds",
             "affi_pts",    # 所属バイアス点 (db-keiba)
             "pace_fit",    # 型PCI偏差 × メンバー予測ペース (backtest_pace C検証定義)
             "course_fit",  # 直近4走に同場同芝ダ同距離での3着以内あり
-            "grade_pts"]   # 好走条件判定 ◎3/〇2/△1 (血統以外ルール)
+            "grade_pts",   # 好走条件判定 ◎3/〇2/△1 (血統以外ルール)
+            # 血統 (horse_pedigree バックフィル完了後に有効化。カバレッジ不足時は全0
+            # = 定数列 → StandardScaler が scale=1 で無害化し、係数もほぼ0になる)
+            "sire_pts"]    # 種牡馬×コースバイアス点 (db-keiba father_w)
+
+PEDIGREE_MIN_COVERAGE = 0.70  # 評価出走の血統判明率がこれ未満なら sire_pts は無効のまま
 
 WET = {"稍", "重", "不"}
 PCI_TRACK_MEAN = {"芝": 51.96, "ダート": 45.83}  # backtest_pace.TRACK_MEAN と同値
@@ -81,6 +86,19 @@ def build_dataset(runs, date_from, cfg):
     criteria_map = load_filtered_criteria()
     mawari_map = load_mawari()
     attach_agari_rank(runs)
+
+    # 血統 (horse_pedigree)。カバレッジが閾値未満なら sire_pts は0のまま (安全に退化)
+    pedigree = {}
+    try:
+        import pedigree_store
+        pedigree = pedigree_store.load_all()
+    except Exception as e:
+        print(f"[INFO] 血統読み込みスキップ: {e}")
+    eval_horses = {r["horse"] for r in runs if r["horse"] and r["date"] >= date_from}
+    ped_cov = (sum(1 for h in eval_horses if h in pedigree) / len(eval_horses)) if eval_horses else 0.0
+    use_pedigree = ped_cov >= PEDIGREE_MIN_COVERAGE
+    print(f"血統カバレッジ: {100*ped_cov:.1f}% ({len(pedigree)}頭登録) → "
+          f"sire_pts {'有効' if use_pedigree else f'無効 (閾値{100*PEDIGREE_MIN_COVERAGE:.0f}%未満)'}")
 
     by_horse = defaultdict(list)
     for r in runs:
@@ -161,6 +179,15 @@ def build_dataset(runs, date_from, cfg):
                     p = bias_pts(table.get("stable_trainer"), scoring._norm(affi) if affi else None)
                     if p is not None:
                         f["affi_pts"] = p
+                    # 種牡馬 (father_w)。血統カバレッジが閾値以上のときのみ
+                    if use_pedigree:
+                        ped = pedigree.get(horse)
+                        if ped and ped.get("sire"):
+                            row = scoring._match_entity(table.get("father_w"), ped["sire"])
+                            if row is not None:
+                                p, _ = scoring._factor_points(row, baseline, params, 1.0, "win_rate")
+                                if p is not None:
+                                    f["sire_pts"] = p
 
             # 能力系
             tbest, cbest, amin = None, None, None
@@ -230,6 +257,11 @@ def build_dataset(runs, date_from, cfg):
             crits = criteria_map.get(cur["place"])
             if crits:
                 h_c = build_h(cur, prior[0])
+                if use_pedigree:
+                    ped = pedigree.get(horse)
+                    if ped:  # 血統ルール評価の準備 (現状criteria_mapは血統以外のみ)
+                        h_c["sire"] = ped.get("sire") or "-"
+                        h_c["bms"] = ped.get("bms") or "-"
                 r_ctx = {"type": cur["track_type"], "dist": cur["distance"],
                          "venue": cur["place"], "total_horses": cur["total_horses"],
                          "class": cur["race_class"]}

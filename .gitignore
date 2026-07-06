@@ -18,3 +18,4 @@ _scrape_res.json
 venv/
 .claude/
 jra-web/
+pedigree_cache.json

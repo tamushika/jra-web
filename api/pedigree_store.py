@@ -77,6 +77,39 @@ def upsert_horses(horses):
         conn.close()
 
 
+def load_all(use_cache=True, refresh=False):
+    """全血統を {馬名: {"sire":…, "bms":…}} で返す (バックテスト用)。
+    Neon接続を毎回張らないようローカルJSONキャッシュ (pedigree_cache.json,
+    gitignore対象) を使う。refresh=True で Neon から再取得。"""
+    cache_path = os.path.join(os.path.dirname(_API_DIR), "pedigree_cache.json")
+    if use_cache and not refresh and os.path.exists(cache_path):
+        try:
+            import json
+            with open(cache_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    conn = _get_conn()
+    if conn is None:
+        return {}
+    try:
+        ensure_table(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT horse, sire, bms FROM horse_pedigree")
+        data = {r["horse"]: {"sire": r["sire"] or "", "bms": r["bms"] or ""}
+                for r in cur.fetchall()}
+    finally:
+        conn.close()
+    if use_cache:
+        try:
+            import json
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+        except Exception:
+            pass
+    return data
+
+
 def coverage_stats():
     """蓄積状況: (登録馬数, 最終更新日)。接続不可なら None。"""
     conn = _get_conn()
