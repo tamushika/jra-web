@@ -12,8 +12,12 @@
      (通知はブラウザ通知 + サウンド。ページを開いたままにしておくこと)
 
 期待値の定義:
-  EV = ML推定勝率 × 単勝オッズ (閾値以上でピックアップ、既定1.2)
+  EV = ML推定勝率 × 単勝オッズ (閾値以上でピックアップ、既定1.3)
   さらに「Web妙味」= Web版スコア上位なのに人気が低い馬 (市場の見落とし) をバッジ表示
+
+バックテスト (backtest_ev.py, 確定オッズ・21-24学習CL):
+  EV>=1.3: 2025年 単勝回収158.6% (499賭け) / 2026年OOS 100.1% (266賭け)、
+           複勝回収は両年とも102-103%。EV>=1.2 は 119.6% / 90.2%
 
 【起動】 python jra_ev.py  (または start_ev.bat)
 【URL】  http://localhost:5003
@@ -56,7 +60,7 @@ STATE = {
     "started_at": "",
     "races": {},                 # rid -> race record
     "alerts": [],                # {id, ts, stage, rid, label, picks}
-    "params": {"ev_threshold": 1.2, "max_odds": 50.0, "min_prob": 0.02},
+    "params": {"ev_threshold": 1.3, "max_odds": 50.0, "min_prob": 0.02},
 }
 _SCHEDULER_STARTED = [False]
 
