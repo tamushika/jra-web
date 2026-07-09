@@ -4,15 +4,26 @@
 この手順だけで検証〜採用判断ができるように書いてある。
 セッション横断の全タスク・人手作業の一覧は [HANDOFF.md](HANDOFF.md) を参照。
 
-## 現状 (2026-07-07時点)
+## 現状 (2026-07-09時点)
 
 - ability.db (ML学習データ) には父・母父が無い — これが最大のデータ制約
 - 対策として Neon の `horse_pedigree` テーブル (馬名→父/母父/母) に蓄積中:
   1. **受動的蓄積**: 出馬表スクレイプのたびに自動 upsert (`api/pedigree_store.py`)
   2. **バックフィル**: `run_pedigree_backfill.bat` を1日1回実行 (netkeiba日次上限
-     ~4,000リクエストのため分割。進捗は `python backfill_pedigree_netkeiba.py --status`)
-     - Phase A (馬名→netkeiba馬ID): 2026-07-07時点で 113/556日・12,836頭
-     - Phase B (馬ページ→父/母父): 未着手。**直近出走馬から優先取得**する設計
+     のため分割。進捗は `python backfill_pedigree_netkeiba.py --status`)
+     - Phase A (馬名→netkeiba馬ID): **完了 556/556日・32,533頭ID**
+     - Phase B (馬ページ→父/母父): 進行中。**直近出走馬から優先取得**する設計。
+       2026-07-09時点で 3,803頭 (全期間の11.7% / 2025年出走馬の28.5%)。
+       sire_pts 有効化 (全期間70%) には残り約6チャンク
+- **netkeiba仕様変更に注意 (2026-07)**: 血統は `/horse/ped/<id>/` にある
+  (旧 `/horse/<id>/` からは血統表が消えた)。parse_blood は rowspan で
+  父=rowspan16[0] / 母=rowspan16[1] / 母父=rowspan8[2] を取る。
+  1日あたりの実効上限は当初想定(~4,000)より緩く、11,400req/日でも未ブロックだった
+- **検証コードは実装済み**: backtest_ml.py に `sire_pts` 特徴量 (db-keiba father_w
+  バイアス点) が入っており、血統カバレッジ >= 70% (`PEDIGREE_MIN_COVERAGE`) で
+  自動有効化される。それまでは全0の定数列として無害
+- ライブ推論 (`scoring._ml_features`) の sire_pts は実装・動作確認済み
+  (出馬表に父が載るため、ライブは蓄積と無関係に常時計算できる)
 - **検証コードは実装済み**: backtest_ml.py に `sire_pts` 特徴量 (db-keiba father_w
   バイアス点) が入っており、血統カバレッジ >= 70% (`PEDIGREE_MIN_COVERAGE`) で
   自動有効化される。それまでは全0の定数列として無害
