@@ -120,17 +120,33 @@ def phase_a(conn, fetcher, limit):
     print(f"Phase A: 今回 {n_ids}件のIDを登録 (リクエスト {fetcher.count})")
 
 
+def _ped_name(td):
+    """血統表セルから日本語馬名のみ抽出 (生年・毛色・英名・(米)等を除去)。
+    例 'マンハッタンカフェ 1998 青鹿毛' → 'マンハッタンカフェ'
+       'ヘニーヒューズ Henny Hughes(米)' → 'ヘニーヒューズ'"""
+    txt = td.get_text(" ", strip=True)
+    # 最初の「スペース+英数字」または「スペース+4桁年」で打ち切る
+    return re.split(r"\s+(?=[A-Za-z0-9])", txt)[0].strip()
+
+
 def parse_blood(soup):
-    """馬ページの blood_table → (父, 母, 母父)。
-    tdの並び: [父, 父父, 父母, 母, 母父, 母母]"""
+    """血統ページ (/horse/ped/<id>/) の blood_table → (父, 母, 母父)。
+    5代血統表を rowspan で解釈: rowspan=16 のセルが [父, 母]、
+    rowspan=8 のセルが [父父, 父母, 母父, 母母]。
+    ※2026-07にnetkeiba仕様変更: 従来の /horse/<id>/ には血統表が無くなった。"""
     tbl = soup.find("table", class_="blood_table")
     if tbl is None:
         return None
-    tds = [td.get_text(strip=True).split("\n")[0].strip() for td in tbl.find_all("td")]
-    if len(tds) < 5:
+    r16 = [td for td in tbl.find_all("td") if td.get("rowspan") == "16"]
+    r8 = [td for td in tbl.find_all("td") if td.get("rowspan") == "8"]
+    if len(r16) < 2 or len(r8) < 3:
         return None
-    clean = [re.sub(r"\s*\d{4}.*$", "", t) for t in tds]  # 生年等の付記を除去
-    return clean[0], clean[3], clean[4]
+    sire = _ped_name(r16[0])
+    dam = _ped_name(r16[1])
+    bms = _ped_name(r8[2])  # 母父 = 母サブツリーの父 = 3番目のrowspan8
+    if not sire:
+        return None
+    return sire, dam, bms
 
 
 def phase_b(conn, fetcher, limit):
@@ -163,7 +179,7 @@ def phase_b(conn, fetcher, limit):
     for horse, hid in targets:
         if fetcher.count >= limit:
             break
-        soup = fetcher.get_soup(f"https://db.netkeiba.com/horse/{hid}/")
+        soup = fetcher.get_soup(f"https://db.netkeiba.com/horse/ped/{hid}/")
         blood = parse_blood(soup) if soup else None
         if blood is None:
             n_ng += 1
