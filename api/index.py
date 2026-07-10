@@ -103,6 +103,34 @@ def get_agari_rank_from_url(url, target_name):
         print("get_agari error:", e)
         return "-", "-", "-"
 
+_RAIL_CACHE = {"date": None, "map": {}}
+
+def fetch_rail_settings():
+    """JRA馬場情報ページから開催場ごとの使用コース(A/B/C/D)を取得 (日次キャッシュ)。
+    枠×使用コース補正 (waku_rail_bias.json) で使用。取得失敗時は空dict。"""
+    today = datetime.now().strftime("%Y%m%d")
+    if _RAIL_CACHE["date"] == today:
+        return _RAIL_CACHE["map"]
+    rails = {}
+    for page in ("index.html", "index2.html", "index3.html"):
+        try:
+            res = requests.get(f"https://www.jra.go.jp/keiba/baba/{page}",
+                               headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+            if res.status_code != 200:
+                continue
+            res.encoding = "shift_jis"
+            text = BeautifulSoup(res.text, "html.parser").get_text("\n")
+            vm = re.search(r"第\d+回(札幌|函館|福島|新潟|東京|中山|中京|京都|阪神|小倉)競馬", text)
+            rm = re.search(r"使用コース\s*([ABCD])\s*コース", text)
+            if vm and rm:
+                rails[vm.group(1)] = rm.group(1)
+        except Exception:
+            continue
+    _RAIL_CACHE["date"] = today
+    _RAIL_CACHE["map"] = rails
+    return rails
+
+
 def fetch_baba_info(venue):
     if not venue: return None
     try:
@@ -447,11 +475,12 @@ def analyze_race_url(url, mode='簡易'):
 
         race_context = {"type": race_type, "dist": dist_val, "total_horses": len(scraped_data),
                         "venue": venue, "race_class": race_class, "age_cond": age_cond,
-                        "baba_cond": baba_cond}
+                        "baba_cond": baba_cond, "rail": fetch_rail_settings().get(venue)}
 
         # スコアリング用ファクター統計 (db-keiba由来) と重み設定
         factor_table = scoring.load_factor_table(venue, race_type, dist_val, base_dir)
         score_cfg = scoring.load_score_weights(base_dir)
+        win5_cfg = scoring.load_score_weights(base_dir, "win5_weights.json")
         
         criteria_lines = []
         for c in criteria:
@@ -485,6 +514,10 @@ def analyze_race_url(url, mode='簡易'):
 
             # 評価点スコア (ファクター統計未整備の会場は None)
             h['score'], h['score_details'] = scoring.compute_score(h, race_context, factor_table, score_cfg)
+
+            # 的中スコア (WIN5アプリと同じ conditional logit MLスコア。的中率重視)
+            h['score_ml'], h['score_ml_details'] = scoring.compute_score_ml(
+                h, race_context, factor_table, win5_cfg)
 
             horses_out.append(h)
 

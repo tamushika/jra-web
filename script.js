@@ -278,30 +278,6 @@ function applyScrapeData(data, url, mode) {
 }
 
 function renderBookData(data) {
-    const konochichiElem = document.getElementById('konochichiList');
-    if (konochichiElem) {
-        const lines = data.konochichi_lines || [];
-        konochichiElem.innerHTML = lines.length > 0 ? lines.join('<br>') : "データなし";
-    }
-
-    const tipsElem = document.getElementById('courseTipsList');
-    if (tipsElem) {
-        const tips = data.course_tips || [];
-        tipsElem.innerHTML = tips.length > 0 ? tips.map(t => `・${t}`).join('<br>') : "データなし";
-    }
-
-    const raceCondTitle = document.getElementById('raceConditionsTitle');
-    if (raceCondTitle) {
-        raceCondTitle.textContent = `重賞ナビ2026（${data.race_info ? data.race_info.split('　').pop() : 'このレース'}の好走条件）`;
-    }
-    const raceCondTbody = document.getElementById('raceConditionsTbody');
-    if (raceCondTbody) {
-        const rows = data.race_conditions || [];
-        raceCondTbody.innerHTML = rows.length > 0
-            ? rows.map(r => `<tr><td>${r.kubun}</td><td>${r.header}</td><td>${r.conclusion}</td></tr>`).join('')
-            : '<tr><td colspan="3">対象レースの重賞データはありません</td></tr>';
-    }
-
     const sireBuysellTbody = document.getElementById('sireBuysellTbody');
     if (sireBuysellTbody) {
         const horses = data.horses || [];
@@ -432,22 +408,28 @@ async function fetchWindData(venue) {
     }
 }
 
-let scoreSortActive = false;
+let activeSortCol = null;  // '回収スコア' | '的中スコア' | null(馬番順)
 
 function setupScoreSortHeader() {
+    const fields = { '回収スコア': 'score', '的中スコア': 'score_ml' };
     const ths = document.querySelectorAll('#horsesTable thead th');
     ths.forEach(th => {
-        if (th.textContent.replace('▼', '').trim() !== 'スコア') return;
+        const label = th.textContent.replace('▼', '').trim();
+        if (!(label in fields)) return;
         if (th.dataset.sortBound) return;
         th.dataset.sortBound = '1';
         th.style.cursor = 'pointer';
         th.title = 'クリックでスコア順⇔馬番順を切替';
         th.onclick = () => {
-            scoreSortActive = !scoreSortActive;
-            th.textContent = scoreSortActive ? 'スコア▼' : 'スコア';
+            activeSortCol = (activeSortCol === label) ? null : label;
+            document.querySelectorAll('#horsesTable thead th').forEach(t => {
+                const l = t.textContent.replace('▼', '').trim();
+                if (l in fields) t.textContent = (l === activeSortCol) ? l + '▼' : l;
+            });
             const sorted = [...globalHorsesData];
-            if (scoreSortActive) {
-                sorted.sort((a, b) => (b.score ?? -999) - (a.score ?? -999));
+            if (activeSortCol) {
+                const f = fields[activeSortCol];
+                sorted.sort((a, b) => (b[f] ?? -999) - (a[f] ?? -999));
             } else {
                 sorted.sort((a, b) => a.num - b.num);
             }
@@ -467,6 +449,11 @@ function renderHorsesTable(horses) {
         .sort((a, b) => b.score - a.score)
         .slice(0, 3)
         .map(x => x.num);
+    const mlTop3 = [...horses]
+        .filter(x => x.score_ml !== null && x.score_ml !== undefined)
+        .sort((a, b) => b.score_ml - a.score_ml)
+        .slice(0, 3)
+        .map(x => x.num);
 
     horses.forEach(h => {
         const tr = document.createElement('tr');
@@ -479,7 +466,7 @@ function renderHorsesTable(horses) {
 
         // Other Cols
         const cols = [
-            h.num, h.grade || '-', (h.score ?? '-'), h.odds, h.pop || '-', h.iv, h.dist_diff || '-',
+            h.num, h.grade || '-', (h.score ?? '-'), (h.score_ml ?? '-'), h.odds, h.pop || '-', h.iv, h.dist_diff || '-',
             h.name, h.sex_age, h.kyakushitsu, h.kg, h.jock || h.jockey,
             h.affi, h.sire, h.bms
         ];
@@ -488,7 +475,7 @@ function renderHorsesTable(horses) {
         cols.forEach((val, idx) => {
             const td = document.createElement('td');
 
-            if (idx === 7) { // idx 7 is now h.name
+            if (idx === 8) { // idx 8 is now h.name
                 td.style.textAlign = 'left';
                 const expandBtn = document.createElement('button');
                 expandBtn.textContent = '+';
@@ -510,7 +497,7 @@ function renderHorsesTable(horses) {
                         const histRow = document.createElement('tr');
                         histRow.className = 'history-row';
                         const histTd = document.createElement('td');
-                        histTd.colSpan = 17; // 枠+15列+印列
+                        histTd.colSpan = 18; // 枠+16列+印列
                         histTd.innerHTML = buildMiniHistoryTable(h.hist);
                         histRow.appendChild(histTd);
                         tr.after(histRow);
@@ -536,7 +523,7 @@ function renderHorsesTable(horses) {
                 td.appendChild(tooltipSpan);
             }
 
-            // スコア列 (idx 2): 内訳tooltip + 上位3頭ハイライト
+            // 回収スコア列 (idx 2): 内訳tooltip + 上位3頭ハイライト
             if (idx === 2) {
                 if (h.score_details && h.score_details.length > 0) {
                     td.classList.add('grade-tooltip-target');
@@ -549,8 +536,21 @@ function renderHorsesTable(horses) {
                 if (rankIdx >= 0) td.classList.add(`score-top-${rankIdx + 1}`);
             }
 
-            // Sire Ranking Highlight (idx 13 corresponds to h.sire now)
-            if (idx === 13 && h.sire_rank) {
+            // 的中スコア列 (idx 3): WIN5アプリと同じMLスコア (conditional logit)
+            if (idx === 3) {
+                if (h.score_ml_details && h.score_ml_details.length > 0) {
+                    td.classList.add('grade-tooltip-target');
+                    const tooltipSpan = document.createElement('span');
+                    tooltipSpan.className = 'tooltip-text';
+                    tooltipSpan.innerHTML = h.score_ml_details.join('<br>');
+                    td.appendChild(tooltipSpan);
+                }
+                const rankIdx = mlTop3.indexOf(h.num);
+                if (rankIdx >= 0) td.classList.add(`score-top-${rankIdx + 1}`);
+            }
+
+            // Sire Ranking Highlight (idx 14 corresponds to h.sire now)
+            if (idx === 14 && h.sire_rank) {
                 if (h.sire_rank === 1) td.classList.add('sire-rank-1');
                 else if (h.sire_rank <= 5) td.classList.add('sire-rank-2-5');
                 else if (h.sire_rank <= 10) td.classList.add('sire-rank-6-10');
@@ -733,142 +733,6 @@ async function runAiPrediction() {
         document.getElementById('aiStatus').textContent = "エラー";
     } finally {
         document.getElementById('runAiBtn').disabled = false;
-    }
-}
-
-// ═══════════════════════════════════════════
-// WIN5 予想機能
-// ═══════════════════════════════════════════
-
-let win5Data = null;
-
-/**
- * マトリクスデータから WIN5 対象レースの accessD URL を探す。
- * マトリクスの text 例: "5/9(土) 2回東京5日" → 会場名と日付で照合。
- * さらに URL の CNAME に埋め込まれた日付も検証して翌日レースURLの混入を防ぐ。
- */
-function findUrlFromMatrix(venue, raceNum, win5DateStr) {
-    if (!globalMatrixData) return '';
-    const dm = win5DateStr.match(/(\d+)月(\d+)日/);
-    if (!dm) return '';
-    const dateShort = `${parseInt(dm[1])}/${parseInt(dm[2])}`; // "5/9"
-
-    // URL内のCNAME日付と比較するための "YYYYMMDD" 文字列を生成
-    const year = new Date().getFullYear();
-    const expectedDate = `${year}${String(parseInt(dm[1])).padStart(2,'0')}${String(parseInt(dm[2])).padStart(2,'0')}`; // "20260509"
-
-    for (const venueData of globalMatrixData) {
-        const text = venueData.text || '';
-        // ラベルの日付・会場名で一次絞り込み
-        if (!text.includes(venue)) continue;
-        if (!text.startsWith(dateShort)) continue;
-        const race = (venueData.races || []).find(r => r.r === raceNum);
-        if (!race || !race.url) continue;
-        // URLのCNAMEに含まれる日付を二重チェック（同一ページに翌日リンクが混在する場合の対策）
-        const urlDateMatch = race.url.match(/(\d{8})\/[0-9A-Fa-f]+/);
-        if (urlDateMatch && urlDateMatch[1] !== expectedDate) continue;
-        return race.url;
-    }
-    return '';
-}
-
-async function loadWin5Races() {
-    const btn = document.getElementById('win5LoadBtn');
-    const status = document.getElementById('win5LoadStatus');
-    btn.disabled = true;
-    status.textContent = '取得中...';
-
-    try {
-        const res = await fetch('/api/win5_races');
-        const data = await res.json();
-        if (!res.ok || data.error) throw new Error(data.error || '取得失敗');
-
-        // マトリクスで解析済みのレースがあればURLを自動補完
-        for (const race of data.races) {
-            if (!race.url) {
-                const matrixUrl = findUrlFromMatrix(race.venue, race.race_num, data.date);
-                if (matrixUrl) race.url = matrixUrl;
-            }
-        }
-        win5Data = data;
-        document.getElementById('win5DateLabel').textContent = `📅 ${data.date} WIN5対象レース`;
-        renderWin5Grid(data.races);
-        document.getElementById('win5RaceSection').style.display = 'block';
-        document.getElementById('win5Result').style.display = 'none';
-        status.textContent = '取得完了';
-    } catch(e) {
-        status.textContent = 'エラー: ' + e.message;
-    } finally {
-        btn.disabled = false;
-    }
-}
-
-function renderWin5Grid(races) {
-    const grid = document.getElementById('win5RaceGrid');
-    grid.innerHTML = races.map((race, i) => {
-        const hasUrl = race.url ? '✅' : '⚠️';
-        const urlInput = race.url ? '' :
-            `<input id="win5url${i}" class="win5-url-input"
-                    placeholder="accessD URLを貼り付け（例: https://www.jra.go.jp/JRADB/accessD.html?CNAME=...）">`;
-        return `
-        <div class="win5-race-card">
-          <div class="win5-race-no">第${i + 1}レース</div>
-          <div class="win5-race-venue">${race.venue} ${race.race_num}R</div>
-          <div class="win5-race-time">${race.time} 発走</div>
-          <div class="win5-url-status">${hasUrl} ${race.url ? 'URL取得済み' : 'URL手動入力'}</div>
-          ${urlInput}
-        </div>`;
-    }).join('');
-}
-
-async function runWin5Prediction() {
-    if (!win5Data) { alert('先にWIN5レースを取得してください'); return; }
-
-    const pwd = document.getElementById('win5Password').value;
-    if (!pwd) { alert('パスワードを入力してください'); return; }
-
-    const ptRadio = document.querySelector('input[name="win5pts"]:checked');
-    const pointLimit = ptRadio ? parseInt(ptRadio.value) : 100;
-
-    // URL収集（自動取得 or 手動入力）
-    const raceUrls = win5Data.races.map((race, i) => {
-        if (race.url) return race.url;
-        const inp = document.getElementById(`win5url${i}`);
-        return inp ? inp.value.trim() : '';
-    });
-
-    const btn = document.getElementById('win5PredictBtn');
-    const status = document.getElementById('win5PredictStatus');
-    const resultEl = document.getElementById('win5Result');
-
-    btn.disabled = true;
-    status.textContent = '各レースのデータを取得中... (しばらくお待ちください)';
-    resultEl.style.display = 'none';
-
-    try {
-        const res = await fetch('/api/win5_predict', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                race_urls: raceUrls,
-                races_info: win5Data.races,
-                point_limit: pointLimit,
-                date: win5Data.date,
-                password: pwd,
-            }),
-        });
-        const data = await res.json();
-        if (!res.ok || data.error) throw new Error(data.error || 'AI予想失敗');
-
-        resultEl.textContent = data.result;
-        resultEl.style.display = 'block';
-        status.textContent = '完了しました';
-    } catch(e) {
-        resultEl.textContent = 'エラーが発生しました:\n' + e.message;
-        resultEl.style.display = 'block';
-        status.textContent = 'エラー';
-    } finally {
-        btn.disabled = false;
     }
 }
 
