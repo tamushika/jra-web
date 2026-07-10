@@ -34,6 +34,18 @@
         select, input[type=checkbox] { accent-color: var(--primary); }
         .ev-select { background: var(--bg-color, #222); color: var(--text-color, #eee);
                      border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 8px; }
+        .ev-grid { width: 100%; border-collapse: collapse; }
+        .ev-grid th, .ev-grid td { border: 1px solid var(--border-color);
+                                   padding: 3px 5px; vertical-align: top; }
+        .ev-grid th { background: rgba(255,255,255,0.06); font-size: 13px; }
+        .ev-cell { font-size: 12px; border-radius: 6px; padding: 2px 4px; }
+        .ev-cell.has-pick { background: rgba(245,200,66,0.12);
+                            outline: 1px solid #f5c842; }
+        .ev-cell.finished { opacity: 0.4; }
+        .ev-cell-head { font-size: 11px; color: var(--text-muted); }
+        .ev-cell-horse { margin-top: 2px; line-height: 1.4; }
+        .ev-cell-horse b { color: var(--primary); }
+        .ev-h-top { opacity: 0.75; }
     </style>
 </head>
 <body>
@@ -77,7 +89,6 @@
     <div class="ev-section">
         <div class="ev-step-title">本日のレースと期待値ピックアップ</div>
         <div class="ev-summary" id="summary"></div>
-        <label class="ev-meta"><input type="checkbox" id="onlyPicks" checked onchange="render()"> 期待値馬のいるレースのみ表示</label>
         <div id="raceArea" style="margin-top:10px;"></div>
     </div>
 </div>
@@ -194,41 +205,80 @@ function appendAlertLog(a) {
 }
 
 // ── レース一覧描画 ────────────────────────────────────
+function timeVal(t) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(t || '');
+    return m ? (+m[1]) * 60 + (+m[2]) : 9999;
+}
+
+function horseLine(h, picked) {
+    const evTxt = h.ev != null ? `EV${h.ev}`
+                : h.win_prob != null ? `勝率${(h.win_prob * 100).toFixed(0)}%` : '';
+    const sub = h.odds && h.ev != null
+        ? `<span class="ev-meta">(${(h.win_prob * 100).toFixed(0)}%×${esc(h.odds)}倍)</span>` : '';
+    return `<div class="ev-cell-horse ${picked ? 'ev-h-pick' : 'ev-h-top'}">
+        ${picked ? '' : '<span class="ev-meta">最上位: </span>'}<b>${esc(h.num)}</b> ${esc(h.name)}
+        <span class="${picked ? 'ev-val' : 'ev-meta'}">${evTxt}</span> ${sub}
+        ${h.web_value ? '<span class="ev-badge ev-badge-web">W</span>' : ''}${h.grade ? ' ' + esc(h.grade) : ''}
+    </div>`;
+}
+
+function cellHtml(r) {
+    const picks = r.horses.filter(h => h.picked);
+    let body;
+    if (picks.length) {
+        body = picks.map(h => horseLine(h, true)).join('');
+    } else {
+        // 期待値なしレースも EV最上位 (オッズ未発売時は勝率最上位) を表示
+        const withEv = r.horses.filter(h => h.ev != null);
+        let top = null;
+        if (withEv.length) top = withEv.reduce((a, b) => (a.ev >= b.ev ? a : b));
+        else {
+            const withP = r.horses.filter(h => h.win_prob != null);
+            if (withP.length) top = withP.reduce((a, b) => (a.win_prob >= b.win_prob ? a : b));
+        }
+        body = top ? horseLine(top, false) : '<span class="ev-meta">-</span>';
+    }
+    const marks = (r.checked15 ? ' ✓15' : '') + (r.checked5 ? ' ✓5' : '');
+    const oddsBadge = r.odds_ok === false
+        ? ' <span class="ev-badge" style="background:#f57c00;color:#fff;">オッズ未</span>' : '';
+    return `<div class="ev-cell ${picks.length ? 'has-pick' : ''} ${r.finished ? 'finished' : ''}">
+        <div class="ev-cell-head">${esc(r.start_time)}<span class="ev-meta">${marks}</span>${oddsBadge}</div>
+        ${body}</div>`;
+}
+
 function render() {
     if (!stateCache) return;
     const races = stateCache.races || [];
     const nPick = races.filter(r => r.n_picked > 0).length;
+    const dayLabel = races.length && races[0].day_label ? ` (${races[0].day_label})` : '';
     document.getElementById('summary').innerHTML =
-        races.length ? `期待値馬のいるレース: <b>${nPick}</b> / ${races.length}レース` : '';
-    const onlyPicks = document.getElementById('onlyPicks').checked;
+        races.length ? `期待値馬のいるレース: <b>${nPick}</b> / ${races.length}レース${esc(dayLabel)}
+            <span class="ev-meta">金枠=期待値馬あり / その他のレースはEV最上位馬を薄く表示</span>` : '';
     const area = document.getElementById('raceArea');
-    area.innerHTML = '';
+    if (!races.length) { area.innerHTML = ''; return; }
+
+    // 会場ごとの列 (初戦の発走が早い順)、行はレース番号で揃える
+    const byVenue = new Map();
     for (const r of races) {
-        if (onlyPicks && r.n_picked === 0) continue;
-        const picks = r.horses.filter(h => h.picked);
-        const chips = picks.map(h =>
-            `<span class="ev-chip"><b>${esc(h.num)}</b> ${esc(h.name)}
-             <span class="ev-val">EV${esc(h.ev)}</span>
-             <span class="ev-meta">(勝率${(h.win_prob*100).toFixed(0)}% × ${esc(h.odds)}倍 / ${esc(h.pop)}人気)</span>
-             ${h.web_value ? '<span class="ev-badge ev-badge-web">Web妙味</span>' : ''}
-             ${h.grade ? esc(h.grade) : ''}</span>`).join('');
-        const checkBadges =
-            (r.checked15 ? ' <span class="ev-meta">✓15分前</span>' : '') +
-            (r.checked5 ? ' <span class="ev-meta">✓5分前</span>' : '');
-        area.insertAdjacentHTML('beforeend', `
-            <div class="ev-race ${r.n_picked ? 'has-pick' : ''} ${r.finished ? 'finished' : ''}">
-                <span class="ev-race-head">${r.day_label ? esc(r.day_label) + ' ' : ''}${esc(r.start_time)} ${esc(r.venue)}${esc(r.race_num)}R</span>
-                ${r.odds_ok === false ? '<span class="ev-badge" style="background:#f57c00;color:#fff;">オッズ未取得</span>' : ''}
-                <span class="ev-meta">${esc(r.race_info.replace(/【[^】]*】/, ''))}</span>
-                ${checkBadges}
-                <span class="ev-meta" style="float:right;">更新 ${esc(r.last_update)}</span>
-                ${r.n_picked ? `<div class="ev-chips">${chips}</div>`
-                             : `<span class="ev-none">${r.odds_ok === false ? 'オッズ未発売のためEV判定不可' : '期待値馬なし'}</span>`}
-            </div>`);
+        if (!byVenue.has(r.venue)) byVenue.set(r.venue, new Map());
+        byVenue.get(r.venue).set(r.race_num, r);
     }
-    if (!area.innerHTML && races.length) {
-        area.innerHTML = '<span class="ev-meta">条件に合うレースがありません (チェックを外すと全レース表示)</span>';
+    const venues = [...byVenue.keys()].sort((a, b) => {
+        const first = m => Math.min(...[...m.values()].map(r => timeVal(r.start_time)));
+        return first(byVenue.get(a)) - first(byVenue.get(b));
+    });
+    const maxR = Math.max(...races.map(r => r.race_num || 0));
+    let html = '<div style="overflow-x:auto;"><table class="ev-grid"><tr><th style="width:34px;"></th>' +
+        venues.map(v => `<th>${esc(v)}</th>`).join('') + '</tr>';
+    for (let rn = 1; rn <= maxR; rn++) {
+        html += `<tr><th>${rn}R</th>`;
+        for (const v of venues) {
+            const r = byVenue.get(v).get(rn);
+            html += `<td>${r ? cellHtml(r) : ''}</td>`;
+        }
+        html += '</tr>';
     }
+    area.innerHTML = html + '</table></div>';
 }
 
 updateNotifState();
