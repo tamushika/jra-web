@@ -70,6 +70,16 @@ Harville 式で組み合わせ馬券の的中確率を導出でき、EV = モデ
 
 - **Discord通知を使う場合**: `jra-web/.env` に `EV_DISCORD_WEBHOOK=<WebhookのURL>` を1行追加。
   (Discord: サーバー→チャンネル設定→連携サービス→Webhook作成でURL取得)。未設定なら通知はブラウザのみ。
+- **LINE通知を使う場合** (5分前 × EV>=1.3 のみ送信。LINE Notifyは2025年終了のため Messaging API):
+  1. https://developers.line.biz/ にLINEアカウントでログイン → プロバイダー作成
+  2. 「Messaging APIチャネル」を作成 → Messaging API設定タブで
+     **チャネルアクセストークン (長期)** を発行
+  3. 同タブのQRコードで自分のLINEにボットを友だち追加
+     (応答メッセージはオフ推奨。友だちは自分だけにする — broadcast配信のため)
+  4. `jra-web/.env` に `EV_LINE_CHANNEL_TOKEN=<トークン>` を1行追加
+  5. 疎通確認: `python jra_ev.py --test-line` (スマホにテスト通知が届けばOK)
+  - 送信条件は `EV_LINE_STAGE` (既定5) / `EV_LINE_MIN_EV` (既定1.3) で変更可。
+    無料枠200通/月 — 5分前のみ・閾値1.3なら月数十通で収まる見込み
 - **.env に必須のもの** (既存): `DATABASE_URL` (Neon)、`GEMINI_API_KEY` (PDF抽出用)。
   これらは git 管理外。別PCで動かす場合は手動でコピーが必要。
 

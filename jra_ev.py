@@ -350,6 +350,43 @@ def _send_discord(alert):
         print(f"[WARN] Discord通知失敗: {e}")
 
 
+def _send_line(alert):
+    """.env の EV_LINE_CHANNEL_TOKEN 設定時、「5分前 × EV>=1.3」の通知をLINEへ送る。
+    LINE Notify は2025年に終了したため Messaging API のブロードキャストを使用
+    (自分だけを友だちにしたボット宛て。無料枠200通/月 → 5分前のみなら十分収まる)。
+    ステージ/閾値は EV_LINE_STAGE / EV_LINE_MIN_EV で変更可 (既定 5 / 1.3)。"""
+    token = os.environ.get("EV_LINE_CHANNEL_TOKEN", "").strip()
+    if not token:
+        return
+    try:
+        stage_req = int(os.environ.get("EV_LINE_STAGE", "5"))
+        min_ev = float(os.environ.get("EV_LINE_MIN_EV", "1.3"))
+    except ValueError:
+        stage_req, min_ev = 5, 1.3
+    if alert["stage"] != stage_req:
+        return
+    picks = [p for p in alert["picks"] if (p.get("ev") or 0) >= min_ev]
+    if not picks:
+        return
+    lines = [f"⏰ {alert['stage']}分前 期待値あり: {alert['label']}"]
+    for p in picks:
+        lines.append(f"{p['num']}番 {p['name']} EV{p['ev']} "
+                     f"(勝率{round((p['win_prob'] or 0) * 100)}%×{p['odds']}倍)"
+                     + (" [Web妙味]" if p.get("web_value") else ""))
+    lines.append("※単勝+複勝の併用が検証上最も堅い")
+    try:
+        res = requests.post(
+            "https://api.line.me/v2/bot/message/broadcast",
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json"},
+            json={"messages": [{"type": "text", "text": "\n".join(lines)}]},
+            timeout=10)
+        if res.status_code != 200:
+            print(f"[WARN] LINE通知失敗: HTTP {res.status_code} {res.text[:120]}")
+    except Exception as e:
+        print(f"[WARN] LINE通知失敗: {e}")
+
+
 # ─── スケジューラ (15分前/5分前チェック) ─────────────────────────────────────
 
 def refresh_and_alert(rec, stage):
@@ -380,6 +417,7 @@ def refresh_and_alert(rec, stage):
     if alert:
         _log_alert_to_neon(alert)
         _send_discord(alert)
+        _send_line(alert)
     return True
 
 
@@ -481,6 +519,16 @@ def _auto_start():
 
 
 if __name__ == "__main__":
+    if "--test-line" in sys.argv:
+        # LINE設定後の疎通確認: python jra_ev.py --test-line
+        stage = int(os.environ.get("EV_LINE_STAGE", "5"))
+        _send_line({"stage": stage, "label": "テスト送信 (疎通確認)",
+                    "picks": [{"num": 7, "name": "テスト馬", "ev": 9.9,
+                               "win_prob": 0.5, "odds": "19.8", "web_value": False}]})
+        print("LINEテスト送信を試行しました。スマホで受信を確認してください "
+              "(届かない場合は EV_LINE_CHANNEL_TOKEN と友だち追加を確認)")
+        sys.exit(0)
+
     url = f"http://localhost:{PORT}"
     print("=" * 55)
     print("  期待値レース監視 (Webスコア × MLスコア)")
@@ -489,6 +537,9 @@ if __name__ == "__main__":
     print("  ブラウザのタブを開いたままにすると 15分前/5分前に通知します")
     if os.environ.get("EV_DISCORD_WEBHOOK", "").strip():
         print("  Discord通知: 有効")
+    if os.environ.get("EV_LINE_CHANNEL_TOKEN", "").strip():
+        print(f"  LINE通知: 有効 ({os.environ.get('EV_LINE_STAGE', '5')}分前 × "
+              f"EV>={os.environ.get('EV_LINE_MIN_EV', '1.3')})")
     print("  終了: Ctrl+C")
     print("-" * 55)
     threading.Timer(1.0, lambda: webbrowser.open(url)).start()
