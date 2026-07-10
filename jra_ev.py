@@ -64,6 +64,7 @@ STATE = {
     "error": "",
     "progress": {"done": 0, "total": 0},
     "started_at": "",
+    "warning": "",
     "races": {},                 # rid -> race record
     "alerts": [],                # {id, ts, stage, rid, label, picks}
     "params": {"ev_threshold": 1.3, "max_odds": 50.0, "min_prob": 0.02},
@@ -102,14 +103,14 @@ def find_entry_url():
     return None
 
 
-def _parse_start_time(race_info):
-    """'【東京 11R】芝1600m 15:40発走　…' → datetime (本日)"""
+def _parse_start_time(race_info, base_date=None):
+    """'【東京 11R】芝1600m 15:40発走　…' → datetime (base_date、省略時は本日)"""
     m = re.search(r"(\d{1,2}):(\d{2})発走", str(race_info))
     if not m:
         return None
-    now = datetime.now()
-    return now.replace(hour=int(m.group(1)), minute=int(m.group(2)),
-                       second=0, microsecond=0)
+    base = base_date or datetime.now()
+    return base.replace(hour=int(m.group(1)), minute=int(m.group(2)),
+                        second=0, microsecond=0)
 
 
 def _parse_race_num(race_info):
@@ -158,7 +159,7 @@ def compute_picks(horses, params):
     return n_picked
 
 
-def analyze_one(url, params):
+def analyze_one(url, params, base_date=None, day_label=""):
     """1レースを解析して監視レコードを返す"""
     result = analyze_race_url(url, "簡易")
     venue = result.get("venue")
@@ -180,7 +181,12 @@ def analyze_one(url, params):
         })
     n_picked = compute_picks(horses, params)
 
-    start_dt = _parse_start_time(result.get("race_info"))
+    # オッズが有効な馬の数 (発売前はカードにオッズが載らず全馬None → EV判定不能)
+    n_odds = sum(1 for h in horses
+                 if (_to_float(h.get("odds")) or 0) > 1.0)
+    odds_ok = bool(horses) and n_odds >= max(1, len(horses) // 2)
+
+    start_dt = _parse_start_time(result.get("race_info"), base_date)
     return {
         "url": url, "venue": venue,
         "race_num": _parse_race_num(result.get("race_info")),
@@ -188,6 +194,8 @@ def analyze_one(url, params):
         "race_type": race_type, "dist": dist_val,
         "start_time": start_dt.strftime("%H:%M") if start_dt else "",
         "_start_dt": start_dt,
+        "day_label": day_label,
+        "odds_ok": odds_ok, "n_odds": n_odds,
         "horses": horses, "n_picked": n_picked,
         "checked15": False, "checked5": False, "finished": False,
         "last_update": datetime.now().strftime("%H:%M:%S"),
@@ -209,18 +217,55 @@ def worker_analyze_all(params):
         res = requests.get(entry, headers=HDRS, timeout=15)
         res.encoding = "shift_jis"
         matrix = build_matrix_data(BeautifulSoup(res.text, "html.parser"))
-        # 本日分のみ (matrix には土日両日が混在し得る → 日付ラベルが今日のもの優先。
-        # 判別不能ならすべて対象にし、発走時刻の過ぎたレースはスケジューラが無視する)
-        today_md = f"{datetime.now().month}/{datetime.now().day}("
-        venues = [v for v in matrix if today_md in v.get("text", "")] or matrix
-        targets = [(v["text"], r["url"]) for v in venues for r in v["races"]]
+        # 本日分のみ (matrix には土日両日が混在し得る → 日付ラベルが今日のもの優先)。
+        # 本日開催が無い日 (金曜等) は直近の開催日を対象にし、その日付で発走時刻を解釈する
+        now = datetime.now()
+        today_md = f"{now.month}/{now.day}("
+
+        def _venue_date(text):
+            m = re.match(r"(\d{1,2})/(\d{1,2})\(", str(text))
+            if not m:
+                return None, ""
+            try:
+                d = now.replace(month=int(m.group(1)), day=int(m.group(2)),
+                                hour=0, minute=0, second=0, microsecond=0)
+            except ValueError:
+                return None, ""
+            if d.date() < now.date():  # 年跨ぎ (12月に1月の開催を見た場合)
+                d = d.replace(year=d.year + 1)
+            return d, m.group(0).rstrip("(") + str(text)[m.end() - 1:m.end() + 2]
+
+        today_venues = [v for v in matrix if today_md in v.get("text", "")]
+        warning = ""
+        if today_venues:
+            venues = today_venues
+        else:
+            # 本日開催なし → 直近の開催日のみ対象 (土日両方を混ぜると
+            # 同一場・同一R番号でレースIDが衝突するため1日に絞る)
+            dated = [(v, _venue_date(v.get("text", ""))[0]) for v in matrix]
+            dated = [(v, d) for v, d in dated if d is not None]
+            if dated:
+                min_d = min(d for _, d in dated).date()
+                venues = [v for v, d in dated if d.date() == min_d]
+                warning = (f"本日の開催はありません。{min_d.month}/{min_d.day} の出馬表を"
+                           "解析します (オッズは発売前の可能性があります)")
+            else:
+                venues = matrix
+                warning = "本日の開催はありません。直近の出馬表を解析します"
+        targets = []
+        for v in venues:
+            vdate, _ = _venue_date(v.get("text", ""))
+            dlabel = str(v.get("text", "")).split(" ")[0] if v.get("text") else ""
+            for r in v["races"]:
+                targets.append((v["text"], r["url"], vdate, dlabel))
         with _LOCK:
             STATE["progress"] = {"done": 0, "total": len(targets)}
+            STATE["warning"] = warning
 
         def run(t):
-            label, url = t
+            label, url, vdate, dlabel = t
             try:
-                rec = analyze_one(url, params)
+                rec = analyze_one(url, params, base_date=vdate, day_label=dlabel)
                 with _LOCK:
                     STATE["races"][_rid(rec)] = rec
             except Exception as e:
@@ -232,6 +277,16 @@ def worker_analyze_all(params):
         with ThreadPoolExecutor(max_workers=3) as ex:
             list(ex.map(run, targets))
         with _LOCK:
+            # 全レースでオッズが取れていない場合は明示的に警告 (発売前が典型)
+            recs = list(STATE["races"].values())
+            n_no_odds = sum(1 for r in recs if not r.get("odds_ok"))
+            if recs and n_no_odds == len(recs):
+                STATE["warning"] = ((STATE["warning"] + " / ") if STATE["warning"] else "") + \
+                    "⚠️ 全レースでオッズが取得できていません (発売前の可能性)。" \
+                    "EV判定にはオッズが必須のため該当馬は出ません。発売開始後に再度「解析開始」を押してください"
+            elif n_no_odds:
+                STATE["warning"] = ((STATE["warning"] + " / ") if STATE["warning"] else "") + \
+                    f"⚠️ {n_no_odds}/{len(recs)}レースでオッズ未取得"
             STATE["status"] = "ready"
         _ensure_scheduler()
     except Exception as e:
@@ -363,12 +418,14 @@ def _ensure_scheduler():
 def _slim_state():
     races = []
     for rid, rec in STATE["races"].items():
-        races.append({k: rec[k] for k in
+        races.append({k: rec.get(k) for k in
                       ("venue", "race_num", "race_info", "start_time", "horses",
-                       "n_picked", "checked15", "checked5", "finished", "last_update")}
+                       "n_picked", "checked15", "checked5", "finished", "last_update",
+                       "odds_ok", "day_label")}
                      | {"rid": rid})
     races.sort(key=lambda r: (r["start_time"] or "99:99", r["venue"]))
     return {"status": STATE["status"], "error": STATE["error"],
+            "warning": STATE.get("warning", ""),
             "progress": STATE["progress"], "started_at": STATE["started_at"],
             "params": STATE["params"], "races": races}
 
@@ -386,6 +443,7 @@ def api_analyze_start():
             pass
         STATE["status"] = "analyzing"
         STATE["error"] = ""
+        STATE["warning"] = ""
         STATE["races"] = {}
         STATE["alerts"] = []
         STATE["started_at"] = datetime.now().strftime("%H:%M:%S")
@@ -414,6 +472,7 @@ def _auto_start():
             return
         STATE["status"] = "analyzing"
         STATE["error"] = ""
+        STATE["warning"] = ""
         STATE["races"] = {}
         STATE["alerts"] = []
         STATE["started_at"] = datetime.now().strftime("%H:%M:%S")

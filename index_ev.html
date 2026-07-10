@@ -58,6 +58,8 @@
         </div>
         <button class="primary-btn" id="startBtn" onclick="startAnalyze()">解析開始 (本日の全レース)</button>
         <span class="ev-progress" id="progress"></span>
+        <div id="warnBanner" style="display:none;border:1px solid #f57c00;background:rgba(245,124,0,0.12);
+             border-radius:8px;padding:8px 12px;margin-top:8px;font-size:13px;"></div>
         <div class="ev-meta" style="margin-top:8px;">
             発走15分前と5分前にオッズを自動更新し、期待値馬がいればブラウザ通知します。<b>このタブを開いたままにしてください。</b>
         </div>
@@ -163,6 +165,9 @@ async function poll() {
             p.textContent = '';
             document.getElementById('startBtn').disabled = false;
         }
+        const wb = document.getElementById('warnBanner');
+        if (st.warning) { wb.style.display = 'block'; wb.textContent = st.warning; }
+        else { wb.style.display = 'none'; }
         render();
 
         const al = await (await fetch('/api/alerts?after=' + lastAlertId)).json();
@@ -212,12 +217,13 @@ function render() {
             (r.checked5 ? ' <span class="ev-meta">✓5分前</span>' : '');
         area.insertAdjacentHTML('beforeend', `
             <div class="ev-race ${r.n_picked ? 'has-pick' : ''} ${r.finished ? 'finished' : ''}">
-                <span class="ev-race-head">${esc(r.start_time)} ${esc(r.venue)}${esc(r.race_num)}R</span>
+                <span class="ev-race-head">${r.day_label ? esc(r.day_label) + ' ' : ''}${esc(r.start_time)} ${esc(r.venue)}${esc(r.race_num)}R</span>
+                ${r.odds_ok === false ? '<span class="ev-badge" style="background:#f57c00;color:#fff;">オッズ未取得</span>' : ''}
                 <span class="ev-meta">${esc(r.race_info.replace(/【[^】]*】/, ''))}</span>
                 ${checkBadges}
                 <span class="ev-meta" style="float:right;">更新 ${esc(r.last_update)}</span>
                 ${r.n_picked ? `<div class="ev-chips">${chips}</div>`
-                             : '<span class="ev-none">期待値馬なし</span>'}
+                             : `<span class="ev-none">${r.odds_ok === false ? 'オッズ未発売のためEV判定不可' : '期待値馬なし'}</span>`}
             </div>`);
     }
     if (!area.innerHTML && races.length) {
