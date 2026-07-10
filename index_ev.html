@@ -6,7 +6,7 @@
     <title>期待値レース監視</title>
     <link rel="stylesheet" href="style.css">
     <style>
-        .ev-container { max-width: 1100px; margin: 0 auto; padding: 16px; }
+        .ev-container { max-width: min(1750px, 98vw); margin: 0 auto; padding: 16px; }
         .ev-section { background: rgba(0,0,0,0.25); border: 1px solid var(--border-color);
                       border-radius: 10px; padding: 16px; margin-bottom: 16px; }
         .ev-step-title { font-size: 16px; font-weight: bold; color: var(--primary); margin-bottom: 10px; }
@@ -34,16 +34,18 @@
         select, input[type=checkbox] { accent-color: var(--primary); }
         .ev-select { background: var(--bg-color, #222); color: var(--text-color, #eee);
                      border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 8px; }
-        .ev-grid { width: 100%; border-collapse: collapse; }
+        .ev-grid { width: 100%; border-collapse: collapse; table-layout: fixed; }
         .ev-grid th, .ev-grid td { border: 1px solid var(--border-color);
-                                   padding: 3px 5px; vertical-align: top; }
+                                   padding: 3px 5px; vertical-align: top;
+                                   overflow-wrap: break-word; }
         .ev-grid th { background: rgba(255,255,255,0.06); font-size: 13px; }
         .ev-cell { font-size: 12px; border-radius: 6px; padding: 2px 4px; }
         .ev-cell.has-pick { background: rgba(245,200,66,0.12);
                             outline: 1px solid #f5c842; }
         .ev-cell.finished { opacity: 0.4; }
         .ev-cell-head { font-size: 11px; color: var(--text-muted); }
-        .ev-cell-horse { margin-top: 2px; line-height: 1.4; }
+        .ev-cell-horse { margin-top: 2px; line-height: 1.35; }
+        .ev-cell-sub { font-size: 11px; color: var(--text-muted); }
         .ev-cell-horse b { color: var(--primary); }
         .ev-h-top { opacity: 0.75; }
     </style>
@@ -213,16 +215,16 @@ function timeVal(t) {
 function horseLine(h, picked) {
     const evTxt = h.ev != null ? `EV${h.ev}`
                 : h.win_prob != null ? `勝率${(h.win_prob * 100).toFixed(0)}%` : '';
-    // 勝率 × オッズ / 人気 (取得できているものだけ表示)
+    // 2行目: 勝率 / オッズ / 人気 (取得できているものだけ)
     const parts = [];
     if (h.ev != null && h.win_prob != null) parts.push(`勝率${(h.win_prob * 100).toFixed(0)}%`);
     if (h.odds != null && h.odds !== '' && h.odds !== '-') parts.push(`${esc(h.odds)}倍`);
     if (h.pop != null && h.pop !== '' && h.pop !== '-') parts.push(`${esc(h.pop)}人気`);
-    const sub = parts.length ? `<span class="ev-meta">(${parts.join(' / ')})</span>` : '';
     return `<div class="ev-cell-horse ${picked ? 'ev-h-pick' : 'ev-h-top'}">
-        ${picked ? '' : '<span class="ev-meta">最上位: </span>'}<b>${esc(h.num)}</b>番 ${esc(h.name)}
-        <span class="${picked ? 'ev-val' : 'ev-meta'}">${evTxt}</span> ${sub}
-        ${h.web_value ? '<span class="ev-badge ev-badge-web">W</span>' : ''}${h.grade ? ' ' + esc(h.grade) : ''}
+        <div><b>${esc(h.num)}</b>番 ${esc(h.name)}
+            <span class="${picked ? 'ev-val' : 'ev-meta'}">${evTxt}</span>
+            ${h.web_value ? '<span class="ev-badge ev-badge-web">W</span>' : ''}${h.grade ? ' ' + esc(h.grade) : ''}</div>
+        ${parts.length ? `<div class="ev-cell-sub">${parts.join(' / ')}</div>` : ''}
     </div>`;
 }
 
