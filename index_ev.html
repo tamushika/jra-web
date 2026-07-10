@@ -213,10 +213,14 @@ function timeVal(t) {
 function horseLine(h, picked) {
     const evTxt = h.ev != null ? `EV${h.ev}`
                 : h.win_prob != null ? `勝率${(h.win_prob * 100).toFixed(0)}%` : '';
-    const sub = h.odds && h.ev != null
-        ? `<span class="ev-meta">(${(h.win_prob * 100).toFixed(0)}%×${esc(h.odds)}倍)</span>` : '';
+    // 勝率 × オッズ / 人気 (取得できているものだけ表示)
+    const parts = [];
+    if (h.ev != null && h.win_prob != null) parts.push(`勝率${(h.win_prob * 100).toFixed(0)}%`);
+    if (h.odds != null && h.odds !== '' && h.odds !== '-') parts.push(`${esc(h.odds)}倍`);
+    if (h.pop != null && h.pop !== '' && h.pop !== '-') parts.push(`${esc(h.pop)}人気`);
+    const sub = parts.length ? `<span class="ev-meta">(${parts.join(' / ')})</span>` : '';
     return `<div class="ev-cell-horse ${picked ? 'ev-h-pick' : 'ev-h-top'}">
-        ${picked ? '' : '<span class="ev-meta">最上位: </span>'}<b>${esc(h.num)}</b> ${esc(h.name)}
+        ${picked ? '' : '<span class="ev-meta">最上位: </span>'}<b>${esc(h.num)}</b>番 ${esc(h.name)}
         <span class="${picked ? 'ev-val' : 'ev-meta'}">${evTxt}</span> ${sub}
         ${h.web_value ? '<span class="ev-badge ev-badge-web">W</span>' : ''}${h.grade ? ' ' + esc(h.grade) : ''}
     </div>`;
