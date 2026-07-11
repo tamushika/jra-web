@@ -7,4 +7,4 @@ set "PYEXE=%LocalAppData%\Python\bin\python.exe"
 if not exist "%PYEXE%" set "PYEXE=python"
 
 rem Weekend auto-run: starts the server AND kicks off analysis automatically.
-"%PYEXE%" -X utf8 jra_ev.py --auto-start
+"%PYEXE%" -X utf8 jra_ev.py --auto-start >> "%~dp0ev_monitor.log" 2>&1
