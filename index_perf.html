@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>予測実績ダッシュボード</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .pf-container { max-width: min(1500px, 98vw); margin: 0 auto; padding: 16px; }
+        .pf-section { background: rgba(0,0,0,0.25); border: 1px solid var(--border-color);
+                      border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+        .pf-title { font-size: 16px; font-weight: bold; color: var(--primary); margin-bottom: 10px; }
+        .pf-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .pf-table th, .pf-table td { border: 1px solid var(--border-color);
+                                     padding: 5px 9px; text-align: center; }
+        .pf-table th { background: rgba(255,255,255,0.06); }
+        .pf-table td.left { text-align: left; }
+        .roi-good { color: #66bb6a; font-weight: bold; }
+        .roi-bad { color: #ef7070; }
+        .pf-meta { color: var(--text-muted); font-size: 12px; }
+        .pf-badge { display: inline-block; padding: 1px 8px; border-radius: 10px;
+                    font-size: 11px; font-weight: bold; background: rgba(255,255,255,0.1); }
+        .hit-y { color: #66bb6a; font-weight: bold; }
+        .hit-n { color: #ef7070; }
+    </style>
+</head>
+<body>
+<div class="pf-container">
+    <h2 style="margin: 12px 0;">予測実績ダッシュボード
+        <span class="pf-meta">モデルバージョン別の的中率・回収率 (スコア1位馬に単勝/複勝100円想定)</span>
+        <button class="primary-btn" style="float:right;" onclick="load()">🔄 更新</button>
+    </h2>
+    <div id="status" class="pf-meta" style="margin-bottom:10px;"></div>
+
+    <div class="pf-section">
+        <div class="pf-title">モデルバージョン別サマリ</div>
+        <div class="pf-meta" style="margin-bottom:6px;">
+            レースごとに「締切に最も近い最終予測run」を採用。回収率は100円あたりの払戻額 (100%=収支トントン)。
+        </div>
+        <table class="pf-table"><thead><tr>
+            <th>アプリ</th><th>モデル</th><th>版</th><th>設定</th><th>期間</th>
+            <th>予測レース</th><th>結果確定</th><th>単勝的中</th><th>複勝的中</th>
+            <th>単勝回収</th><th>複勝回収</th>
+        </tr></thead><tbody id="sumBody"></tbody></table>
+    </div>
+
+    <div class="pf-section">
+        <div class="pf-title">🔔 EV通知の実績 (通知した馬に単勝/複勝100円)</div>
+        <div id="evSum" style="margin-bottom:8px;"></div>
+        <table class="pf-table"><thead><tr>
+            <th>通知時刻</th><th>レース</th><th>馬番</th><th>EV</th><th>勝率</th>
+            <th>通知時オッズ</th><th>人気</th><th>着順</th><th>単勝払戻</th><th>複勝払戻</th>
+        </tr></thead><tbody id="evBody"></tbody></table>
+    </div>
+
+    <div class="pf-section">
+        <div class="pf-title">🎯 WIN5の実績</div>
+        <table class="pf-table"><thead><tr>
+            <th>予測日時</th><th>点数</th><th>推定的中率</th><th>配分</th><th>軸</th>
+            <th>レース別 (○=勝ち馬を含む)</th><th>WIN5</th>
+        </tr></thead><tbody id="w5Body"></tbody></table>
+    </div>
+
+    <div class="pf-section">
+        <div class="pf-title">日別内訳</div>
+        <table class="pf-table"><thead><tr>
+            <th>日付</th><th>アプリ</th><th>版</th><th>設定</th>
+            <th>結果確定</th><th>単勝的中</th><th>複勝的中</th><th>単勝回収</th><th>複勝回収</th>
+        </tr></thead><tbody id="dayBody"></tbody></table>
+    </div>
+</div>
+
+<script>
+function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function roi(v) {
+    if (v == null) return '<span class="pf-meta">-</span>';
+    const cls = v >= 100 ? 'roi-good' : 'roi-bad';
+    return `<span class="${cls}">${v.toFixed(1)}%</span>`;
+}
+function pct(v) { return v == null ? '<span class="pf-meta">-</span>' : v.toFixed(1) + '%'; }
+
+async function load() {
+    document.getElementById('status').textContent = '読み込み中...';
+    try {
+        const d = await (await fetch('/api/perf')).json();
+        if (d.error) throw new Error(d.error);
+        document.getElementById('status').textContent =
+            `結果待ちレース: ${d.pending_races}件 (レース終了後に自動取り込み・数分〜数時間で確定)`;
+
+        document.getElementById('sumBody').innerHTML = (d.summary || []).map(s => `
+            <tr><td>${esc(s.app)}</td><td class="left">${esc(s.model)}</td>
+                <td>${esc(s.version)}</td><td><span class="pf-badge">${esc(s.config)}</span></td>
+                <td>${esc(s.period)}</td><td>${s.races}</td><td>${s.settled}</td>
+                <td>${pct(s.win_rate)}</td><td>${pct(s.top3_rate)}</td>
+                <td>${roi(s.tan_roi)}</td><td>${roi(s.fuku_roi)}</td></tr>`).join('')
+            || '<tr><td colspan="11" class="pf-meta">まだ予測記録がありません</td></tr>';
+
+        const ev = d.ev || {sum: {}, rows: []};
+        const es = ev.sum;
+        document.getElementById('evSum').innerHTML = es.n
+            ? `通知 <b>${es.n}</b>件 / 結果確定 ${es.settled}件` + (es.settled
+                ? ` — 単勝的中 ${(100*es.win/es.settled).toFixed(1)}% ${roi(es.tan_ret/es.settled)}
+                    / 複勝的中 ${(100*es.top3/es.settled).toFixed(1)}% ${roi(es.fuku_ret/es.settled)}
+                    <span class="pf-meta">(バックテスト: 単勝回収158.6%/100.1%)</span>` : '')
+            : '<span class="pf-meta">まだ通知実績がありません (発走15分/5分前にEV≥閾値の馬が出ると記録されます)</span>';
+        document.getElementById('evBody').innerHTML = (ev.rows || []).map(r => `
+            <tr><td>${esc(r.at)}</td><td class="left">${esc(r.race_id)}</td><td>${esc(r.horse)}</td>
+                <td>${r.ev?.toFixed(2) ?? '-'}</td><td>${r.prob != null ? (r.prob*100).toFixed(0)+'%' : '-'}</td>
+                <td>${r.odds ?? '-'}</td><td>${r.pop ?? '-'}</td>
+                <td>${r.result == null ? '<span class="pf-meta">待ち</span>'
+                     : r.result === 1 ? '<span class="hit-y">1着</span>'
+                     : r.result <= 3 ? `<span class="hit-y">${r.result}着</span>` : `<span class="hit-n">${r.result}着</span>`}</td>
+                <td>${r.win_payout ? r.win_payout + '円' : '-'}</td>
+                <td>${r.place_payout ? r.place_payout + '円' : '-'}</td></tr>`).join('')
+            || '<tr><td colspan="10" class="pf-meta">なし</td></tr>';
+
+        document.getElementById('w5Body').innerHTML = (d.win5 || []).map(w => `
+            <tr><td>${esc(w.created_at)}</td><td>${w.points}/${w.budget}</td>
+                <td>${w.est != null ? (w.est*100).toFixed(2)+'%' : '-'}</td>
+                <td>${esc(w.method)}</td><td>${w.single_axis ? '軸1頭' : '-'}</td>
+                <td>${w.hits.map(h => h == null ? '<span class="pf-meta">待</span>'
+                     : h ? '<span class="hit-y">○</span>' : '<span class="hit-n">×</span>').join(' ')}</td>
+                <td>${!w.all_settled ? '<span class="pf-meta">確定待ち</span>'
+                     : w.win5_hit ? '<span class="hit-y">的中!</span>' : '<span class="hit-n">不的中</span>'}</td></tr>`).join('')
+            || '<tr><td colspan="7" class="pf-meta">まだWIN5予測の記録がありません</td></tr>';
+
+        document.getElementById('dayBody').innerHTML = (d.daily || []).map(s => `
+            <tr><td>${esc(s.date)}</td><td>${esc(s.app)}</td><td>${esc(s.version)}</td>
+                <td><span class="pf-badge">${esc(s.config)}</span></td><td>${s.settled}</td>
+                <td>${pct(s.win_rate)}</td><td>${pct(s.top3_rate)}</td>
+                <td>${roi(s.tan_roi)}</td><td>${roi(s.fuku_roi)}</td></tr>`).join('')
+            || '<tr><td colspan="9" class="pf-meta">なし</td></tr>';
+    } catch (e) {
+        document.getElementById('status').textContent = 'エラー: ' + e.message;
+    }
+}
+load();
+setInterval(load, 120000);
+</script>
+</body>
+</html>
