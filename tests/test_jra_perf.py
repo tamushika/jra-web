@@ -79,6 +79,55 @@ def test_perf_api_validates_date_and_allows_empty_day(tmp_path, monkeypatch):
     assert payload["pending_races"] == 0
 
 
+def test_collect_win5_hits_use_horse_numbers_selection_schema(tmp_path, monkeypatch):
+    # win5_predictions.selections_json entries are dicts written by jra_win5.py as
+    # {"race_id": ..., "horse_numbers": [...]} -- collect() must read that key
+    # (not the unrelated "nums" key from jra_ev.py's combination payloads) or every
+    # selection is treated as empty and every race reads as a miss.
+    store = LoggingStore(tmp_path / "win5.db")
+    store.initialize()
+    race_date = "20260712"
+    race_ids = [f"{race_date}:小倉:10", f"{race_date}:福島:10", f"{race_date}:函館:11",
+                f"{race_date}:小倉:11", f"{race_date}:福島:11"]
+    for idx, race_id in enumerate(race_ids):
+        venue = race_id.split(":")[1]
+        race_no = int(race_id.split(":")[2])
+        store.save_race(race_id=race_id, race_date=race_date, venue=venue, race_no=race_no)
+        winner_num = 7
+        store.save_race_results([
+            {
+                "race_id": race_id, "horse_id": f"{race_id}:{winner_num:02d}", "horse_name": "勝ち馬",
+                "finish_position": 1, "official_status": "official", "win_payout": 300,
+                "place_payout": 130, "result_fetched_at": datetime.now().astimezone(),
+                "source_hash": f"{race_id}:1", "data_quality_flags": [],
+            },
+        ])
+
+    # Selections include the winning number (7) only for 福島10R and 福島11R.
+    selections = [
+        {"race_id": race_ids[0], "horse_numbers": [1, 2]},
+        {"race_id": race_ids[1], "horse_numbers": [7, 3]},
+        {"race_id": race_ids[2], "horse_numbers": [4, 5]},
+        {"race_id": race_ids[3], "horse_numbers": [9]},
+        {"race_id": race_ids[4], "horse_numbers": [7, 11]},
+    ]
+    store.save_win5_prediction(
+        prediction_run_ids=["run1", "run2", "run3", "run4", "run5"],
+        race_ids=race_ids, budget=200, total_points=200,
+        selections=selections, coverage=[0.5] * 5,
+        estimated_hit_rate=0.07, allocation_method="prob", allocation_version=1,
+        single_axis=True, axis_index=None, idempotency_key="plan-key")
+
+    monkeypatch.setattr(jra_perf, "DB_PATH", str(store.db_path))
+    result = jra_perf.collect("2026-07-12")
+
+    assert len(result["win5"]) == 1
+    entry = result["win5"][0]
+    assert entry["all_settled"] is True
+    assert entry["hits"] == [False, True, False, False, True]
+    assert entry["win5_hit"] is False
+
+
 def test_result_sync_api_uses_selected_date(tmp_path, monkeypatch):
     store = LoggingStore(tmp_path / "sync-api.db")
     store.initialize()

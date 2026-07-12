@@ -250,7 +250,7 @@ def collect(race_date=None):
                 settled_all = False
                 hit_flags.append(None)
             else:
-                nums = sel if isinstance(sel, list) else sel.get("nums", [])
+                nums = sel if isinstance(sel, list) else sel.get("horse_numbers", sel.get("nums", []))
                 hit_flags.append(winner in [int(x) for x in nums])
         win5.append({
             "created_at": w["created_at"][:16], "budget": w["budget"],
