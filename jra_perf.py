@@ -22,6 +22,7 @@ import sys
 import threading
 import webbrowser
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 
 from flask import Flask, jsonify, request, send_from_directory
 
@@ -56,6 +57,24 @@ def _score_of(p):
 
 def _iso_date(compact):
     return f"{compact[:4]}-{compact[4:6]}-{compact[6:8]}" if compact else None
+
+
+_JST = timezone(timedelta(hours=9))
+
+
+def _to_jst(iso_str):
+    """UTC ISO 8601文字列 ("...Z" / "+00:00" / タイムゾーン無しnaive) を
+    JSTの "YYYY-MM-DD HH:MM" 文字列に変換する。パース不能な場合は元の文字列を返す。"""
+    if not iso_str:
+        return iso_str
+    try:
+        s = iso_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(_JST).strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return iso_str
 
 
 def collect(race_date=None):
@@ -220,7 +239,7 @@ def collect(race_date=None):
             ev_rows.append({
                 "race_id": e["race_id"], "horse": e["horse_id"].split(":")[-1],
                 "ev": e["ev"], "prob": e["win_probability"], "odds": e["win_odds"],
-                "pop": e["popularity"], "at": (e["evaluated_at"] or "")[:16],
+                "pop": e["popularity"], "at": _to_jst(e["evaluated_at"]) or "",
                 "result": (res["finish_position"] if settled else None),
                 "win_payout": (res["win_payout"] if settled else None),
                 "place_payout": (res["place_payout"] if settled else None),
@@ -253,7 +272,7 @@ def collect(race_date=None):
                 nums = sel if isinstance(sel, list) else sel.get("horse_numbers", sel.get("nums", []))
                 hit_flags.append(winner in [int(x) for x in nums])
         win5.append({
-            "created_at": w["created_at"][:16], "budget": w["budget"],
+            "created_at": _to_jst(w["created_at"]), "budget": w["budget"],
             "points": w["total_points"], "est": w["estimated_hit_rate"],
             "method": w["allocation_method"], "single_axis": bool(w["single_axis"]),
             "hits": hit_flags, "all_settled": settled_all,

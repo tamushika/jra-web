@@ -4,6 +4,22 @@ import jra_perf
 from api.logging_store import LoggingStore
 
 
+def test_to_jst_converts_z_suffix():
+    assert jra_perf._to_jst("2026-07-12T05:40:12.345Z") == "2026-07-12 14:40"
+
+
+def test_to_jst_converts_offset_suffix():
+    assert jra_perf._to_jst("2026-07-12T05:40:12+00:00") == "2026-07-12 14:40"
+
+
+def test_to_jst_treats_naive_as_utc():
+    assert jra_perf._to_jst("2026-07-12T05:40:12") == "2026-07-12 14:40"
+
+
+def test_to_jst_returns_original_on_parse_failure():
+    assert jra_perf._to_jst("not-a-timestamp") == "not-a-timestamp"
+
+
 def _seed_prediction(store, race_id, race_date, *, with_result):
     venue = race_id.split(":")[1]
     race_no = int(race_id.split(":")[2])
