@@ -50,6 +50,7 @@ except ImportError:
 import scoring  # noqa: E402
 from index import analyze_race_url, build_matrix_data  # noqa: E402
 from combo_probs import wide_candidates  # noqa: E402
+from port_guard import ensure_port_free  # noqa: E402
 from result_service import ResultNotReady, fetch_and_save_result  # noqa: E402
 try:
     from logging_store import LoggingStore, config_hash  # noqa: E402
@@ -76,7 +77,10 @@ STATE = {
     "races": {},                 # rid -> race record
     "alerts": [],                # {id, ts, stage, rid, label, picks}
     "params": {"ev_threshold": 1.3, "max_odds": 50.0, "min_prob": 0.02,
-               "wide_overlay": 1.6},
+               # ワイドは2026-07-13の再検証で運用停止 (2026H1フル期間で回収66.6%。
+               # 採用根拠だった110%は4-6月サブセット+2025年統計リークの見かけと判明)。
+               # 再開する場合は数値を戻す前に docs/TASKS.md の再検証記録を確認すること。
+               "wide_overlay": None},
 }
 _SCHEDULER_STARTED = [False]
 
@@ -170,12 +174,15 @@ def compute_picks(horses, params):
 
 def compute_wide_picks(horses, params):
     """ワイド候補 (overlay >= wide_overlay の全組み合わせ)。
-    backtest_combo検証: overlay>=1.6 全買いで 2025年110.1% / 2026年110.0%"""
+    2026-07-13 運用停止 (params["wide_overlay"]=None): 2026H1フル再検証で回収66.6%。
+    当初の採用根拠 (2025年110.1%/2026年110.0%) は統計リークとApr-Junサブセットの見かけだった"""
+    if params.get("wide_overlay") is None:
+        return []
     try:
         cands = wide_candidates(
             [h.get("win_prob") for h in horses],
             [_to_float(h.get("odds")) for h in horses],
-            overlay_min=params.get("wide_overlay", 1.6))
+            overlay_min=params["wide_overlay"])
     except Exception as e:
         print(f"[WARN] wide計算失敗: {e}")
         return []
@@ -795,6 +802,7 @@ if __name__ == "__main__":
               "(届かない場合は EV_LINE_CHANNEL_TOKEN と友だち追加を確認)")
         sys.exit(0)
 
+    ensure_port_free(PORT, "期待値レース監視サーバー")
     url = f"http://localhost:{PORT}"
     print("=" * 55)
     print("  期待値レース監視 (Webスコア × MLスコア)")

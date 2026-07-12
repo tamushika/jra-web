@@ -263,7 +263,7 @@ function render() {
     const dayLabel = races.length && races[0].day_label ? ` (${races[0].day_label})` : '';
     document.getElementById('summary').innerHTML =
         races.length ? `期待値馬のいるレース: <b>${nPick}</b> / ${races.length}レース${esc(dayLabel)}
-            <span class="ev-meta">金枠=期待値馬あり / 薄色=EV最上位馬 / <span style="color:#7ec8e3;">W=ワイド候補 (overlay≥1.6全買いで検証110%)</span></span>` : '';
+            <span class="ev-meta">金枠=期待値馬あり / 薄色=EV最上位馬 (2026-07-13 ワイド候補表示は再検証により停止中)</span>` : '';
     const area = document.getElementById('raceArea');
     if (!races.length) { area.innerHTML = ''; return; }
 

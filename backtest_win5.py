@@ -102,7 +102,8 @@ def parse_final_odds(win_pay, rank):
     return None
 
 
-def score_all_runners(runs, date_from, cfg, rate_key="win_rate"):
+def score_all_runners(runs, date_from, cfg, rate_key="win_rate",
+                      factor_table_provider=None):
     """
     評価期間の全出走に WIN5スコア (bias: jockey/frame + 能力 + 市場) を付与。
     rate_key: バイアス統計の参照率 ("win_rate" / "show_rate")
@@ -134,7 +135,10 @@ def score_all_runners(runs, date_from, cfg, rate_key="win_rate"):
     def get_ftable(place, track, dist):
         key = (place, track, dist)
         if key not in ftables:
-            ftables[key] = scoring.load_factor_table(place, track, dist, API_DIR)
+            if factor_table_provider is None:
+                ftables[key] = scoring.load_factor_table(place, track, dist, API_DIR)
+            else:
+                ftables[key] = factor_table_provider(place, track, dist)
         return ftables[key]
 
     jmatcher = JockeyMatcher()
@@ -352,7 +356,23 @@ def main():
                     help="win5_ml_model.json のMLスコアで評価 (デフォルトは手調整スコア)")
     ap.add_argument("--ninki", action="store_true",
                     help="ベースライン: 人気順 (popularity列) をスコアとして評価")
+    ap.add_argument("--fold-stats", action="store_true",
+                    help="コース統計を評価年前年末以前のability.dbから再集計")
+    ap.add_argument("--stats-as-of", default=None, metavar="YYYYMMDD",
+                    help="--fold-stats の統計締切日 (既定: 評価年の前年末)")
     args = ap.parse_args()
+
+    if args.fold_stats and args.write:
+        ap.error("--fold-stats は評価専用です。--write と同時には指定できません")
+    if args.fold_stats and args.ninki:
+        ap.error("人気順はコース統計を使いません。--fold-stats は指定不要です")
+    if args.fold_stats and args.ml:
+        ap.error("MLの現行/fold比較は backtest_fold_stats.py を使用してください")
+    if args.fold_stats and (len(args.date_from) != 8 or not args.date_from.isdigit()
+                            or len(args.date_to) != 8 or not args.date_to.isdigit()):
+        ap.error("--fold-stats の --from/--to は YYYYMMDD で指定してください")
+    if args.fold_stats and args.date_from[:4] != args.date_to[:4]:
+        ap.error("--fold-stats は1評価年ずつ実行してください (年跨ぎ不可)")
 
     cfg = load_win5_cfg()
     upset_map = load_upset_map()
@@ -363,6 +383,23 @@ def main():
     runs = load_runs(conn, args.date_from, args.date_to)
     conn.close()
     print(f"ロード: {len(runs)}行 / スコア付与中...")
+
+    factor_table_provider = None
+    if args.fold_stats:
+        from fold_stats import FoldFactorTableProvider, fold_as_of_for
+        expected_as_of = fold_as_of_for(args.date_from)
+        stats_as_of = args.stats_as_of or expected_as_of
+        if len(stats_as_of) != 8 or not stats_as_of.isdigit():
+            ap.error("--stats-as-of は YYYYMMDD で指定してください")
+        if stats_as_of > expected_as_of:
+            ap.error(f"未来情報防止のため --stats-as-of は {expected_as_of} 以下にしてください")
+        factor_table_provider = FoldFactorTableProvider(
+            DB_PATH, stats_as_of,
+            pedigree_cache_path=os.path.join(BASE_DIR, "pedigree_cache.json"),
+            legacy_api_dir=API_DIR,
+        )
+        print(f"fold統計: {factor_table_provider.stats_from}-{stats_as_of} / "
+              f"{factor_table_provider.course_count}コース (ability.db)")
 
     if args.ninki:
         # ベースライン: 人気順そのまま (1番人気=最高スコア)。人気欠損は最下位扱い
@@ -381,11 +418,15 @@ def main():
             races[key].append((float(s), m))
         print(f"MLスコア使用 (win5_ml_model.json, {model['meta']['trained_at']})")
     else:
-        races = score_all_runners(runs, args.date_from, cfg)
+        races = score_all_runners(
+            runs, args.date_from, cfg,
+            factor_table_provider=factor_table_provider)
     print(f"評価レース: {len(races)}")
 
     coverage, n_races = measure_coverage(races, upset_map)
     mode_label = "人気順ベースライン" if args.ninki else ("MLスコア" if args.ml else "手調整スコア")
+    if args.fold_stats:
+        mode_label += "・fold統計"
     print_coverage_table(coverage, n_races,
                           f"勝ち馬カバレッジ (9R以降・8頭以上, P(勝ち馬がスコア上位k頭)) [{mode_label}]")
 

@@ -29,6 +29,7 @@ import scoring  # noqa: E402
 from scoring import VENUE_SLUG_MAP  # noqa: E402
 from index import analyze_race_url, _scrape_win5_target, _find_win5_urls  # noqa: E402
 from logging_store import LoggingStore, config_hash  # noqa: E402
+from port_guard import ensure_port_free  # noqa: E402
 from prediction_logging import log_race_prediction  # noqa: E402
 
 PORT = 5002
@@ -441,6 +442,7 @@ def win5_watch_state():
 # ─── 起動 ────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    ensure_port_free(PORT, "WIN5予想サーバー")
     url = f"http://localhost:{PORT}"
     print("=" * 55)
     print("  WIN5予想 (スコアリング + 荒れ度配分)")

@@ -2,7 +2,10 @@ Flask==3.0.0
 flask-cors==4.0.0
 beautifulsoup4==4.12.3
 requests==2.31.0
+numpy==1.26.4
 pandas==2.2.0
+scipy==1.12.0
+scikit-learn==1.4.2
 google-generativeai==0.4.0
 
 psycopg2-binary

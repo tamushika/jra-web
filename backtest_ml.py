@@ -42,6 +42,7 @@ DB_PATH = os.path.join(BASE_DIR, "ability.db")
 
 TRAIN_FROM, TRAIN_TO = "20210101", "20241231"
 TEST_FROM, TEST_TO = "20250101", "20251231"
+ADDITIONAL_TEST_FROM, ADDITIONAL_TEST_TO = "20260101", "20260630"
 
 FEATURES = ["j_pts", "f_pts", "tfeat", "cfeat", "agari_flag", "ln_odds",
             "prev_rank", "ln_interval", "age", "is_male", "kinryo", "weight",
@@ -56,6 +57,9 @@ FEATURES = ["j_pts", "f_pts", "tfeat", "cfeat", "agari_flag", "ln_odds",
             # 血統 (horse_pedigree バックフィル完了後に有効化。カバレッジ不足時は全0
             # = 定数列 → StandardScaler が scale=1 で無害化し、係数もほぼ0になる)
             "sire_pts"]    # 種牡馬×コースバイアス点 (db-keiba father_w)
+
+# M2は市場情報だけを外した診断モデル。本番モデルのFEATURESは変更しない。
+NO_MARKET_FEATURES = [name for name in FEATURES if name != "ln_odds"]
 
 PEDIGREE_MIN_COVERAGE = 0.70  # 評価出走の血統判明率がこれ未満なら sire_pts は無効のまま
 
@@ -392,6 +396,245 @@ def build_prob_races(scores, race_keys, meta, temp=1.0):
     return out
 
 
+def feature_matrix(X, feature_names):
+    """FEATURES順の行列から、指定した特徴量だけを同じ順序で取り出す。"""
+    unknown = [name for name in feature_names if name not in FEATURES]
+    if unknown:
+        raise ValueError(f"未知の特徴量: {unknown}")
+    indices = [FEATURES.index(name) for name in feature_names]
+    return np.asarray(X)[:, indices]
+
+
+def _softmax(scores, temperature=1.0):
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
+    values = np.asarray(scores, dtype=float) / temperature
+    values -= values.max()
+    exp_values = np.exp(values)
+    return exp_values / exp_values.sum()
+
+
+def _rank_positions(order):
+    positions = [0] * len(order)
+    for rank, member_index in enumerate(order, 1):
+        positions[member_index] = rank
+    return positions
+
+
+def _spearman_orders(left_order, right_order):
+    """同一メンバーの2順位についてSpearman相関を返す。"""
+    left = np.asarray(_rank_positions(left_order), dtype=float)
+    right = np.asarray(_rank_positions(right_order), dtype=float)
+    left -= left.mean()
+    right -= right.mean()
+    denom = math.sqrt(float(left @ left) * float(right @ right))
+    return float(left @ right) / denom if denom else None
+
+
+def build_model_comparison_races(current_scores, m2_scores, race_keys, meta,
+                                  date_from, date_to, current_temp=1.0,
+                                  m2_temp=1.0, min_r=9):
+    """M0/現行CL/M2を完全に同じレース・出走馬で比較できる形へまとめる。
+
+    市場確率に必要な全馬の確定オッズ、モデルに必要な全馬の特徴量が揃わない
+    レースは比較対象から除く。順位評価のM0はJRA人気順、確率評価のM0は
+    レース内で正規化した1/oddsを使う。
+    """
+    grouped = defaultdict(list)
+    for current, m2, key, runner in zip(current_scores, m2_scores, race_keys, meta):
+        if date_from <= key[0] <= date_to:
+            grouped[key].append((float(current), float(m2), runner))
+
+    skipped = defaultdict(int)
+    races = []
+    for key in sorted(grouped):
+        _date, _place, race_no = key
+        members = grouped[key]
+        if race_no is None or race_no < min_r or len(members) < 8:
+            skipped["filter"] += 1
+            continue
+
+        field_sizes = [int(m.get("total_horses") or 0) for _, _, m in members]
+        field_size = max(field_sizes, default=0)
+        if field_size and len(members) != field_size:
+            skipped["incomplete_features"] += 1
+            continue
+
+        winner_index = next(
+            (index for index, (_, _, runner) in enumerate(members)
+             if runner.get("rank") == 1), None)
+        if winner_index is None:
+            skipped["no_winner"] += 1
+            continue
+
+        odds = [parse_final_odds(runner.get("win_pay"), runner.get("rank"))
+                for _, _, runner in members]
+        if any(value is None or value <= 1.0 for value in odds):
+            skipped["missing_odds"] += 1
+            continue
+
+        inverse_odds = np.asarray([1.0 / value for value in odds], dtype=float)
+        market_probabilities = inverse_odds / inverse_odds.sum()
+        current_values = [value for value, _, _ in members]
+        m2_values = [value for _, value, _ in members]
+
+        def market_sort_key(index):
+            runner = members[index][2]
+            popularity = runner.get("popularity")
+            try:
+                popularity = int(popularity)
+            except (TypeError, ValueError):
+                popularity = 999
+            return popularity, odds[index], int(runner.get("umaban") or 99)
+
+        market_order = sorted(range(len(members)), key=market_sort_key)
+        current_order = sorted(range(len(members)),
+                               key=lambda index: (-current_values[index], index))
+        m2_order = sorted(range(len(members)),
+                          key=lambda index: (-m2_values[index], index))
+        races.append({
+            "key": key,
+            "winner_index": winner_index,
+            "market_order": market_order,
+            "current_order": current_order,
+            "m2_order": m2_order,
+            "market_probabilities": market_probabilities,
+            "current_probabilities": _softmax(current_values, current_temp),
+            "m2_probabilities": _softmax(m2_values, m2_temp),
+        })
+    return races, dict(skipped)
+
+
+def evaluate_model_comparison(races, kmax=4):
+    """同一レース集合のtop-k、レースLogLoss、馬単位Brierを集計する。"""
+    if not races:
+        return None
+    definitions = (
+        ("M0 人気順", "market_order", "market_probabilities"),
+        ("現行CL (オッズ込み)", "current_order", "current_probabilities"),
+        ("M2 (オッズなし)", "m2_order", "m2_probabilities"),
+    )
+    metrics = {}
+    for label, order_key, probability_key in definitions:
+        topk_hits = [0] * kmax
+        log_loss = 0.0
+        brier = 0.0
+        horse_count = 0
+        for race in races:
+            winner_index = race["winner_index"]
+            winner_position = race[order_key].index(winner_index) + 1
+            for k in range(kmax):
+                if winner_position <= k + 1:
+                    topk_hits[k] += 1
+            probabilities = np.asarray(race[probability_key], dtype=float)
+            log_loss -= math.log(max(1e-15, float(probabilities[winner_index])))
+            outcomes = np.zeros(len(probabilities), dtype=float)
+            outcomes[winner_index] = 1.0
+            brier += float(np.square(outcomes - probabilities).sum())
+            horse_count += len(probabilities)
+        metrics[label] = {
+            "coverage": [value / len(races) for value in topk_hits],
+            "log_loss": log_loss / len(races),
+            "brier": brier / horse_count,
+        }
+
+    correlations = [
+        _spearman_orders(race["m2_order"], race["market_order"])
+        for race in races
+    ]
+    correlations = [value for value in correlations if value is not None]
+    return {
+        "races": len(races),
+        "horses": sum(len(race["market_order"]) for race in races),
+        "models": metrics,
+        "m2_market_spearman": (
+            sum(correlations) / len(correlations) if correlations else None),
+        "spearman_races": len(correlations),
+    }
+
+
+def fit_cl_diagnostic_model(X, y, race_keys, dates, feature_names):
+    """2021-24学習・2024温度調整の固定分割でCL診断モデルを作る。"""
+    from sklearn.preprocessing import StandardScaler
+
+    matrix = feature_matrix(X, feature_names)
+    train = dates <= TRAIN_TO
+    scaler = StandardScaler().fit(matrix[train])
+    standardized_train = scaler.transform(matrix[train])
+    train_y = y[train]
+    train_keys = [key for key, selected in zip(race_keys, train) if selected]
+    weights = fit_conditional_logit(standardized_train, train_y, train_keys)
+
+    inner_train = dates[train] <= "20231231"
+    inner_weights = fit_conditional_logit(
+        standardized_train[inner_train], train_y[inner_train],
+        [key for key, selected in zip(train_keys, inner_train) if selected])
+    calibration = ~inner_train
+    temperature = fit_temperature(
+        standardized_train[calibration] @ inner_weights,
+        train_y[calibration],
+        [key for key, selected in zip(train_keys, calibration) if selected])
+    return {
+        "features": list(feature_names),
+        "scaler": scaler,
+        "weights": weights,
+        "temperature": temperature,
+    }
+
+
+def predict_cl_diagnostic_model(model, X):
+    matrix = feature_matrix(X, model["features"])
+    return model["scaler"].transform(matrix) @ model["weights"]
+
+
+def _print_no_market_period(title, races, skipped):
+    result = evaluate_model_comparison(races)
+    print(f"\n===== {title} (9R以降・8頭以上・全馬オッズ/特徴量あり) =====")
+    if result is None:
+        print("対象レースなし")
+        return
+    print(f"同一比較集団: {result['races']}レース / {result['horses']}出走"
+          f" / 除外 {sum(skipped.values())}レース {skipped}")
+    print(f"{'model':24s} | k=1   k=2   k=3   k=4")
+    for label, values in result["models"].items():
+        coverage = "  ".join(f"{100.0*value:4.1f}" for value in values["coverage"])
+        print(f"{label:24s} | {coverage}")
+    print("\nmodel                    | Race LogLoss | Brier (馬単位)")
+    for label, values in result["models"].items():
+        print(f"{label:24s} | {values['log_loss']:12.6f} | {values['brier']:.8f}")
+    rho = result["m2_market_spearman"]
+    print(f"\nM2順位×市場人気順位 Spearman (レース内平均): "
+          f"{rho:.4f} (n={result['spearman_races']})")
+
+
+def run_no_market_diagnostic(X, y, race_keys, meta, dates):
+    """本番へ保存せず、現行CLとM2を固定分割で比較・報告する。"""
+    if "ln_odds" in NO_MARKET_FEATURES or len(NO_MARKET_FEATURES) != len(FEATURES) - 1:
+        raise AssertionError("M2特徴量はln_oddsだけを除外する必要があります")
+
+    print(f"特徴量: 現行 {len(FEATURES)}次元 / M2 {len(NO_MARKET_FEATURES)}次元 "
+          "(除外: ln_odds)")
+    current_model = fit_cl_diagnostic_model(X, y, race_keys, dates, FEATURES)
+    m2_model = fit_cl_diagnostic_model(X, y, race_keys, dates, NO_MARKET_FEATURES)
+    current_scores = predict_cl_diagnostic_model(current_model, X)
+    m2_scores = predict_cl_diagnostic_model(m2_model, X)
+    print("温度キャリブレーション (21-23学習→24調整): "
+          f"現行 τ={current_model['temperature']:.2f} / M2 τ={m2_model['temperature']:.2f}")
+    print("M2係数 (標準化後、|係数|順):")
+    for name, coefficient in sorted(
+            zip(NO_MARKET_FEATURES, m2_model["weights"]), key=lambda item: -abs(item[1])):
+        print(f"  {name:12s}: {coefficient:+.3f}")
+
+    for title, date_from, date_to in (
+            ("固定テスト 2025年", TEST_FROM, TEST_TO),
+            ("追加確認 2026H1", ADDITIONAL_TEST_FROM, ADDITIONAL_TEST_TO)):
+        races, skipped = build_model_comparison_races(
+            current_scores, m2_scores, race_keys, meta, date_from, date_to,
+            current_temp=current_model["temperature"],
+            m2_temp=m2_model["temperature"])
+        _print_no_market_period(title, races, skipped)
+
+
 def report_calibration(prob_races, kmax=4, min_r=9):
     """予測カバレッジ (上位k頭の勝率和の平均) と実測カバレッジを比較"""
     pred_sum = [0.0] * kmax
@@ -527,28 +770,49 @@ def report_skip_analysis(day_records, budgets):
                   f"{100.0*len(hits)/len(buy):5.1f}% | {roi:6.1f}%")
 
 
-def main():
-    # 特徴量一致テストは学習器を使わないため、重い任意依存は実行時だけ読み込む。
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.preprocessing import StandardScaler
-
+def parse_cli_args(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--write", action="store_true",
                     help="全期間で再学習してモデルJSONを出力")
     ap.add_argument("--lgbm", action="store_true",
                     help="LightGBM LambdaRank も学習して比較 (要 lightgbm)")
-    args = ap.parse_args()
+    ap.add_argument("--no-market", action="store_true",
+                    help="ln_oddsを除外したM2を現行CL・市場人気と比較")
+    args = ap.parse_args(argv)
+    if args.no_market and args.write:
+        ap.error("--no-market と --write は同時に指定できません (M2は本番保存禁止)")
+    return args
+
+
+def main():
+    # 特徴量一致テストは学習器を使わないため、重い任意依存は実行時だけ読み込む。
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import StandardScaler
+
+    args = parse_cli_args()
 
     cfg = load_win5_cfg()
     upset_map = load_upset_map()
 
     conn = sqlite3.connect(DB_PATH)
-    runs = load_runs(conn, TRAIN_FROM, TEST_TO)
+    data_to = ADDITIONAL_TEST_TO if args.no_market else TEST_TO
+    runs = load_runs(conn, TRAIN_FROM, data_to)
     conn.close()
     print(f"ロード: {len(runs)}行")
 
     X, y, race_keys, meta = build_dataset(runs, TRAIN_FROM, cfg)
     dates = np.array([k[0] for k in race_keys])
+    if args.no_market:
+        train = dates <= TRAIN_TO
+        fixed_test = (dates >= TEST_FROM) & (dates <= TEST_TO)
+        additional_test = ((dates >= ADDITIONAL_TEST_FROM)
+                           & (dates <= ADDITIONAL_TEST_TO))
+        print(f"固定分割: 学習2021-24 {train.sum()}出走 / "
+              f"固定テスト2025 {fixed_test.sum()}出走 / "
+              f"追加確認2026H1 {additional_test.sum()}出走")
+        run_no_market_diagnostic(X, y, race_keys, meta, dates)
+        return
+
     tr = dates <= TRAIN_TO
     te = dates >= TEST_FROM
     print(f"特徴量: {len(FEATURES)}次元 / 学習 {tr.sum()}出走 / 検証 {te.sum()}出走")

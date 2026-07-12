@@ -31,6 +31,8 @@ from bs4 import BeautifulSoup
 API_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api")
 if API_DIR not in sys.path:
     sys.path.insert(0, API_DIR)
+from port_guard import ensure_port_free
+
 try:
     from logging_store import LoggingStore
     from result_service import parse_result_html
@@ -1085,4 +1087,5 @@ def main():
 
 
 if __name__ == "__main__":
+    ensure_port_free(PORT, "JRAレース結果ツール")
     main()
