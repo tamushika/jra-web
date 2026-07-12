@@ -70,6 +70,7 @@
 | T22 | コース辞典PDF抽出の完走 | `extract_waku_rail.py` を日を分けて実行 (Gemini無料枠制限、23/269で停滞中)。完走後 `--build` | 実行のみ×数日 | 人手 (実行) → 下位モデル (--build確認) | ⬜ |
 | T23 | 血統ありcriteria再マイニング | 血統条件を含めたルール採掘 (T15と統合可) | 0.5-1日 | Codex → 上位モデル採否 | ⬜ |
 | T24 | 書籍血統ルールの解禁検証 | criteria.csv の血統ルールをsire_pts採用後の状態でOOS再検証 | 0.5日 | 下位モデル実行 → 上位モデル採否 | ⬜ |
+| T28 | サーバー起動時のポート二重バインド防止 | 5003/5004でSO_REUSEADDRにより新旧プロセスが同一ポートに同居し古いコードが応答し続ける事故が2回発生。jra_ev.py/jra_perf.py/jra_win5.py/api起動時に既存リスナー検出でエラー終了するガードを追加 | 1-2h | Codex or 下位モデル → 上位モデル | ⬜ |
 | T25 | ev_log_report.py のSQLite付け替え | Neon ev_alert_log が書き込み不全で全期間0件のため、レポートをSQLiteロギング基盤に一本化。仕様書: [codex/SPEC-T25](codex/SPEC-T25-ev-log-report-sqlite.md) | 2-4h | Codex → 上位モデル | 📋 仕様書済み (Codex渡し待ち) |
 | T26 | 未コミット変更の棚卸し・コミット | 別セッションのロギング基盤 (api/logging_store.py, result_service.py, prediction_logging.py, reporting.py, tests/ が未追跡。jra_ev.py/jra_perf.py 等9ファイル約400行が未コミット) + T3実装分。レビューして一括コミット | 2-3h | 上位モデル (レビュー・コミット判断) | ✅ 2026-07-13 |
 
