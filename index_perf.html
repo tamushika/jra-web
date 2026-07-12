@@ -88,6 +88,17 @@
         </tr></thead><tbody id="w5Body"></tbody></table>
     </div>
 
+    <div class="pf-section" id="daysSection">
+        <div class="pf-title">📅 日別実績</div>
+        <div class="pf-meta" style="margin-bottom:6px;">
+            日付ごとにモデル別の的中率・回収率、EV通知実績、WIN5実績をまとめます (全期間表示のときのみ表示、日付クリックでその日にフィルタ)。
+        </div>
+        <table class="pf-table"><thead><tr>
+            <th>日付</th><th>区分</th><th>詳細</th><th>対象</th>
+            <th>単勝的中率</th><th>単勝回収</th><th>複勝回収</th><th>備考</th>
+        </tr></thead><tbody id="daysBody"></tbody></table>
+    </div>
+
     <div class="pf-section">
         <div class="pf-title">日別内訳</div>
         <table class="pf-table"><thead><tr>
@@ -146,6 +157,52 @@ function showAll() {
     document.getElementById('dateFilter').value = '';
     setUrlDate('');
     load();
+}
+function jumpToDate(value) {
+    document.getElementById('dateFilter').value = value;
+    setUrlDate(value);
+    load();
+}
+
+function renderDays(days) {
+    const rows = [];
+    (days || []).forEach(day => {
+        const items = [];
+        (day.models || []).forEach(m => items.push({
+            kind: 'モデル', detail: `${esc(m.app)} / ${esc(m.model)} ${esc(m.version)}`,
+            target: `${m.races}走 (確定${m.settled})`,
+            win: pct(m.win_rate), tan: roi(m.tan_roi), fuku: roi(m.fuku_roi), note: '',
+        }));
+        if (day.ev) {
+            const e = day.ev;
+            items.push({
+                kind: '🔔 EV通知', detail: `アラート ${e.n}頭`, target: `確定${e.settled} / 単勝${e.win}的中`,
+                win: e.settled ? pct(100 * e.win / e.settled) : '<span class="pf-meta">-</span>',
+                tan: roi(e.tan_roi), fuku: roi(e.fuku_roi), note: '',
+            });
+        }
+        if (day.win5) {
+            const w = day.win5;
+            items.push({
+                kind: '🎯 WIN5', detail: `${w.hits}/${w.total}`, target: '-',
+                win: '<span class="pf-meta">-</span>', tan: '<span class="pf-meta">-</span>',
+                fuku: '<span class="pf-meta">-</span>',
+                note: !w.all_settled ? '<span class="pf-meta">確定待ち</span>'
+                    : (w.win5_hit ? '<span class="hit-y">的中!</span>' : '<span class="hit-n">不的中</span>'),
+            });
+        }
+        if (!items.length) return;
+        items.forEach((item, idx) => {
+            const dateCell = idx === 0
+                ? `<td rowspan="${items.length}"><a href="#" onclick="event.preventDefault(); jumpToDate('${esc(day.date)}');">${esc(dateFmt(day.date))}</a></td>`
+                : '';
+            rows.push(`<tr>${dateCell}
+                <td class="left">${item.kind}</td><td class="left">${item.detail}</td><td>${item.target}</td>
+                <td>${item.win}</td><td>${item.tan}</td><td>${item.fuku}</td><td>${item.note}</td></tr>`);
+        });
+    });
+    document.getElementById('daysBody').innerHTML = rows.join('')
+        || '<tr><td colspan="8" class="pf-meta">なし</td></tr>';
 }
 
 async function load() {
@@ -209,6 +266,14 @@ async function load() {
                 <td>${!w.all_settled ? '<span class="pf-meta">確定待ち</span>'
                      : w.win5_hit ? '<span class="hit-y">的中!</span>' : '<span class="hit-n">不的中</span>'}</td></tr>`).join('')
             || '<tr><td colspan="7" class="pf-meta">まだWIN5予測の記録がありません</td></tr>';
+
+        const daysSection = document.getElementById('daysSection');
+        if (d.selected_date) {
+            daysSection.style.display = 'none';
+        } else {
+            daysSection.style.display = '';
+            renderDays(d.days);
+        }
 
         document.getElementById('dayBody').innerHTML = (d.daily || []).map(s => `
             <tr><td>${esc(dateFmt(s.date))}</td><td>${esc(s.app)}</td><td>${esc(s.version)}</td>

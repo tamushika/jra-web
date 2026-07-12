@@ -144,6 +144,67 @@ def test_collect_win5_hits_use_horse_numbers_selection_schema(tmp_path, monkeypa
     assert entry["win5_hit"] is False
 
 
+def test_collect_days_aggregates_models_ev_and_win5(tmp_path, monkeypatch):
+    # T30: collect() should also return a "days" list that combines, per calendar date,
+    # the model daily summary, a deduped EV-alert summary, and the latest WIN5 plan's
+    # hit count -- so the perf dashboard can show one row per day.
+    store = LoggingStore(tmp_path / "days.db")
+    race_date = "20260712"
+    race_id = f"{race_date}:東京:01"
+    _seed_prediction(store, race_id, race_date, with_result=True)
+
+    # EV: two alerts (15分前/5分前) for the same horse must collapse into 1 unique horse.
+    ev_run_id = store.start_run(
+        app_name="ev_monitor", model_name="ev_model", model_version="1",
+        started_at=datetime.fromisoformat("2026-07-12T02:00:00+00:00"))
+    store.save_odds([{"race_id": race_id, "horse_id": f"{race_id}:01", "win_odds": 3.5,
+                       "popularity": 1, "fetch_id": ev_run_id, "stage": "15min"}])
+    for key in ("alert-15min", "alert-5min"):
+        store.save_ev_evaluation(
+            prediction_run_id=ev_run_id, race_id=race_id, horse_id=f"{race_id}:01",
+            win_probability=0.4, ev=1.4, threshold=1.1, decision="alert",
+            idempotency_key=key)
+
+    # WIN5: two races on the same date -- one selection includes the winner, one doesn't.
+    race_id2 = f"{race_date}:函館:02"
+    store.save_race(race_id=race_id2, race_date=race_date, venue="函館", race_no=2)
+    store.save_race_results([
+        {
+            "race_id": race_id2, "horse_id": f"{race_id2}:03", "horse_name": "勝ち馬2",
+            "finish_position": 1, "official_status": "official", "win_payout": 250,
+            "place_payout": 120, "result_fetched_at": datetime.now().astimezone(),
+            "source_hash": f"{race_id2}:1", "data_quality_flags": [],
+        },
+    ])
+    store.save_win5_prediction(
+        prediction_run_ids=["r1", "r2"], race_ids=[race_id, race_id2], budget=100,
+        total_points=100,
+        selections=[{"race_id": race_id, "horse_numbers": [1]},
+                    {"race_id": race_id2, "horse_numbers": [9]}],
+        coverage=[0.5, 0.5], estimated_hit_rate=0.1, allocation_method="prob",
+        allocation_version=1, single_axis=True, axis_index=None, idempotency_key="win5-day-key")
+
+    monkeypatch.setattr(jra_perf, "DB_PATH", str(store.db_path))
+    result = jra_perf.collect()
+
+    day = next(d for d in result["days"] if d["date"] == "2026-07-12")
+
+    assert len(day["models"]) == 1
+    assert day["models"][0]["model"] == "test_model"
+    assert day["models"][0]["races"] == 1
+
+    assert day["ev"]["n"] == 1  # deduped: same horse alerted twice
+    assert day["ev"]["settled"] == 1
+    assert day["ev"]["win"] == 1
+    assert day["ev"]["tan_roi"] == 420.0
+    assert day["ev"]["fuku_roi"] == 150.0
+
+    assert day["win5"]["total"] == 2
+    assert day["win5"]["hits"] == 1
+    assert day["win5"]["all_settled"] is True
+    assert day["win5"]["win5_hit"] is False
+
+
 def test_result_sync_api_uses_selected_date(tmp_path, monkeypatch):
     store = LoggingStore(tmp_path / "sync-api.db")
     store.initialize()

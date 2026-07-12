@@ -77,6 +77,22 @@ def _to_jst(iso_str):
         return iso_str
 
 
+def _win5_hit_flags(race_ids, selections, results):
+    """WIN5の各レースについて「選択馬に勝ち馬が含まれるか」を判定する。
+    レース未確定 (勝ち馬不明) の場合は None、確定済みならTrue/Falseを返す。"""
+    hit_flags, settled_all = [], True
+    for rid, sel in zip(race_ids, selections):
+        winner = next((int(h.split(":")[-1]) for (r, h), res in results.items()
+                       if r == rid and res["finish_position"] == 1), None)
+        if winner is None:
+            settled_all = False
+            hit_flags.append(None)
+        else:
+            nums = sel if isinstance(sel, list) else sel.get("horse_numbers", sel.get("nums", []))
+            hit_flags.append(winner in [int(x) for x in nums])
+    return hit_flags, settled_all
+
+
 def collect(race_date=None):
     compact_date = normalize_race_date(race_date) if race_date else None
     conn = _conn()
@@ -223,6 +239,10 @@ def collect(race_date=None):
         ev_sql += " AND substr(e.race_id,1,8)=?"
         ev_params = (compact_date,)
     ev_sql += " ORDER BY e.evaluated_at DESC"
+    # 日別EV実績 (T30): 同一馬の重複アラート (15分前/5分前など) は馬単位に集約する
+    ev_by_date = defaultdict(lambda: {"n": 0, "settled": 0, "win": 0, "top3": 0,
+                                       "tan_ret": 0, "fuku_ret": 0})
+    ev_seen_horses = set()
     for e in cur.execute(ev_sql, ev_params):
         res = results.get((e["race_id"], e["horse_id"]))
         settled = res is not None and res["finish_position"] is not None
@@ -235,6 +255,20 @@ def collect(race_date=None):
             if res["finish_position"] <= 3:
                 ev_sum["top3"] += 1
                 ev_sum["fuku_ret"] += res["place_payout"] or 0
+        horse_key = (e["race_id"], e["horse_id"])
+        if horse_key not in ev_seen_horses:
+            ev_seen_horses.add(horse_key)
+            edate = e["race_id"].split(":")[0]
+            eb = ev_by_date[edate]
+            eb["n"] += 1
+            if settled:
+                eb["settled"] += 1
+                if res["finish_position"] == 1:
+                    eb["win"] += 1
+                    eb["tan_ret"] += res["win_payout"] or 0
+                if res["finish_position"] <= 3:
+                    eb["top3"] += 1
+                    eb["fuku_ret"] += res["place_payout"] or 0
         if len(ev_rows) < 100:
             ev_rows.append({
                 "race_id": e["race_id"], "horse": e["horse_id"].split(":")[-1],
@@ -261,22 +295,58 @@ def collect(race_date=None):
         if len(win5) >= 30:
             break
         selections = json.loads(w["selections_json"])
-        hit_flags, settled_all = [], True
-        for rid, sel in zip(race_ids, selections):
-            winner = next((int(h.split(":")[-1]) for (r, h), res in results.items()
-                           if r == rid and res["finish_position"] == 1), None)
-            if winner is None:
-                settled_all = False
-                hit_flags.append(None)
-            else:
-                nums = sel if isinstance(sel, list) else sel.get("horse_numbers", sel.get("nums", []))
-                hit_flags.append(winner in [int(x) for x in nums])
+        hit_flags, settled_all = _win5_hit_flags(race_ids, selections, results)
         win5.append({
             "created_at": _to_jst(w["created_at"]), "budget": w["budget"],
             "points": w["total_points"], "est": w["estimated_hit_rate"],
             "method": w["allocation_method"], "single_axis": bool(w["single_axis"]),
             "hits": hit_flags, "all_settled": settled_all,
             "win5_hit": settled_all and all(hit_flags),
+        })
+
+    # 日別WIN5実績 (T30): 日付ごとに最新プラン (created_at最大) の的中状況を採る
+    win5_by_date = {}
+    for w in cur.execute("SELECT * FROM win5_predictions ORDER BY created_at DESC"):
+        race_ids = json.loads(w["race_ids_json"])
+        if not race_ids:
+            continue
+        wdate = str(race_ids[0]).split(":")[0]
+        if compact_date and wdate != compact_date:
+            continue
+        if wdate in win5_by_date:
+            continue  # 既に採用済みの日 (created_at DESCなのでこれより新しいものは無い)
+        selections = json.loads(w["selections_json"])
+        hit_flags, settled_all = _win5_hit_flags(race_ids, selections, results)
+        win5_by_date[wdate] = {
+            "hits": sum(1 for h in hit_flags if h), "total": len(hit_flags),
+            "all_settled": settled_all, "win5_hit": settled_all and all(hit_flags),
+        }
+
+    # 日別実績 (T30): モデル別 + EV通知 + WIN5 を日付単位にまとめる
+    daily_by_date = defaultdict(list)
+    for entry in out_daily:
+        daily_by_date[entry["date"]].append({
+            "app": entry["app"], "model": entry["model"], "version": entry["version"],
+            "config": entry["config"], "races": entry["races"], "settled": entry["settled"],
+            "win_rate": entry["win_rate"], "tan_roi": entry["tan_roi"], "fuku_roi": entry["fuku_roi"],
+        })
+    all_days = sorted(set(daily_by_date) | set(ev_by_date) | set(win5_by_date), reverse=True)
+    days = []
+    for date in all_days:
+        eb = ev_by_date.get(date)
+        ev_out = None
+        if eb:
+            n = eb["settled"]
+            ev_out = {
+                "n": eb["n"], "settled": n, "win": eb["win"], "top3": eb["top3"],
+                "tan_roi": round(eb["tan_ret"] / n, 1) if n else None,
+                "fuku_roi": round(eb["fuku_ret"] / n, 1) if n else None,
+            }
+        days.append({
+            "date": _iso_date(date),
+            "models": daily_by_date.get(date, []),
+            "ev": ev_out,
+            "win5": win5_by_date.get(date),
         })
 
     # 結果待ちレース数
@@ -295,7 +365,8 @@ def collect(race_date=None):
             "win5": win5, "race_details": race_details[:300],
             "pending_races": pending,
             "selected_date": _iso_date(compact_date),
-            "available_dates": [_iso_date(value) for value in available_dates]}
+            "available_dates": [_iso_date(value) for value in available_dates],
+            "days": days[:90]}
 
 
 @app.route("/api/perf")
