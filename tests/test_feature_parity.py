@@ -24,9 +24,10 @@ ABILITY_DB = ROOT / "ability.db"
 MODEL_PATH = ROOT / "api" / "data_files" / "common" / "win5_ml_model.json"
 N_RACES = 20
 
-# T6/T7 completion removed pace_fit/weight from this list.  Final-vs-live odds and
-# the known full-rules-vs-filtered-rules grade definition remain intentionally distinct.
-EXPECTED_MISMATCHES = {"ln_odds", "grade_pts"}
+# T6/T7 completion removed pace_fit/weight from this list.  T8 unified the training/live
+# grade_pts definition (both now use the pedigree-excluded rule set), removing it here.
+# Final-vs-live odds remain intentionally distinct (backtest uses settled odds).
+EXPECTED_MISMATCHES = {"ln_odds"}
 
 
 def _latest_complete_races(conn, limit=N_RACES):
@@ -99,9 +100,10 @@ def _live_horse(cur, prior, pedigree, criteria, sire_lineage, mawari):
     rc = {"type": cur["track_type"], "dist": cur["distance"], "venue": cur["place"],
           "total_horses": cur["total_horses"], "race_class": cur.get("race_class") or "",
           "class": cur.get("race_class") or "", "baba_cond": cur.get("condition") or ""}
-    grade, _details, _matches = analysis.evaluate_ultra(
+    grade, _details, matches = analysis.evaluate_ultra(
         h, rc, criteria.get(cur["place"], []), sire_lineage, mawari)
     h["grade"] = grade
+    h["ultra_matches"] = matches
     return h, rc
 
 

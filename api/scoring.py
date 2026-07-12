@@ -553,6 +553,44 @@ def load_ml_model():
     return _ML_CACHE["model"] or None
 
 
+_TRAINABLE_RULE_IDS_CACHE = {}
+
+
+def _trainable_rule_ids(venue):
+    """好走条件のうち、学習側 (backtest_ml.build_dataset →
+    backtest_criteria.load_filtered_criteria) が「血統以外ルール」として採用する
+    項番の集合。venue単位でキャッシュ (criteria.csv は実行中不変)。"""
+    if venue in _TRAINABLE_RULE_IDS_CACHE:
+        return _TRAINABLE_RULE_IDS_CACHE[venue]
+    ids = set()
+    try:
+        import analysis
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        for rule in analysis.load_csv_criteria(venue, base_dir):
+            if not analysis.is_pedigree_rule(rule):
+                ids.add(rule["id"])
+    except Exception:
+        ids = set()
+    _TRAINABLE_RULE_IDS_CACHE[venue] = ids
+    return ids
+
+
+def _training_style_grade(matches, venue):
+    """h['ultra_matches'] (血統込み判定の該当ルール一覧) から、血統ルールの該当を
+    除いた「学習と同一定義」の最良グレードを再集計する (analysis.evaluate_ultra の
+    best_grade 更新ロジックと同一)。該当ルールは既に判定済みなので check_condition の
+    再評価は不要 — フィルタと集計のみで学習側と同じ結果になる。"""
+    keep_ids = _trainable_rule_ids(venue)
+    best = ""
+    for m in matches:
+        if m.get("id") not in keep_ids:
+            continue
+        grade = m.get("grade", "")
+        if grade == "◎" or (grade == "〇" and best != "◎") or (grade == "△" and not best):
+            best = grade
+    return best
+
+
 def _ml_features(h, race_context, factor_table, cfg):
     """ライブデータから backtest_ml.build_dataset と同一定義の特徴量を構築"""
     import math
@@ -736,9 +774,15 @@ def _ml_features(h, race_context, factor_table, cfg):
                 f["course_fit"] = 1.0
                 break
 
-    # 好走条件判定 (アプリ側で評価済みの h["grade"] を使用。
-    # 学習は血統以外ルールのみだが、ライブは血統込み判定 — 方向は同一)
-    f["grade_pts"] = {"◎": 3.0, "〇": 2.0, "△": 1.0}.get(h.get("grade", ""), 0.0)
+    # 好走条件判定 (T8: 学習側 grade_pts は血統以外ルールのみで定義されているため、
+    # ML特徴量もそれに合わせる。画面表示用の h["grade"] は血統込みのまま変更しない)
+    matches = h.get("ultra_matches")
+    if matches is not None:
+        grade_for_ml = _training_style_grade(matches, race_context.get("venue", ""))
+    else:
+        # ultra_matches 未対応の呼び出し元 (単体テスト等) 向けフォールバック
+        grade_for_ml = h.get("grade", "")
+    f["grade_pts"] = {"◎": 3.0, "〇": 2.0, "△": 1.0}.get(grade_for_ml, 0.0)
 
     # レース単位で attach_live_pace_features() が付与。欠損時のみ従来どおり0。
     try:

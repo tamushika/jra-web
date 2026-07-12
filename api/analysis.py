@@ -309,6 +309,17 @@ def load_sire_buysell(sire_name, base_dir):
 def is_valid_cond(c):
     return c and str(c).strip() not in ["nan", "-", "", "None"]
 
+# 血統・生産者・減量記号の条件 (ability.db 等の学習データには無い属性で評価不能)。
+# backtest_criteria.load_filtered_criteria / scoring._trainable_rule_ids で共有する
+# 「学習側は血統以外ルールのみ」の唯一の定義。ここを変えたら両方に反映される。
+UNEVALUABLE_COND = re.compile(r"父|母父|系|産駒|生産者|減量")
+
+def is_pedigree_rule(rule):
+    """criteria.csv の1ルールが血統・生産者・減量条件を含む(=学習側で評価不能)かどうか。
+    有効な条件が1つも無いルールも対象外として扱う (backtest_criteria と同一基準)。"""
+    conds = [rule[k] for k in ("c1", "c2", "c3") if is_valid_cond(rule[k])]
+    return (not conds) or any(UNEVALUABLE_COND.search(c) for c in conds)
+
 def check_condition(cond, h, r, sire_lineage, mawari_map):
     """「XXXがXXX」形式に対応した条件判定ロジック。"""
     # デフォルトの回りデータ（CSVが読み込めなかった時のバックアップ）

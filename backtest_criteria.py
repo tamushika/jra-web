@@ -18,7 +18,6 @@
 import argparse
 import csv as csv_mod
 import os
-import re
 import sys
 import sqlite3
 from collections import defaultdict
@@ -33,7 +32,9 @@ from backtest_ability import load_runs, parse_win_payout  # noqa: E402
 from past_data_service import calculate_waku  # noqa: E402
 
 DB_PATH = os.path.join(BASE_DIR, "ability.db")
-UNEVALUABLE = re.compile(r"父|母父|系|産駒|生産者|減量")
+# 血統・生産者・減量条件の判定は analysis.is_pedigree_rule (UNEVALUABLE_COND) が唯一の定義。
+# ライブ側 (api/scoring._trainable_rule_ids) もこの同じ関数を使い、学習/本番の
+# grade_pts フィルタ基準を一致させている。
 
 VENUES = ["札幌", "函館", "福島", "新潟", "東京", "中山", "中京", "京都", "阪神", "小倉"]
 
@@ -47,8 +48,7 @@ def load_filtered_criteria():
         keep = []
         for rule in rules:
             n_all += 1
-            conds = [rule[k] for k in ("c1", "c2", "c3") if analysis.is_valid_cond(rule[k])]
-            if not conds or any(UNEVALUABLE.search(c) for c in conds):
+            if analysis.is_pedigree_rule(rule):
                 continue
             keep.append(rule)
             n_keep += 1
