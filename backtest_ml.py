@@ -35,7 +35,8 @@ sys.path.insert(0, API_DIR)
 import scoring  # noqa: E402
 from backtest_ability import load_runs, RECENCY, TIME_DIFF_CLIP, CLASS_RANK  # noqa: E402
 from backtest_win5 import (load_win5_cfg, load_upset_map, score_all_runners,
-                           measure_coverage, parse_final_odds)  # noqa: E402
+                           measure_coverage, parse_final_odds,
+                           popularity_races)  # noqa: E402
 from backtest_score import JockeyMatcher  # noqa: E402
 from past_data_service import calculate_waku  # noqa: E402
 
@@ -576,9 +577,14 @@ def main():
     races_cur = score_all_runners(runs, TEST_FROM, cfg)
     cov_cur, n_cur = measure_coverage(races_cur, upset_map)
 
+    # 人気順ベースライン (同一 runs / TEST_FROM フィルタ = 同一レース集団)
+    races_ninki = popularity_races(runs, TEST_FROM)
+    cov_ninki, n_ninki = measure_coverage(races_ninki, upset_map)
+
     print(f"\n===== 検証セット (2025年) の勝ち馬カバレッジ =====")
     print(f"{'model':26s} | k=1   k=2   k=3   k=4   (n)")
-    for label, cov, n in (("現行 (手調整)", cov_cur, n_cur),
+    for label, cov, n in (("人気順ベースライン", cov_ninki, n_ninki),
+                          ("現行 (手調整)", cov_cur, n_cur),
                           ("ロジスティック回帰", cov_ml, n_ml),
                           ("conditional logit", cov_cl, n_cl)):
         d = cov.get("default", [])

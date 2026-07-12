@@ -121,11 +121,26 @@ def main():
             (d.get("affi") or "").strip(), win_pay,
         ))
 
+    # 別スクリプトが埋め戻す列 (fukusho_pay等) はDELETE/再INSERTで消えるため退避して復元する
+    COLS = ["date", "place", "r", "race_name", "race_class", "horse", "sex", "age",
+            "jockey", "kinryo", "total_horses", "umaban", "popularity", "rank",
+            "track_type", "distance", "condition", "time_sec", "chakusa", "c4",
+            "agari", "pci", "weight", "affi", "win_pay"]
+    saved_fukusho = list(cur_sq.execute(
+        "SELECT fukusho_pay, date, place, r, umaban FROM runs "
+        "WHERE date > ? AND fukusho_pay IS NOT NULL AND fukusho_pay != ''",
+        ("20" + cutoff_neon,)))
+
     # 冪等: 対象期間を消してから挿入 (再実行時は前回追記分を置き換え)
     cur_sq.execute("DELETE FROM runs WHERE date > ?", ("20" + cutoff_neon,))
     deleted = cur_sq.rowcount
-    cur_sq.executemany("INSERT INTO runs VALUES (" + ",".join("?" * 25) + ")", batch)
+    cur_sq.executemany(
+        f"INSERT INTO runs ({','.join(COLS)}) VALUES ({','.join('?' * len(COLS))})", batch)
+    cur_sq.executemany(
+        "UPDATE runs SET fukusho_pay = ? WHERE date = ? AND place = ? AND r = ? AND umaban = ?",
+        saved_fukusho)
     conn_sq.commit()
+    print(f"fukusho_pay 復元: {len(saved_fukusho)}行")
 
     cur_sq.execute("SELECT MAX(date), COUNT(*) FROM runs")
     new_max, total = cur_sq.fetchone()

@@ -205,6 +205,31 @@ def score_all_runners(runs, date_from, cfg, rate_key="win_rate"):
     return races
 
 
+def popularity_races(runs, date_from):
+    """ベースライン: 人気順 (popularity列) をそのままスコアとして評価。
+    人気欠損は最下位扱い。score_all_runners / MLスコアと同じ (date, place, r) キー構造。"""
+    races = defaultdict(list)
+    for cur in runs:
+        if cur["date"] < date_from or cur["rank"] is None:
+            continue
+        pop = cur.get("popularity")
+        score = -float(pop) if pop else -99.0
+        races[(cur["date"], cur["place"], cur["r"])].append((score, cur))
+    return races
+
+
+def print_coverage_table(coverage, n_races, title):
+    print(f"\n===== {title} =====")
+    print("ランク | n     | k=1   k=2   k=3   k=4   k=5   k=6   k=7   k=8")
+    for rank in UPSET_RANKS + ["default"]:
+        curve = coverage.get(rank)
+        if not curve:
+            print(f"  {rank}   | サンプル不足")
+            continue
+        n = n_races.get("default_all" if rank == "default" else rank, 0)
+        print(f"  {rank:7s}| {n:5d} | " + "  ".join(f"{c*100:4.1f}" for c in curve))
+
+
 def measure_coverage(races, upset_map, kmax=8, min_r=9):
     """r>=min_r のレースで勝ち馬のスコア順位を集計 → ランク別カバレッジ"""
     pos_counts = defaultdict(lambda: [0] * (kmax + 1))  # rank -> [k=1..kmax超過含む]
@@ -341,13 +366,7 @@ def main():
 
     if args.ninki:
         # ベースライン: 人気順そのまま (1番人気=最高スコア)。人気欠損は最下位扱い
-        races = defaultdict(list)
-        for cur in runs:
-            if cur["date"] < args.date_from or cur["rank"] is None:
-                continue
-            pop = cur.get("popularity")
-            score = -float(pop) if pop else -99.0
-            races[(cur["date"], cur["place"], cur["r"])].append((score, cur))
+        races = popularity_races(runs, args.date_from)
         print("人気順ベースライン使用 (popularity列)")
     elif args.ml:
         import numpy as np
@@ -366,15 +385,16 @@ def main():
     print(f"評価レース: {len(races)}")
 
     coverage, n_races = measure_coverage(races, upset_map)
-    print("\n===== 勝ち馬カバレッジ (9R以降・8頭以上, P(勝ち馬がスコア上位k頭)) =====")
-    print("ランク | n     | k=1   k=2   k=3   k=4   k=5   k=6   k=7   k=8")
-    for rank in UPSET_RANKS + ["default"]:
-        curve = coverage.get(rank)
-        if not curve:
-            print(f"  {rank}   | サンプル不足")
-            continue
-        n = n_races.get("default_all" if rank == "default" else rank, 0)
-        print(f"  {rank:7s}| {n:5d} | " + "  ".join(f"{c*100:4.1f}" for c in curve))
+    mode_label = "人気順ベースライン" if args.ninki else ("MLスコア" if args.ml else "手調整スコア")
+    print_coverage_table(coverage, n_races,
+                          f"勝ち馬カバレッジ (9R以降・8頭以上, P(勝ち馬がスコア上位k頭)) [{mode_label}]")
+
+    if not args.ninki:
+        # 同一レース集団 (同じ runs / date_from フィルタ) での人気順ベースラインを併記
+        baseline_races = popularity_races(runs, args.date_from)
+        coverage_base, n_races_base = measure_coverage(baseline_races, upset_map)
+        print_coverage_table(coverage_base, n_races_base,
+                              "勝ち馬カバレッジ (同一レース集団, 人気順ベースライン・参考)")
 
     budgets = [50, 100, 150, 200]
     results, results_uni, results_axis, axis_stat = simulate_win5(races, upset_map, coverage, budgets)
