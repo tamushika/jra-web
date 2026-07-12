@@ -28,6 +28,17 @@ from urllib.parse import urlparse, parse_qs, unquote
 import requests
 from bs4 import BeautifulSoup
 
+API_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api")
+if API_DIR not in sys.path:
+    sys.path.insert(0, API_DIR)
+try:
+    from logging_store import LoggingStore
+    from result_service import parse_result_html
+except Exception as _logging_import_error:
+    LoggingStore = None
+    parse_result_html = None
+    print(f"[WARN] common result logging unavailable: {_logging_import_error}")
+
 try:
     import pandas as pd
     from sqlalchemy import create_engine
@@ -167,6 +178,14 @@ def fetch_and_parse(url: str) -> dict:
     resp.raise_for_status()
     resp.encoding = "cp932"
     soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Reuse this already-fetched official page for Phase 3 reconciliation.
+    if LoggingStore is not None and parse_result_html is not None:
+        try:
+            parsed_result = parse_result_html(resp.text, source_url=url)
+            LoggingStore().save_race_results(parsed_result["rows"])
+        except Exception as exc:
+            print(f"[WARN] common result logging failed: {type(exc).__name__}: {exc}")
 
     # ── レース基本情報 ──
     info = {}

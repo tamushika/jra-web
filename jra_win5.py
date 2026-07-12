@@ -28,6 +28,8 @@ sys.path.insert(0, API_DIR)
 import scoring  # noqa: E402
 from scoring import VENUE_SLUG_MAP  # noqa: E402
 from index import analyze_race_url, _scrape_win5_target, _find_win5_urls  # noqa: E402
+from logging_store import LoggingStore, config_hash  # noqa: E402
+from prediction_logging import log_race_prediction  # noqa: E402
 
 PORT = 5002
 
@@ -198,14 +200,25 @@ def _analyze_one_body(idx, url, result):
             "score": h.get("score"), "score_details": h.get("score_details", []),
         } for h in result.get("horses", [])]
 
-        return {
+        output = {
             "success": True, "idx": idx,
             "race_info": result.get("race_info"),
+            "race_date": result.get("race_date"), "race_num": result.get("race_num"),
             "venue": venue, "race_type": race_type, "dist_val": dist_val,
             "race_class": result.get("race_class"),
             "upset_rank": rank, "upset_score": score,
             "horses": horses,
         }
+        try:
+            log_race_prediction(
+                output, app_name="win5", config=cfg5, model_name="win5_score",
+                model_version=cfg5.get("version", "unknown"), trigger_type="manual",
+                base_dir=API_DIR,
+            )
+        except Exception as log_exc:
+            output["logging_warning"] = f"{type(log_exc).__name__}: {log_exc}"
+            print(f"[WARN] WIN5 prediction logging failed: {output['logging_warning']}")
+        return output
 
 
 @app.route("/api/win5_kaime", methods=["POST"])
@@ -302,7 +315,7 @@ def build_kaime(races, points, single_axis):
         skip_recommended = bool(skip_th) and est < skip_th
         est_ref = (alloc.get("est_reference") or {}).get(str(points)) if use_prob else None
 
-        return {
+        result = {
             "success": True, "picks": out,
             "total_points": total, "formula": formula,
             "est_hit_rate": round(est, 5),
@@ -314,6 +327,28 @@ def build_kaime(races, points, single_axis):
             "skip_threshold": skip_th,
             "skip_recommended": skip_recommended,
         }
+        try:
+            run_ids = [str((race.get("_logging") or {}).get("prediction_run_id") or "") for race in races]
+            race_ids = [str((race.get("_logging") or {}).get("race_id") or "") for race in races]
+            if not all(run_ids) or not all(race_ids):
+                raise ValueError("all five races must have common logging context")
+            idempotency_key = config_hash({
+                "prediction_run_ids": run_ids, "budget": points, "single_axis": single_axis,
+                "selections": [[h["num"] for h in race["horses"]] for race in out],
+            })
+            result["win5_prediction_id"] = LoggingStore().save_win5_prediction(
+                prediction_run_ids=run_ids, race_ids=race_ids, budget=points, total_points=total,
+                selections=[{"race_id": race_ids[i], "horse_numbers": [h["num"] for h in r["horses"]]}
+                            for i, r in enumerate(out)],
+                coverage=[r.get("coverage") for r in out], estimated_hit_rate=result["est_hit_rate"],
+                allocation_method=alloc_method, allocation_version=cfg5.get("version", "unknown"),
+                single_axis=single_axis, axis_index=axis_idx, skipped=skip_recommended,
+                idempotency_key=idempotency_key,
+            )
+        except Exception as log_exc:
+            result["logging_warning"] = f"{type(log_exc).__name__}: {log_exc}"
+            print(f"[WARN] WIN5 plan logging failed: {result['logging_warning']}")
+        return result
 
 
 # ─── 締切前の自動再スコア (発走15分前にオッズ込みで再計算) ────────────────────

@@ -21,6 +21,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import analysis
 import past_data_service
 import scoring
+from prediction_logging import log_race_prediction
 
 app = Flask(__name__, static_folder='../', static_url_path='/')
 CORS(app)
@@ -607,6 +608,9 @@ def analyze_race_url(url, mode='簡易'):
         return {
             "success": True,
             "race_info": race_label,
+            "race_name": race_name,
+            "race_date": f"{year_val}{int(curr_date_m.group(1)):02d}{int(curr_date_m.group(2)):02d}" if curr_date_m else "",
+            "race_num": race_idx,
             "venue": venue,
             "race_type": race_type,
             "dist_val": dist_val,
@@ -640,7 +644,19 @@ def scrape():
     mode = data.get('mode', '簡易')
     if not url: return jsonify({"error": "No URL provided"}), 400
     try:
-        return jsonify(analyze_race_url(url, mode))
+        result = analyze_race_url(url, mode)
+        try:
+            score_cfg = scoring.load_score_weights(get_base_dir())
+            win5_cfg = scoring.load_score_weights(get_base_dir(), "win5_weights.json")
+            log_race_prediction(
+                result, app_name="web", config={"web": score_cfg, "win5": win5_cfg},
+                model_name="web_score", model_version=score_cfg.get("version", "unknown"),
+                trigger_type="manual", base_dir=get_base_dir(),
+            )
+        except Exception as log_exc:
+            result["logging_warning"] = f"{type(log_exc).__name__}: {log_exc}"
+            print(f"[WARN] web prediction logging failed: {result['logging_warning']}")
+        return jsonify(result)
     except Exception as e:
         import traceback
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500

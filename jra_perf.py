@@ -1,5 +1,5 @@
 """
-予測実績ダッシュボード (ローカル専用・読み取り専用)
+予測実績ダッシュボード (ローカル専用)
 ======================================================
 data/jra_logging.db (予測run・予測値・オッズ・結果の追記ログ) を集計し、
 「どのモデルバージョンで・どの程度 的中/回収できたか」を画面で確認する。
@@ -23,7 +23,10 @@ import threading
 import webbrowser
 from collections import defaultdict
 
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory
+
+from api.logging_store import LoggingStore
+from api.result_service import normalize_race_date, sync_results_for_date
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "data", "jra_logging.db")
@@ -51,24 +54,60 @@ def _score_of(p):
     return None
 
 
-def collect():
+def _iso_date(compact):
+    return f"{compact[:4]}-{compact[4:6]}-{compact[6:8]}" if compact else None
+
+
+def collect(race_date=None):
+    compact_date = normalize_race_date(race_date) if race_date else None
     conn = _conn()
     cur = conn.cursor()
 
+    available_dates = [row[0] for row in cur.execute("""
+        SELECT race_date FROM (
+            SELECT race_date FROM races
+            UNION SELECT substr(race_id,1,8) FROM predictions
+            UNION SELECT substr(race_id,1,8) FROM race_results
+        ) WHERE length(race_date)=8 AND race_date GLOB '[0-9]*'
+        ORDER BY race_date DESC
+    """)]
+
     # 結果 (確定着順と払戻)
     results = {}
-    for r in cur.execute("SELECT race_id, horse_id, finish_position, win_payout, place_payout FROM race_results"):
+    result_sql = """SELECT race_id, horse_id, horse_name, finish_position,
+                           win_payout, place_payout FROM race_results"""
+    result_params = ()
+    if compact_date:
+        result_sql += " WHERE substr(race_id,1,8)=?"
+        result_params = (compact_date,)
+    for r in cur.execute(result_sql, result_params):
         results[(r["race_id"], r["horse_id"])] = dict(r)
     races_with_result = {k[0] for k in results}
+    winners = {race_id: item for (race_id, _), item in results.items()
+               if item["finish_position"] == 1}
+
+    race_meta = {}
+    meta_sql = "SELECT race_id,race_date,venue,race_no,race_name FROM races"
+    meta_params = ()
+    if compact_date:
+        meta_sql += " WHERE race_date=?"
+        meta_params = (compact_date,)
+    for r in cur.execute(meta_sql, meta_params):
+        race_meta[r["race_id"]] = dict(r)
 
     # 予測: レース×モデル群ごとに「最後のrun」だけ採用
-    rows = list(cur.execute("""
+    prediction_sql = """
         SELECT p.race_id, p.horse_id, p.predicted_at, p.ml_score, p.win5_score, p.web_score,
-               p.calibrated_win_probability,
+               p.calibrated_win_probability, p.feature_snapshot_json,
                r.prediction_run_id, r.app_name, r.model_name, r.model_version,
                substr(coalesce(r.config_hash,''),1,8) AS cfg, r.started_at
         FROM predictions p JOIN prediction_runs r ON r.prediction_run_id = p.prediction_run_id
-    """))
+    """
+    prediction_params = ()
+    if compact_date:
+        prediction_sql += " WHERE substr(p.race_id,1,8)=?"
+        prediction_params = (compact_date,)
+    rows = list(cur.execute(prediction_sql, prediction_params))
     # (group, race) -> 最新run
     latest_run = {}
     for p in rows:
@@ -89,18 +128,44 @@ def collect():
     summary = defaultdict(lambda: {"races": 0, "settled": 0, "win": 0, "top3": 0,
                                    "tan_ret": 0, "fuku_ret": 0,
                                    "date_min": "9999", "date_max": "0000"})
-    daily = defaultdict(lambda: {"settled": 0, "win": 0, "top3": 0, "tan_ret": 0, "fuku_ret": 0})
+    daily = defaultdict(lambda: {"races": 0, "settled": 0, "win": 0, "top3": 0,
+                                 "tan_ret": 0, "fuku_ret": 0})
+    race_details = []
     for (g, race_id), plist in by_race.items():
         date = race_id.split(":")[0]
         s = summary[g]
         s["races"] += 1
         s["date_min"] = min(s["date_min"], date)
         s["date_max"] = max(s["date_max"], date)
+        d = daily[(g, date)]
+        d["races"] += 1
         top = max(plist, key=lambda p: (_score_of(p) if _score_of(p) is not None else -1e9))
         res = results.get((race_id, top["horse_id"]))
+        winner = winners.get(race_id)
+        try:
+            feature = json.loads(top["feature_snapshot_json"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            feature = {}
+        meta = race_meta.get(race_id, {})
+        score = _score_of(top)
+        race_details.append({
+            "date": date,
+            "race_id": race_id,
+            "venue": meta.get("venue") or race_id.split(":")[1],
+            "race_no": meta.get("race_no") or int(race_id.split(":")[-1]),
+            "race_name": meta.get("race_name"),
+            "app": g[0], "model": g[1], "version": g[2], "config": g[3],
+            "horse": top["horse_id"].split(":")[-1],
+            "horse_name": feature.get("horse_name"),
+            "score": round(float(score), 3) if score is not None else None,
+            "result": res["finish_position"] if res else None,
+            "win_payout": res["win_payout"] if res else None,
+            "place_payout": res["place_payout"] if res else None,
+            "winner": winner["horse_id"].split(":")[-1] if winner else None,
+            "winner_name": winner.get("horse_name") if winner else None,
+        })
         if res is None or res["finish_position"] is None:
             continue
-        d = daily[(g, date)]
         for b in (s, d):
             b["settled"] += 1
             if res["finish_position"] == 1:
@@ -128,11 +193,18 @@ def collect():
     # EV通知実績 (decision='alert' × 結果)
     ev_rows = []
     ev_sum = {"n": 0, "settled": 0, "win": 0, "top3": 0, "tan_ret": 0, "fuku_ret": 0}
-    for e in cur.execute("""
+    ev_sql = """
         SELECT e.race_id, e.horse_id, e.ev, e.win_probability, e.threshold, e.evaluated_at,
                o.win_odds, o.popularity
         FROM ev_evaluations e LEFT JOIN odds_snapshots o ON o.odds_snapshot_id = e.odds_snapshot_id
-        WHERE e.decision = 'alert' ORDER BY e.evaluated_at DESC"""):
+        WHERE e.decision = 'alert'
+    """
+    ev_params = ()
+    if compact_date:
+        ev_sql += " AND substr(e.race_id,1,8)=?"
+        ev_params = (compact_date,)
+    ev_sql += " ORDER BY e.evaluated_at DESC"
+    for e in cur.execute(ev_sql, ev_params):
         res = results.get((e["race_id"], e["horse_id"]))
         settled = res is not None and res["finish_position"] is not None
         ev_sum["n"] += 1
@@ -144,19 +216,31 @@ def collect():
             if res["finish_position"] <= 3:
                 ev_sum["top3"] += 1
                 ev_sum["fuku_ret"] += res["place_payout"] or 0
-        ev_rows.append({
-            "race_id": e["race_id"], "horse": e["horse_id"].split(":")[-1],
-            "ev": e["ev"], "prob": e["win_probability"], "odds": e["win_odds"],
-            "pop": e["popularity"], "at": (e["evaluated_at"] or "")[:16],
-            "result": (res["finish_position"] if settled else None),
-            "win_payout": (res["win_payout"] if settled else None),
-            "place_payout": (res["place_payout"] if settled else None),
-        })
+        if len(ev_rows) < 100:
+            ev_rows.append({
+                "race_id": e["race_id"], "horse": e["horse_id"].split(":")[-1],
+                "ev": e["ev"], "prob": e["win_probability"], "odds": e["win_odds"],
+                "pop": e["popularity"], "at": (e["evaluated_at"] or "")[:16],
+                "result": (res["finish_position"] if settled else None),
+                "win_payout": (res["win_payout"] if settled else None),
+                "place_payout": (res["place_payout"] if settled else None),
+            })
 
     # WIN5実績
     win5 = []
-    for w in cur.execute("""SELECT * FROM win5_predictions ORDER BY created_at DESC LIMIT 30"""):
+    if compact_date:
+        win5_sql = """SELECT * FROM win5_predictions WHERE race_ids_json LIKE ?
+                      ORDER BY created_at DESC"""
+        win5_params = (f'%"{compact_date}:%',)
+    else:
+        win5_sql = "SELECT * FROM win5_predictions ORDER BY created_at DESC LIMIT 30"
+        win5_params = ()
+    for w in cur.execute(win5_sql, win5_params):
         race_ids = json.loads(w["race_ids_json"])
+        if compact_date and not any(str(rid).startswith(f"{compact_date}:") for rid in race_ids):
+            continue
+        if len(win5) >= 30:
+            break
         selections = json.loads(w["selections_json"])
         hit_flags, settled_all = [], True
         for rid, sel in zip(race_ids, selections):
@@ -180,16 +264,43 @@ def collect():
     all_pred_races = {race_id for (_g, race_id) in by_race}
     pending = len(all_pred_races - races_with_result)
 
+    if compact_date:
+        race_details.sort(key=lambda item: (item["venue"], item["race_no"], item["app"], item["model"]))
+    else:
+        race_details.sort(key=lambda item: (-int(item["date"]), item["venue"], item["race_no"],
+                                            item["app"], item["model"]))
+
     conn.close()
     return {"summary": out_summary, "daily": out_daily[:60],
-            "ev": {"sum": ev_sum, "rows": ev_rows[:100]},
-            "win5": win5, "pending_races": pending}
+            "ev": {"sum": ev_sum, "rows": ev_rows},
+            "win5": win5, "race_details": race_details[:300],
+            "pending_races": pending,
+            "selected_date": _iso_date(compact_date),
+            "available_dates": [_iso_date(value) for value in available_dates]}
 
 
 @app.route("/api/perf")
 def api_perf():
     try:
-        return jsonify(collect())
+        return jsonify(collect(request.args.get("date")))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
+@app.route("/api/results/sync", methods=["POST"])
+def api_sync_results():
+    data = request.get_json(silent=True) or {}
+    race_date = data.get("date")
+    if not race_date:
+        return jsonify({"error": "date is required"}), 400
+    try:
+        result = sync_results_for_date(race_date, store=LoggingStore(DB_PATH))
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         import traceback
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
@@ -198,7 +309,7 @@ def api_perf():
 if __name__ == "__main__":
     url = f"http://localhost:{PORT}"
     print("=" * 55)
-    print("  予測実績ダッシュボード (読み取り専用)")
+    print("  予測実績ダッシュボード")
     print("=" * 55)
     print(f"  URL: {url}")
     print(f"  DB : {DB_PATH}")

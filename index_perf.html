@@ -22,6 +22,13 @@
                     font-size: 11px; font-weight: bold; background: rgba(255,255,255,0.1); }
         .hit-y { color: #66bb6a; font-weight: bold; }
         .hit-n { color: #ef7070; }
+        .pf-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+                       margin: 8px 0 12px; }
+        .pf-controls input { background: rgba(0,0,0,0.25); color: var(--text-color);
+                             border: 1px solid var(--border-color); border-radius: 6px;
+                             padding: 7px 10px; }
+        .pf-controls button { padding: 7px 12px; }
+        .pf-controls button:disabled { opacity: .55; cursor: wait; }
     </style>
 </head>
 <body>
@@ -30,7 +37,27 @@
         <span class="pf-meta">モデルバージョン別の的中率・回収率 (スコア1位馬に単勝/複勝100円想定)</span>
         <button class="primary-btn" style="float:right;" onclick="load()">🔄 更新</button>
     </h2>
+    <div class="pf-controls">
+        <label for="dateFilter">開催日</label>
+        <input id="dateFilter" type="date" list="availableDates">
+        <datalist id="availableDates"></datalist>
+        <button class="primary-btn" onclick="applyDate()">表示</button>
+        <button onclick="showToday()">今日</button>
+        <button onclick="showAll()">全期間</button>
+        <button id="syncBtn" onclick="syncResults()">この日の結果を再取得</button>
+    </div>
     <div id="status" class="pf-meta" style="margin-bottom:10px;"></div>
+
+    <div class="pf-section">
+        <div class="pf-title">レース別の予測結果</div>
+        <div class="pf-meta" style="margin-bottom:6px;">
+            各モデルの最終予測でスコア1位だった馬と、公式結果を照合します。
+        </div>
+        <table class="pf-table"><thead><tr>
+            <th>日付</th><th>レース</th><th>モデル</th><th>予測1位馬</th><th>スコア</th>
+            <th>勝ち馬</th><th>着順</th><th>単勝払戻</th><th>複勝払戻</th>
+        </tr></thead><tbody id="raceBody"></tbody></table>
+    </div>
 
     <div class="pf-section">
         <div class="pf-title">モデルバージョン別サマリ</div>
@@ -80,14 +107,73 @@ function roi(v) {
     return `<span class="${cls}">${v.toFixed(1)}%</span>`;
 }
 function pct(v) { return v == null ? '<span class="pf-meta">-</span>' : v.toFixed(1) + '%'; }
+function dateFmt(v) {
+    const s = String(v || '').replace(/-/g, '');
+    return s.length === 8 ? `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}` : v;
+}
+function finish(v) {
+    if (v == null) return '<span class="pf-meta">待ち</span>';
+    if (v === 1) return '<span class="hit-y">1着</span>';
+    if (v <= 3) return `<span class="hit-y">${v}着</span>`;
+    return `<span class="hit-n">${v}着</span>`;
+}
+
+let lastSyncMessage = '';
+
+function selectedDate() { return document.getElementById('dateFilter').value; }
+function setUrlDate(value) {
+    const url = new URL(location.href);
+    if (value) url.searchParams.set('date', value);
+    else url.searchParams.delete('date');
+    history.replaceState(null, '', url);
+}
+function applyDate() {
+    if (!selectedDate()) {
+        document.getElementById('status').textContent = '開催日を選択してください。';
+        return;
+    }
+    setUrlDate(selectedDate());
+    load();
+}
+function showToday() {
+    const now = new Date();
+    const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    document.getElementById('dateFilter').value = local;
+    setUrlDate(local);
+    load();
+}
+function showAll() {
+    document.getElementById('dateFilter').value = '';
+    setUrlDate('');
+    load();
+}
 
 async function load() {
     document.getElementById('status').textContent = '読み込み中...';
     try {
-        const d = await (await fetch('/api/perf')).json();
+        const date = selectedDate();
+        const response = await fetch(date ? `/api/perf?date=${encodeURIComponent(date)}` : '/api/perf');
+        const d = await response.json();
         if (d.error) throw new Error(d.error);
+        document.getElementById('availableDates').innerHTML = (d.available_dates || [])
+            .map(value => `<option value="${esc(value)}"></option>`).join('');
+        document.getElementById('syncBtn').disabled = !date;
+        const scope = d.selected_date ? `${d.selected_date} / ` : '全期間 / ';
         document.getElementById('status').textContent =
-            `結果待ちレース: ${d.pending_races}件 (レース終了後に自動取り込み・数分〜数時間で確定)`;
+            `${scope}結果待ちレース: ${d.pending_races}件` +
+            (lastSyncMessage ? ` — ${lastSyncMessage}` : ' (レース終了後に公式結果を自動取り込み)');
+
+        document.getElementById('raceBody').innerHTML = (d.race_details || []).map(r => `
+            <tr><td>${esc(dateFmt(r.date))}</td>
+                <td class="left">${esc(r.venue)} ${esc(r.race_no)}R${r.race_name ? ' ' + esc(r.race_name) : ''}</td>
+                <td class="left">${esc(r.app)} / ${esc(r.model)} ${esc(r.version)}</td>
+                <td>${esc(r.horse)}${r.horse_name ? ' ' + esc(r.horse_name) : ''}</td>
+                <td>${r.score != null ? Number(r.score).toFixed(2) : '-'}</td>
+                <td>${r.winner ? esc(r.winner) + (r.winner_name ? ' ' + esc(r.winner_name) : '') : '<span class="pf-meta">待ち</span>'}</td>
+                <td>${finish(r.result)}</td>
+                <td>${r.win_payout ? r.win_payout + '円' : '-'}</td>
+                <td>${r.place_payout ? r.place_payout + '円' : '-'}</td></tr>`).join('')
+            || '<tr><td colspan="9" class="pf-meta">この日の予測記録はありません</td></tr>';
 
         document.getElementById('sumBody').innerHTML = (d.summary || []).map(s => `
             <tr><td>${esc(s.app)}</td><td class="left">${esc(s.model)}</td>
@@ -109,9 +195,7 @@ async function load() {
             <tr><td>${esc(r.at)}</td><td class="left">${esc(r.race_id)}</td><td>${esc(r.horse)}</td>
                 <td>${r.ev?.toFixed(2) ?? '-'}</td><td>${r.prob != null ? (r.prob*100).toFixed(0)+'%' : '-'}</td>
                 <td>${r.odds ?? '-'}</td><td>${r.pop ?? '-'}</td>
-                <td>${r.result == null ? '<span class="pf-meta">待ち</span>'
-                     : r.result === 1 ? '<span class="hit-y">1着</span>'
-                     : r.result <= 3 ? `<span class="hit-y">${r.result}着</span>` : `<span class="hit-n">${r.result}着</span>`}</td>
+                <td>${finish(r.result)}</td>
                 <td>${r.win_payout ? r.win_payout + '円' : '-'}</td>
                 <td>${r.place_payout ? r.place_payout + '円' : '-'}</td></tr>`).join('')
             || '<tr><td colspan="10" class="pf-meta">なし</td></tr>';
@@ -127,7 +211,7 @@ async function load() {
             || '<tr><td colspan="7" class="pf-meta">まだWIN5予測の記録がありません</td></tr>';
 
         document.getElementById('dayBody').innerHTML = (d.daily || []).map(s => `
-            <tr><td>${esc(s.date)}</td><td>${esc(s.app)}</td><td>${esc(s.version)}</td>
+            <tr><td>${esc(dateFmt(s.date))}</td><td>${esc(s.app)}</td><td>${esc(s.version)}</td>
                 <td><span class="pf-badge">${esc(s.config)}</span></td><td>${s.settled}</td>
                 <td>${pct(s.win_rate)}</td><td>${pct(s.top3_rate)}</td>
                 <td>${roi(s.tan_roi)}</td><td>${roi(s.fuku_roi)}</td></tr>`).join('')
@@ -135,6 +219,44 @@ async function load() {
     } catch (e) {
         document.getElementById('status').textContent = 'エラー: ' + e.message;
     }
+}
+
+async function syncResults() {
+    const date = selectedDate();
+    if (!date) {
+        document.getElementById('status').textContent = '結果を取得する開催日を選択してください。';
+        return;
+    }
+    const button = document.getElementById('syncBtn');
+    button.disabled = true;
+    button.textContent = '取得中...';
+    document.getElementById('status').textContent = `${date} の公式結果を取得しています...`;
+    try {
+        const response = await fetch('/api/results/sync', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({date})
+        });
+        const d = await response.json();
+        if (d.error) throw new Error(d.error);
+        lastSyncMessage = d.sources
+            ? `結果取得 ${d.synced}/${d.sources}レース${d.failed ? `、未取得 ${d.failed}レース` : ''}`
+            : '保存済みの出馬表URLがないため取得対象がありません';
+        await load();
+    } catch (e) {
+        document.getElementById('status').textContent = '結果取得エラー: ' + e.message;
+    } finally {
+        button.disabled = !selectedDate();
+        button.textContent = 'この日の結果を再取得';
+    }
+}
+
+const initialDate = new URLSearchParams(location.search).get('date');
+if (initialDate) {
+    document.getElementById('dateFilter').value = initialDate;
+} else {
+    const now = new Date();
+    document.getElementById('dateFilter').value =
+        new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }
 load();
 setInterval(load, 120000);

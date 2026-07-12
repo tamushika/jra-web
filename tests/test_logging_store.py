@@ -1,0 +1,123 @@
+import json
+import sqlite3
+from datetime import datetime, timezone
+from decimal import Decimal
+
+import pytest
+
+from api.logging_store import LoggingStore, config_hash, stable_json
+
+
+@pytest.fixture
+def store(tmp_path):
+    result = LoggingStore(tmp_path / "logging.db", busy_timeout_ms=50, retries=1)
+    result.initialize()
+    return result
+
+
+def scalar(store, sql):
+    with sqlite3.connect(store.db_path) as conn:
+        return conn.execute(sql).fetchone()[0]
+
+
+def test_initialize_is_one_command_and_enables_wal(store):
+    assert scalar(store, "SELECT count(*) FROM schema_migrations") == 6
+    with sqlite3.connect(store.db_path) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
+def test_run_and_prediction_are_idempotent(store):
+    run1 = store.start_run(app_name="ev_monitor", config={"threshold": 1.3}, idempotency_key="event-1")
+    run2 = store.start_run(app_name="ev_monitor", config={"threshold": 1.3}, idempotency_key="event-1")
+    assert run1 == run2
+    row = {"race_id": "20260711:tokyo:01", "horse_id": "horse-1", "web_score": 8.2}
+    assert store.save_predictions(run1, [row]) == 1
+    assert store.save_predictions(run1, [row]) == 0
+    assert scalar(store, "SELECT count(*) FROM predictions") == 1
+
+
+def test_separate_runs_append_prediction_snapshots(store):
+    row = {"race_id": "r1", "horse_id": "h1"}
+    first = store.start_run(app_name="web")
+    second = store.start_run(app_name="web")
+    store.save_predictions(first, [row])
+    store.save_predictions(second, [row])
+    assert scalar(store, "SELECT count(*) FROM predictions") == 2
+
+
+def test_odds_idempotency_and_missing_odds_remain_null(store):
+    row = {"idempotency_key": "fetch:r1:h1", "race_id": "r1", "horse_id": "h1",
+           "observed_at": datetime(2026, 7, 11, tzinfo=timezone.utc), "win_odds": None,
+           "data_quality_flags": ["win_odds_unavailable"]}
+    assert store.save_odds([row]) == 1
+    assert store.save_odds([row]) == 0
+    with sqlite3.connect(store.db_path) as conn:
+        odds, flags = conn.execute("SELECT win_odds,data_quality_flags_json FROM odds_snapshots").fetchone()
+    assert odds is None
+    assert json.loads(flags) == ["win_odds_unavailable"]
+
+
+def test_json_is_stable_finite_and_redacts_secrets():
+    value = {"b": Decimal("1.25"), "a": float("nan"), "webhook_url": "https://secret"}
+    encoded = stable_json(value)
+    assert encoded == '{"a":null,"b":1.25,"webhook_url":"[REDACTED]"}'
+    assert config_hash(value) == config_hash({"webhook_url": "different", "a": float("inf"), "b": 1.25})
+
+
+def test_locked_database_fails_quickly(store):
+    lock = sqlite3.connect(store.db_path, timeout=0)
+    lock.execute("BEGIN EXCLUSIVE")
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            store.start_run(app_name="web")
+    finally:
+        lock.rollback()
+        lock.close()
+
+
+def test_ev_evaluation_and_notification_are_traceable_and_deduplicated(store):
+    run_id = store.start_run(app_name="ev_monitor")
+    store.save_predictions(run_id, [{"race_id": "r1", "horse_id": "h1"}])
+    store.save_odds([{"idempotency_key": "o1", "race_id": "r1", "horse_id": "h1",
+                      "fetch_id": run_id, "win_odds": 4.5}])
+    evaluation_id = store.save_ev_evaluation(
+        prediction_run_id=run_id, race_id="r1", horse_id="h1", win_probability=0.3,
+        ev=1.35, threshold=1.3, decision="alert", idempotency_key="eval-1")
+    first_id, created = store.reserve_notification(
+        ev_evaluation_id=evaluation_id, channel="discord", dedupe_key="r1:h1:5:discord:v1",
+        payload={"stage": 5, "picks": [{"name": "horse"}]})
+    second_id, created_again = store.reserve_notification(
+        ev_evaluation_id=evaluation_id, channel="discord", dedupe_key="r1:h1:5:discord:v1",
+        payload={"stage": 5})
+    assert (first_id, True) == (second_id, created)
+    assert created_again is False
+    assert len(store.retryable_notifications()) == 1
+    store.mark_notification(first_id, status="sent", response_code=204)
+    assert store.retryable_notifications() == []
+    assert scalar(store, "SELECT count(*) FROM ev_evaluations") == 1
+    assert scalar(store, "SELECT count(*) FROM notifications") == 1
+
+
+def test_monitor_state_survives_restart(store):
+    payload = {"venue": "東京", "race_num": 1, "url": "https://example.invalid/race"}
+    store.save_monitor_state("東京_1", payload, race_id="r1",
+                             start_time=datetime(2026, 7, 11, 6, tzinfo=timezone.utc), checked15=True)
+    restored = store.active_monitors()
+    assert restored[0]["monitor_key"] == "東京_1"
+    assert restored[0]["checked15"] is True
+    assert restored[0]["payload"] == payload
+    store.save_monitor_state("東京_1", payload, race_id="r1", finished=True)
+    assert store.active_monitors() == []
+
+
+def test_win5_plan_is_idempotent_and_traceable(store):
+    kwargs = dict(
+        prediction_run_ids=["run1", "run2", "run3", "run4", "run5"],
+        race_ids=["r1", "r2", "r3", "r4", "r5"], budget=100, total_points=72,
+        selections=[{"race_id": "r1", "horse_numbers": [1, 2]}], coverage=[0.7] * 5,
+        estimated_hit_rate=0.08, allocation_method="prob", allocation_version=4,
+        single_axis=False, axis_index=None, idempotency_key="plan-key")
+    first = store.save_win5_prediction(**kwargs)
+    second = store.save_win5_prediction(**kwargs)
+    assert first == second
+    assert scalar(store, "SELECT count(*) FROM win5_predictions") == 1

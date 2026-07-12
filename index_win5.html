@@ -175,7 +175,8 @@ async function analyzeAll() {
             return;
         }
     }
-    st.textContent = '5レース完了';
+    const logWarnings = analyzed.filter(x => x?.logging_warning).length;
+    st.textContent = logWarnings ? `5レース完了 / ⚠ ログ保存失敗 ${logWarnings}件` : '5レース完了';
     btn.disabled = false;
     document.getElementById('kaimeBtn').disabled = false;
 }
@@ -223,6 +224,9 @@ async function generateKaime() {
         const data = await res.json();
         if (data.error) throw new Error(data.error);
         renderKaimeData(data, area);
+        if (data.logging_warning) {
+            area.insertAdjacentHTML('afterbegin', `<div style="color:#ffb347;margin-bottom:8px;">⚠ ログ保存失敗: ${esc(data.logging_warning)}</div>`);
+        }
     } catch (e) {
         area.innerHTML = `<span style="color:#ff6b6b;">エラー: ${esc(e.message)}</span>`;
     }

@@ -163,7 +163,8 @@ async function startScraping() {
 }
 
 function applyScrapeData(data, url, mode) {
-    document.getElementById('raceInfo').textContent = `${data.race_info} (${mode})`;
+    document.getElementById('raceInfo').textContent = `${data.race_info} (${mode})` +
+        (data.logging_warning ? ` ⚠ ログ保存失敗: ${data.logging_warning}` : '');
     
     let babaHtml = data.baba_info || "馬場情報：未取得";
     if (data.course_record) {

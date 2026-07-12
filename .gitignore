@@ -19,3 +19,6 @@ venv/
 .claude/
 jra-web/
 pedigree_cache.json
+
+# Common prediction/odds logging database
+data/jra_logging.db*

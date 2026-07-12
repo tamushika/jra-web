@@ -58,6 +58,7 @@ except Exception as exc:
     print(f"[WARN] common logging unavailable: {type(exc).__name__}: {exc}")
 
 PORT = 5003
+RESULT_SYNC_VERSION = 2
 HDRS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Referer": "https://www.jra.go.jp/"}
 
@@ -184,8 +185,10 @@ def compute_wide_picks(horses, params):
             for i, j, ov, mp in cands]
 
 
-def analyze_one(url, params, base_date=None, day_label=""):
-    """1レースを解析して監視レコードを返す"""
+def analyze_one(url, params, base_date=None, day_label="", stage=None):
+    """1レースを解析して監視レコードを返す。stage は発走何分前の取得かの識別子
+    (30/15/10/5/2。通常スキャン時はNone) で、odds_snapshotsに記録される
+    (時点別オッズ特徴量 Phase C 用)"""
     result = analyze_race_url(url, "簡易")
     venue = result.get("venue")
     race_type = result.get("race_type")
@@ -245,7 +248,7 @@ def analyze_one(url, params, base_date=None, day_label=""):
                     "race_id": race_id, "horse_id": horse_id, "observed_at": observed_at,
                     "win_odds": odds if odds and odds > 1.0 else None,
                     "popularity": int(float(h["pop"])) if _to_float(h.get("pop")) else None,
-                    "source": "jra", "fetch_id": run_id,
+                    "source": "jra", "fetch_id": run_id, "stage": stage,
                     "idempotency_key": f"{run_id}:{race_id}:{horse_id}",
                     "data_quality_flags": [] if odds and odds > 1.0 else ["win_odds_unavailable"],
                 })
@@ -274,6 +277,9 @@ def analyze_one(url, params, base_date=None, day_label=""):
         "horses": horses, "n_picked": n_picked,
         "wide_picks": compute_wide_picks(horses, params),
         "checked15": False, "checked5": False, "finished": False,
+        # 通知を伴わないスナップショット専用ステージ (時点別オッズ特徴量 Phase C 用蓄積)。
+        # checked15/checked5 の通知パスとは完全に独立しており、通知条件には影響しない。
+        "checked30": False, "checked10": False, "checked2": False,
         "last_update": datetime.now().strftime("%H:%M:%S"),
         "_log_context": log_context,
     }
@@ -496,7 +502,7 @@ def refresh_and_alert(rec, stage):
     """オッズを再取得して再判定。期待値馬がいれば通知を作成"""
     params = STATE["params"]
     try:
-        new_rec = analyze_one(rec["url"], params)
+        new_rec = analyze_one(rec["url"], params, stage=stage)
     except Exception as e:
         print(f"[WARN] 再取得失敗 {_rid(rec)}: {e}")
         return False
@@ -572,6 +578,29 @@ def refresh_and_alert(rec, stage):
     return True
 
 
+# 通知を伴わないオッズスナップショット専用ステージ (分前, ウィンドウ秒, 断念秒)。
+# 断念秒は「これ以上待たずスナップショットは諦めてフラグを立てる」境界で、
+# checked15/checked5 の断念ロジック (6分/0分) と同じ考え方で、次のより重要な
+# ステージ (15分/5分の通知付き判定) を絶対にブロックしないよう手前で切り上げる。
+_SNAPSHOT_STAGES = ((30, 30 * 60, 20 * 60), (10, 10 * 60, 6 * 60), (2, 2 * 60, 0))
+
+
+def snapshot_odds(rec, stage):
+    """通知を伴わずオッズだけ再取得して記録する (時点別オッズ特徴量 Phase C 用のデータ蓄積)。
+    refresh_and_alert とは完全に独立しており、アラート生成・LINE/Discord/ブラウザ通知の
+    いずれも一切行わない (STATE["alerts"] にも追加しない)。"""
+    params = STATE["params"]
+    try:
+        new_rec = analyze_one(rec["url"], params, stage=stage)
+    except Exception as e:
+        print(f"[WARN] スナップショット取得失敗 {_rid(rec)} ({stage}分前): {e}")
+        return False
+    with _LOCK:
+        for k in ("horses", "n_picked", "wide_picks", "last_update"):
+            rec[k] = new_rec.get(k, rec.get(k))
+    return True
+
+
 def scheduler_loop():
     while True:
         time.sleep(20)
@@ -591,6 +620,15 @@ def scheduler_loop():
                 _maybe_sync_result(rec)
                 _persist_monitor(rec)
                 continue
+            # 30/10/2分前のスナップショット (通知なし)。既存の15分前/5分前の
+            # 通知付き判定 (下のif/elif) とは別の独立したifブロックなので、
+            # 追加しても既存の分岐・挙動には一切影響しない。
+            for snap_stage, window_sec, giveup_sec in _SNAPSHOT_STAGES:
+                flag = f"checked{snap_stage}"
+                if not rec.get(flag) and remain <= window_sec:
+                    if snapshot_odds(rec, snap_stage) or remain <= giveup_sec:
+                        rec[flag] = True
+                        _persist_monitor(rec)
             if not rec["checked15"] and remain <= 15 * 60:
                 if refresh_and_alert(rec, 15) or remain <= 6 * 60:
                     rec["checked15"] = True
@@ -629,7 +667,9 @@ def _restore_phase2_state():
             rec["checked15"] = item["checked15"]
             rec["checked5"] = item["checked5"]
             rec["finished"] = bool(rec.get("finished", False))
-            if rec.get("_start_dt") and rec["_start_dt"] > datetime.now() - timedelta(minutes=1):
+            # 結果未取得の当日・直近開催分も再起動後に復元する。従来は発走1分後を
+            # 過ぎると復元対象外となり、結果取得に一度失敗したレースが永久に残った。
+            if rec.get("_start_dt") and rec["_start_dt"] > datetime.now() - timedelta(days=2):
                 with _LOCK:
                     STATE["races"][item["monitor_key"]] = rec
         if STATE["races"]:
@@ -658,6 +698,13 @@ def _maybe_sync_result(rec):
     """Retry official-result reconciliation with bounded, persisted backoff."""
     if rec.get("_result_synced"):
         return
+    if rec.get("_result_sync_version") != RESULT_SYNC_VERSION:
+        # URL解決方式などが更新された場合は、旧方式で使い切った試行回数を一度だけ
+        # リセットする。バージョンは監視状態に永続化されるため再起動のたびには戻らない。
+        rec["_result_sync_version"] = RESULT_SYNC_VERSION
+        rec["_result_attempts"] = 0
+        rec.pop("_next_result_retry", None)
+        rec.pop("_result_error", None)
     attempts = int(rec.get("_result_attempts", 0))
     if attempts >= 8:
         return
@@ -674,13 +721,16 @@ def _maybe_sync_result(rec):
         rec["_result_synced"] = True
         rec["_result_match_summary"] = result.get("match_summary", {})
         rec.pop("_next_result_retry", None)
+        rec.pop("_result_error", None)
         print(f"[result] {result['race_id']} saved: {result['save_stats']}")
     except ResultNotReady as exc:
         delays = (5, 10, 20, 30, 60, 120, 240, 480)
         rec["_next_result_retry"] = (datetime.now() + timedelta(minutes=delays[attempts])).isoformat()
+        rec["_result_error"] = str(exc)
         print(f"[WARN] result not ready ({_rid(rec)}, attempt {attempts + 1}): {exc}")
     except Exception as exc:
         rec["_next_result_retry"] = (datetime.now() + timedelta(minutes=30)).isoformat()
+        rec["_result_error"] = f"{type(exc).__name__}: {exc}"
         print(f"[WARN] result sync failed ({_rid(rec)}): {type(exc).__name__}: {exc}")
     finally:
         _persist_monitor(rec)
