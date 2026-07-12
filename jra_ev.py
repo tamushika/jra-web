@@ -205,6 +205,10 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None):
         horses.append({
             "num": h.get("num"), "name": h.get("name"), "jock": h.get("jock"),
             "odds": h.get("odds"), "pop": h.get("pop"), "grade": h.get("grade", ""),
+            "current_weight": h.get("current_weight"), "weight_change": h.get("weight_change"),
+            "weight_source": h.get("weight_source"),
+            "weight_fallback": h.get("weight_source") not in ("jra_live", "jra_live_cache"),
+            "pace_fit": h.get("_pace_fit"), "pace_fit_source": h.get("pace_fit_source"),
             "web_score": h.get("score"), "ml_score": ml,
         })
     n_picked = compute_picks(horses, params)
@@ -240,7 +244,12 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None):
                     "web_score": h.get("web_score"), "ml_score": h.get("ml_score"),
                     "calibrated_win_probability": h.get("win_prob"),
                     "score_details": {"picked": h.get("picked"), "ev": h.get("ev")},
-                    "feature_snapshot": {"horse_no": h.get("num"), "horse_name": h.get("name")},
+                    "feature_snapshot": {
+                        "horse_no": h.get("num"), "horse_name": h.get("name"),
+                        "current_weight": h.get("current_weight"),
+                        "weight_source": h.get("weight_source"),
+                        "pace_fit": h.get("pace_fit"),
+                    },
                     "data_quality_flags": [] if h.get("win_prob") is not None else ["win_probability_unavailable"],
                 })
                 odds = _to_float(h.get("odds"))
@@ -392,42 +401,7 @@ def worker_analyze_all(params):
             STATE["error"] = str(e)
 
 
-# ─── 通知の外部連携 (実測ログ / Discord) ─────────────────────────────────────
-
-def _log_alert_to_neon(alert):
-    """通知時点のオッズ・勝率・EVを Neon ev_alert_log へ記録 (実運用回収率の検証用)。
-    後日 ev_log_report.py が races テーブルの確定結果と突き合わせる。失敗しても無視。"""
-    try:
-        import past_data_service as pds
-        conn = pds.get_db_connection(API_DIR)
-        if conn is None or not getattr(conn, "is_pg", False):
-            return
-        try:
-            cur = conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS ev_alert_log (
-                    id SERIAL PRIMARY KEY,
-                    date TEXT, venue TEXT, race_num INTEGER, stage INTEGER,
-                    horse_num INTEGER, horse_name TEXT,
-                    odds_alert DOUBLE PRECISION, win_prob DOUBLE PRECISION,
-                    ev DOUBLE PRECISION, web_value BOOLEAN,
-                    created_at TIMESTAMP DEFAULT NOW())""")
-            date6 = datetime.now().strftime("%y%m%d")
-            venue = alert["rid"].split("_")[0]
-            race_num = int(alert["rid"].split("_")[1])
-            for p in alert["picks"]:
-                cur.execute("""INSERT INTO ev_alert_log
-                    (date, venue, race_num, stage, horse_num, horse_name,
-                     odds_alert, win_prob, ev, web_value)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                            (date6, venue, race_num, alert["stage"], p["num"],
-                             p["name"], _to_float(p["odds"]), p["win_prob"],
-                             p["ev"], bool(p["web_value"])))
-            conn._conn.commit()
-        finally:
-            conn.close()
-    except Exception as e:
-        print(f"[WARN] ev_alert_log 記録失敗: {e}")
+# ─── 通知の外部連携 (SQLite実測ログ / Discord) ────────────────────────────────
 
 
 def _send_discord(alert):
@@ -564,7 +538,6 @@ def refresh_and_alert(rec, stage):
     if alert:
         with _LOCK:
             STATE["alerts"].append(alert)
-        _log_alert_to_neon(alert)
         store = LoggingStore() if LoggingStore is not None else None
         if store and notification_ids:
             for notification_id in notification_ids.get("browser", []):

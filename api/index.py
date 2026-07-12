@@ -31,6 +31,7 @@ def serve_index():
     return app.send_static_file('index.html')
 
 VENUE_MAP = {"06": "中山", "08": "京都", "05": "東京", "09": "阪神", "07": "中京", "04": "新潟", "03": "福島", "10": "小倉", "01": "札幌", "02": "函館"}
+_LIVE_WEIGHT_CACHE = {}
 
 def get_base_dir():
     return os.path.dirname(os.path.abspath(__file__))
@@ -67,6 +68,40 @@ def calculate_kyakushitsu(hist_list):
     elif avg_pos <= 0.70: return "◁◁◀◁"
     elif avg_pos <= 0.85: return "◁◁◀◀"
     else: return "◁◁◁◀"
+
+
+def parse_current_weight(row):
+    """JRA出馬表の当日馬体重セルを (体重, 増減) で返す。公表前は (None, None)。"""
+    tag = row.select_one("td.horse .cell.weight") or row.select_one(".cell.weight")
+    text = tag.get_text(" ", strip=True) if tag else ""
+    weight_m = re.search(r"(\d{3})\s*kg", text, re.IGNORECASE)
+    if not weight_m:
+        return None, None
+    change_m = re.search(r"\(\s*([+-]?\d+|初出走)\s*\)", text)
+    change = None
+    if change_m and change_m.group(1) != "初出走":
+        try:
+            change = int(change_m.group(1))
+        except ValueError:
+            pass
+    return int(weight_m.group(1)), change
+
+
+def _apply_live_weight_cache(horses, race_url):
+    """一度公表された当日馬体重を同一プロセス内の再計算で再利用する。"""
+    cname_m = re.search(r"CNAME=([^/]+)", str(race_url))
+    race_key = cname_m.group(1) if cname_m else str(race_url)
+    cached = _LIVE_WEIGHT_CACHE.setdefault(race_key, {})
+    for horse in horses:
+        num = horse.get("num")
+        if horse.get("current_weight") is not None:
+            cached[num] = (horse["current_weight"], horse.get("weight_change"))
+            horse["weight_source"] = "jra_live"
+        elif num in cached:
+            horse["current_weight"], horse["weight_change"] = cached[num]
+            horse["weight_source"] = "jra_live_cache"
+        else:
+            horse["weight_source"] = "previous_run"
 
 def get_agari_rank_from_url(url, target_name):
     try:
@@ -206,12 +241,23 @@ def fetch_history_data(c, url, name, mode, is_first):
     
     weight_tag, kinryo_tag = c.find("p", class_="h_weight"), c.find("div", class_="weight")
     course_m = re.search(r'(\d{3,4}\s*(?:芝|ダ|障))', raw_text)
+    raw_time_m = re.search(r'\d{3,4}\s*(?:芝|ダ|障)\s*(\d{1,2}:\d{2}\.\d|\d{2}\.\d)', raw_text)
+    agari_m = re.search(r'3F\s*(\d{2}\.\d)', raw_text, re.IGNORECASE)
     
     place_m = re.search(r'(中山|東京|京都|阪神|中京|札幌|函館|福島|新潟|小倉)', raw_text)
     place = place_m.group(1) if place_m else "-"
     
     race_name_tag = c.find("a")
     race_name = race_name_tag.get_text(strip=True) if race_name_tag else "-"
+
+    if run_time == "-" and raw_time_m:
+        run_time = raw_time_m.group(1)
+    time_sec = scoring.parse_run_time(run_time)
+    agari_3f = float(agari_m.group(1)) if agari_m else None
+    distance = int(re.search(r"\d{3,4}", course_m.group(0)).group()) if course_m else None
+    pci = scoring.compute_pci(time_sec, agari_3f, distance)
+    track_type = "芝" if course_m and "芝" in course_m.group(0) else (
+        "ダート" if course_m and "ダ" in course_m.group(0) else None)
     
     rank_m = re.search(r'(\d{1,2})\s*着', raw_text)
     rank = rank_m.group(1) if rank_m else "-"
@@ -237,7 +283,10 @@ def fetch_history_data(c, url, name, mode, is_first):
         "weight": weight_tag.get_text(strip=True) if weight_tag else "-", 
         "kinryo": kinryo_tag.get_text(strip=True) if kinryo_tag else "-",
         "place": place, "race_name": race_name, "rank": rank, "total": total,
-        "run_time": run_time, "pop_rank": pop_rank, "jockey": jockey
+        "run_time": run_time, "time_sec": time_sec, "agari_3f": agari_3f, "pci": pci,
+        "track_type": track_type, "distance": distance,
+        "race_class": scoring.class_label(race_name),
+        "pop_rank": pop_rank, "jockey": jockey
     }
 
 
@@ -280,15 +329,22 @@ def parse_horse_row(row, url, curr_date_fmt, mode):
                 hist_list.append(f.result())
 
         iv = "-"
+        interval_days = None
         if hist_list:
             p_date_m = re.search(r'(\d{4}年\d{1,2}月\d{1,2}日)', hist_list[0]['raw'])
             if p_date_m and curr_date_fmt:
                 diff = (datetime.strptime(curr_date_fmt, "%Y年%m月%d日") - datetime.strptime(p_date_m.group(1), "%Y年%m月%d日")).days
+                interval_days = diff
                 iv = f"中{(diff//7)-1}週" if diff > 7 else "連闘"
 
-        return {"num": num, "odds": o_val, "iv": iv, "name": name, "sex_age": sex_age, 
+        current_weight, weight_change = parse_current_weight(row)
+
+        return {"num": num, "odds": o_val, "iv": iv, "interval_days": interval_days,
+                "name": name, "sex_age": sex_age,
                 "kyakushitsu": calculate_kyakushitsu(hist_list), "kg": kg, "jock": jock, 
-                "affi": "栗東" if "栗東" in h_cell else "美浦", "sire": sire, "dam": dam, "bms": bms, "hist": hist_list}
+                "affi": "栗東" if "栗東" in h_cell else "美浦", "sire": sire, "dam": dam,
+                "bms": bms, "current_weight": current_weight, "weight_change": weight_change,
+                "hist": hist_list}
     except Exception as e:
         print("Row parse error:", e)
         return None
@@ -439,6 +495,8 @@ def analyze_race_url(url, mode='簡易'):
         scraped_data.sort(key=lambda x: x['odds'])
         for i, h in enumerate(scraped_data): h['pop'] = str(i + 1)
         scraped_data.sort(key=lambda x: x['num'])
+        _apply_live_weight_cache(scraped_data, url)
+        scoring.attach_live_pace_features(scraped_data)
 
         # Analysis
         base_dir = get_base_dir()

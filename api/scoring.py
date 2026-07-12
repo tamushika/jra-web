@@ -206,6 +206,12 @@ def _hist_agari_ratios(h):
     for run in (h.get("hist") or []):
         if not run:
             continue
+        if run.get("agari_ratio") is not None:
+            try:
+                ratios.append(float(run["agari_ratio"]))
+                continue
+            except (TypeError, ValueError):
+                pass
         m = re.match(r"(\d+)/(\d+)", str(run.get("agari_rank", "")))
         if m and int(m.group(2)) > 0:
             ratios.append(int(m.group(1)) / int(m.group(2)))
@@ -465,6 +471,8 @@ def eval_wet_aptitude(h, race_context, cfg):
 
 _ML_CACHE = {"model": None}
 
+PCI_TRACK_MEAN = {"芝": 51.96, "ダート": 45.83}
+
 _ML_LABELS = {
     "j_pts": "騎手", "f_pts": "枠順", "tfeat": "タイム", "cfeat": "クラス実績",
     "agari_flag": "上がり", "ln_odds": "市場", "prev_rank": "前走着順",
@@ -474,6 +482,61 @@ _ML_LABELS = {
     "pace_fit": "ペース適性", "course_fit": "同コース実績", "grade_pts": "好走条件",
     "sire_pts": "種牡馬",
 }
+
+
+def compute_pci(time_sec, agari_3f, distance):
+    """PCIをJRA表示の走破時計・上がり3Fから計算する。
+
+    ability.db作成時 (`extend_ability_from_neon.compute_pci`) と同一定義。
+    """
+    try:
+        total = float(time_sec)
+        agari = float(agari_3f)
+        dist = int(distance)
+    except (TypeError, ValueError):
+        return None
+    if total <= 0 or agari <= 0 or dist <= 600:
+        return None
+    try:
+        return round(100.0 * ((total - agari) / (dist - 600)) / (agari / 600.0) - 50.0, 1)
+    except ZeroDivisionError:
+        return None
+
+
+def _live_pci_dev(run):
+    info = _run_course_info(run)
+    if info is None:
+        return None
+    track = info[1]
+    pci = run.get("pci")
+    if pci is None:
+        time_sec = run.get("time_sec")
+        if time_sec is None:
+            time_sec = parse_run_time(run.get("run_time", "-"))
+        pci = compute_pci(time_sec, run.get("agari_3f"), info[2])
+    try:
+        return float(pci) - PCI_TRACK_MEAN[track]
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def attach_live_pace_features(horses):
+    """レース全馬の直近4走PCIから学習時と同一定義のpace_fitを付与する。"""
+    styles = []
+    for horse in horses or []:
+        devs = [_live_pci_dev(run) for run in (horse.get("hist") or [])[:4] if run]
+        devs = [value for value in devs if value is not None]
+        style = sum(devs) / len(devs) if devs else None
+        horse["_pace_style"] = style
+        if style is not None:
+            styles.append(style)
+    predicted = sum(styles) / len(styles) if len(styles) >= 5 else None
+    for horse in horses or []:
+        style = horse.get("_pace_style")
+        horse["_predicted_pace"] = predicted
+        horse["_pace_fit"] = style * predicted if style is not None and predicted is not None else 0.0
+        horse["pace_fit_source"] = "jra_history" if style is not None and predicted is not None else "fallback_zero"
+    return predicted
 
 
 def load_ml_model():
@@ -559,7 +622,9 @@ def _ml_features(h, race_context, factor_table, cfg):
     tbest, cbest, amin = None, None, None
     for i, run in enumerate(hist[:4]):
         rw = recency[i] if i < len(recency) else recency[-1]
-        tsec = parse_run_time(run.get("run_time", "-"))
+        tsec = run.get("time_sec")
+        if tsec is None:
+            tsec = parse_run_time(run.get("run_time", "-"))
         info = _run_course_info(run)
         if tsec is not None and info is not None:
             place, track, dist, rclass, cond = info
@@ -605,22 +670,41 @@ def _ml_features(h, race_context, factor_table, cfg):
     if hist and str(hist[0].get("rank", "")).isdigit():
         prev_rank = min(int(hist[0]["rank"]), 18)
     f["prev_rank"] = prev_rank
-    iv = str(h.get("iv", "-"))
-    if "連闘" in iv:
-        f["ln_interval"] = math.log(7)
+    try:
+        interval_days = int(h.get("interval_days"))
+    except (TypeError, ValueError):
+        interval_days = None
+    if interval_days is not None:
+        f["ln_interval"] = math.log(max(interval_days, 1))
     else:
-        m = re.search(r"中(\d+)週", iv)
-        f["ln_interval"] = math.log((int(m.group(1)) + 1) * 7) if m else math.log(30)
+        iv = str(h.get("iv", "-"))
+        if "連闘" in iv:
+            f["ln_interval"] = math.log(7)
+        else:
+            m = re.search(r"中(\d+)週", iv)
+            f["ln_interval"] = math.log((int(m.group(1)) + 1) * 7) if m else math.log(30)
     age_m = re.search(r"(\d+)", str(h.get("sex_age", "")))
     f["age"] = int(age_m.group(1)) if age_m else 4
     f["is_male"] = 1.0 if str(h.get("sex_age", ""))[:1] in ("牡", "セ") else 0.0
     kg_m = re.search(r"(\d+(?:\.\d+)?)", str(h.get("kg", "")))
     f["kinryo"] = float(kg_m.group(1)) if kg_m else 55.0
-    wt = 470
-    if hist:
+    wt = None
+    try:
+        current_weight = int(h.get("current_weight"))
+        if 300 <= current_weight <= 700:
+            wt = current_weight
+    except (TypeError, ValueError):
+        pass
+    if wt is not None:
+        h["weight_source"] = h.get("weight_source") or "jra_live"
+    elif hist:
         wt_m = re.search(r"(\d{3})", str(hist[0].get("weight", "")))
         if wt_m:
             wt = int(wt_m.group(1))
+            h["weight_source"] = "previous_run"
+    if wt is None:
+        wt = 470
+        h["weight_source"] = "default_470"
     f["weight"] = wt
     f["n_prior"] = len(hist[:4])
 
@@ -656,8 +740,11 @@ def _ml_features(h, race_context, factor_table, cfg):
     # 学習は血統以外ルールのみだが、ライブは血統込み判定 — 方向は同一)
     f["grade_pts"] = {"◎": 3.0, "〇": 2.0, "△": 1.0}.get(h.get("grade", ""), 0.0)
 
-    # pace_fit はレース全馬の集計が必要なためライブでは 0 埋め
-    # (conditional logit はレース内の一様シフトに不変なので勝率に歪みは出ない)
+    # レース単位で attach_live_pace_features() が付与。欠損時のみ従来どおり0。
+    try:
+        f["pace_fit"] = float(h.get("_pace_fit", 0.0))
+    except (TypeError, ValueError):
+        f["pace_fit"] = 0.0
     return f
 
 
@@ -1020,6 +1107,19 @@ def parse_run_time(t):
 def _run_course_info(run):
     """過去走1件から (場, 芝ダ, 距離, クラス, 馬場) を抽出"""
     place = run.get("place")
+    canonical_track = str(run.get("track_type") or "")
+    canonical_dist = run.get("distance")
+    if place and canonical_track and canonical_dist:
+        track = "芝" if canonical_track == "芝" else (
+            "ダート" if canonical_track in ("ダ", "ダート") else None)
+        try:
+            dist = int(canonical_dist)
+        except (TypeError, ValueError):
+            dist = None
+        if track and dist:
+            cond = next((ch for ch in str(run.get("condition", "")) if ch in "良稍重不"), "")
+            return (place, track, dist,
+                    run.get("race_class") or class_label(run.get("race_name", "")), cond)
     course = str(run.get("course", ""))
     if not place or "障" in course:
         return None

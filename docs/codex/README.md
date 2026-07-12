@@ -10,7 +10,7 @@
 5. 完了したら `docs/TASKS.md` の状態を更新
 
 ## Codex への共通指示 (全仕様書に適用)
-- リポジトリ: `c:\Users\owner\project\.venv\jra-web`。Python は `c:\Users\owner\project\.venv\Scripts\python.exe`
+- リポジトリ: `c:\Users\owner\project\.venv\jra-web`。Python は `c:\Users\owner\project\jra-runtime\Scripts\python.exe`
 - Windows環境。コンソール出力は `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` の流儀
 - `.env` の秘密情報 (DATABASE_URL 等) を出力・コミットしない
 - netkeiba へのアクセスは1リクエスト1秒以上のスリープ

@@ -197,6 +197,10 @@ def _analyze_one_body(idx, url, result):
             "num": h.get("num"), "name": h.get("name"), "jock": h.get("jock"),
             "sire": h.get("sire"), "odds": h.get("odds"), "pop": h.get("pop"),
             "grade": h.get("grade", ""),
+            "current_weight": h.get("current_weight"), "weight_change": h.get("weight_change"),
+            "weight_source": h.get("weight_source"),
+            "weight_fallback": h.get("weight_source") not in ("jra_live", "jra_live_cache"),
+            "pace_fit": h.get("_pace_fit"), "pace_fit_source": h.get("pace_fit_source"),
             "score": h.get("score"), "score_details": h.get("score_details", []),
         } for h in result.get("horses", [])]
 

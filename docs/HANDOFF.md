@@ -73,7 +73,7 @@ Harville 式で組み合わせ馬券の的中確率を導出でき、EV = モデ
 | 土日朝 | 期待値監視 | タスクスケジューラ「JRA_EV_Monitor」が8:30自動起動 (PCを点けておくだけ)。手動なら `start_ev.bat` |
 | 土日 購入直前 | WIN5締切前の再計算 | WIN5アプリ STEP4「自動再計算を予約」を押す (タブは開いたまま) |
 | 日曜夜 | レース結果をNeonに登録 | DB登録アプリ (jra_db_updater) で当日結果を登録 |
-| 日曜夜 (登録後) | EV監視の実測レポート確認 | `python ev_log_report.py` (通知の実運用回収率・オッズドリフト) |
+| 日曜夜 (結果取込後) | EV監視の実測レポート確認 | `python ev_log_report.py` (`data/jra_logging.db` の通知・公式結果から単複回収率、チャネル別成績、オッズドリフトを集計。`--since YYYYMMDD`可) |
 | いつでも | 予測実績の可視化 | `start_perf.bat` (port 5004)。モデル版別の的中率・回収率、EV通知・WIN5実績を表示 (data/jra_logging.db を読むだけ・結果はレース後に自動取り込み) |
 | 半年ごと | ML再学習 | `retrain_all.bat` (Step1でオッズ埋め戻し必須)。OOS結果が劣化してないか確認してcommit |
 

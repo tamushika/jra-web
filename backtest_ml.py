@@ -25,8 +25,6 @@ from collections import defaultdict
 from datetime import datetime
 
 import numpy as np
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 API_DIR = os.path.join(BASE_DIR, "api")
@@ -530,6 +528,10 @@ def report_skip_analysis(day_records, budgets):
 
 
 def main():
+    # 特徴量一致テストは学習器を使わないため、重い任意依存は実行時だけ読み込む。
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import StandardScaler
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--write", action="store_true",
                     help="全期間で再学習してモデルJSONを出力")
