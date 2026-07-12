@@ -48,6 +48,7 @@
         .ev-cell-sub { font-size: 11px; color: var(--text-muted); }
         .ev-cell-horse b { color: var(--primary); }
         .ev-h-top { opacity: 0.75; }
+        .ev-wide { color: #7ec8e3; }
     </style>
 </head>
 <body>
@@ -129,7 +130,9 @@ function notify(alert) {
     const title = `⏰ ${alert.stage}分前 期待値あり: ${alert.label}`;
     const body = alert.picks.map(p =>
         `${p.num}番 ${p.name} EV${p.ev} (勝率${(p.win_prob*100).toFixed(0)}%×${p.odds}倍)${p.web_value ? ' [Web妙味]' : ''}`
-    ).join('\n') + '\n※単勝+複勝の併用が検証上最も堅い';
+    ).join('\n')
+      + (alert.wide || []).map(w => `\nワイド ${w.nums[0]}-${w.nums[1]} overlay${w.overlay}`).join('')
+      + '\n※単勝+複勝の併用が堅い / ワイドは1.6以上全買いで110%';
     if ('Notification' in window && Notification.permission === 'granted') {
         new Notification(title, { body, tag: `ev-${alert.rid}-${alert.stage}` });
     }
@@ -249,7 +252,8 @@ function cellHtml(r) {
         ? ' <span class="ev-badge" style="background:#f57c00;color:#fff;">オッズ未</span>' : '';
     return `<div class="ev-cell ${picks.length ? 'has-pick' : ''} ${r.finished ? 'finished' : ''}">
         <div class="ev-cell-head">${esc(r.start_time)}<span class="ev-meta">${marks}</span>${oddsBadge}</div>
-        ${body}</div>`;
+        ${body}${(r.wide_picks || []).map(w =>
+            `<div class="ev-cell-sub ev-wide">W ${esc(w.nums[0])}-${esc(w.nums[1])} <span class="ev-meta">×${w.overlay}</span></div>`).join('')}</div>`;
 }
 
 function render() {
@@ -259,7 +263,7 @@ function render() {
     const dayLabel = races.length && races[0].day_label ? ` (${races[0].day_label})` : '';
     document.getElementById('summary').innerHTML =
         races.length ? `期待値馬のいるレース: <b>${nPick}</b> / ${races.length}レース${esc(dayLabel)}
-            <span class="ev-meta">金枠=期待値馬あり / その他のレースはEV最上位馬を薄く表示</span>` : '';
+            <span class="ev-meta">金枠=期待値馬あり / 薄色=EV最上位馬 / <span style="color:#7ec8e3;">W=ワイド候補 (overlay≥1.6全買いで検証110%)</span></span>` : '';
     const area = document.getElementById('raceArea');
     if (!races.length) { area.innerHTML = ''; return; }
 

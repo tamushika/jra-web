@@ -153,6 +153,7 @@ def main():
             print(f"--- {bet_type} (100円/点) ---")
             print("  overlay | 賭け数  | 的中   | 的中率 | 回収率")
             results = {th: {"n": 0, "hit": 0, "ret": 0.0} for th in OVERLAYS}
+            results_top1 = {th: {"n": 0, "hit": 0, "ret": 0.0} for th in OVERLAYS}
             for k, (probs, ranks, odds, umaban) in eval_races.items():
                 q_model, w_model = harville_pair_probs(probs, lam)
                 inv = [1.0 / o for o in odds]
@@ -162,6 +163,7 @@ def main():
                 model_map = w_model if bet_type == "ワイド" else q_model
                 mkt_map = w_mkt if bet_type == "ワイド" else q_mkt
                 pay_map = payouts[(k[0], k[1], k[2])]
+                best = None  # レース内 overlay 最大の1点 (通知運用の想定)
                 for (i, j), mp in model_map.items():
                     if mp < MIN_PROB[bet_type]:
                         continue
@@ -171,6 +173,8 @@ def main():
                     overlay = mp / mk
                     combo = f"{min(umaban[i], umaban[j])}-{max(umaban[i], umaban[j])}"
                     pay = pay_map.get((bet_type, combo), 0.0)
+                    if best is None or overlay > best[0]:
+                        best = (overlay, pay)
                     for th in OVERLAYS:
                         if overlay >= th:
                             b = results[th]
@@ -178,8 +182,23 @@ def main():
                             if pay:
                                 b["hit"] += 1
                                 b["ret"] += pay
+                if best is not None:
+                    for th in OVERLAYS:
+                        if best[0] >= th:
+                            b = results_top1[th]
+                            b["n"] += 1
+                            if best[1]:
+                                b["hit"] += 1
+                                b["ret"] += best[1]
             for th in OVERLAYS:
                 b = results[th]
+                if not b["n"]:
+                    continue
+                print(f"  {th:7.1f} | {b['n']:6d} | {b['hit']:5d} | "
+                      f"{100.0*b['hit']/b['n']:5.1f}% | {b['ret']/b['n']:6.1f}%")
+            print("  [1レース1点 (overlay最大のみ購入)]")
+            for th in OVERLAYS:
+                b = results_top1[th]
                 if not b["n"]:
                     continue
                 print(f"  {th:7.1f} | {b['n']:6d} | {b['hit']:5d} | "
