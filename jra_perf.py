@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 from flask import Flask, jsonify, request, send_from_directory
 
 from api.logging_store import LoggingStore
+from api.port_guard import ensure_port_free
 from api.result_service import normalize_race_date, sync_results_for_date
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -34,6 +35,14 @@ DB_PATH = os.path.join(BASE_DIR, "data", "jra_logging.db")
 PORT = 5004
 
 app = Flask(__name__, static_folder=BASE_DIR, static_url_path="/")
+
+
+@app.after_request
+def _no_cache_html(resp):
+    # UI更新のたびにブラウザキャッシュで旧画面が出る事故の防止 (HTMLのみ。APIは元々動的)
+    if resp.mimetype == "text/html":
+        resp.headers["Cache-Control"] = "no-store, must-revalidate"
+    return resp
 
 
 @app.route("/")
@@ -397,6 +406,7 @@ def api_sync_results():
 
 
 if __name__ == "__main__":
+    ensure_port_free(PORT, "予測実績ダッシュボード")
     url = f"http://localhost:{PORT}"
     print("=" * 55)
     print("  予測実績ダッシュボード")
