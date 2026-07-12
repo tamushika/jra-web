@@ -47,10 +47,10 @@
 | T9 | M4-A: 市場確率の校正 | オッズ帯・条件別の校正。市場確率のLogLoss/Brier改善が条件。仕様書: [codex/SPEC-T9](codex/SPEC-T9-market-calibration.md) | 1-2日 | Codex実装 → 上位モデル採否 | 📋 仕様書済み (Codex渡し待ち) |
 | T10 | M4-B: 過剰人気補正 | 限定的な順位補正。top-k が市場を安定して下回らないこと | 2-3日 | Codex実装 → 上位モデル採否 | ⬜ |
 | T11 | M3: 市場offset+残差モデル | ln_odds → offset固定化。期待効果は中 (roadmap §4.2注意) | 1-2日 | Codex実装 → 上位モデル採否 | ⬜ |
-| T12 | M2: オッズなし基礎能力モデル | 独自情報のみの予測力測定 | 1日 | Codex実装 → 上位モデル採否 | ⬜ |
-| T13 | レース内相対特徴量 | タイム指数順位・偏差等を追加しOOS検証 | 1-2日 | Codex実装 → 上位モデル採否 | ⬜ |
-| T14 | fold別コース統計の再集計 | ability.db から fold学習終了日以前のみで統計生成 (db-keibaに過去断面なし) | 1-2日 | Codex → 上位モデル | ⬜ |
-| T15 | mined rules の再採掘 | mine_criteria.py を発見21-23/選抜24に組み直し | 0.5-1日 | Codex → 上位モデル採否 | ⬜ |
+| T12 | M2: オッズなし基礎能力モデル | 独自情報のみの予測力測定。仕様書: [codex/SPEC-T12](codex/SPEC-T12-m2-no-odds-model.md) | 1日 | Codex実装 → 上位モデル採否 | 📋 仕様書済み (Codex渡し待ち) |
+| T13 | レース内相対特徴量 | タイム指数順位・偏差等を追加しOOS検証 | 1-2日 | Codex実装 → 上位モデル採否 | ⬜ (T9/T12の結果を見てから仕様化) |
+| T14 | fold別コース統計の再集計 | ability.db から fold学習終了日以前のみで統計生成 (db-keibaに過去断面なし)。仕様書: [codex/SPEC-T14](codex/SPEC-T14-fold-course-stats.md) | 1-2日 | Codex → 上位モデル | 📋 仕様書済み (Codex渡し待ち) |
+| T15 | mined rules の再採掘 | mine_criteria.py を発見21-23/選抜24に組み直し。仕様書: [codex/SPEC-T15](codex/SPEC-T15-remine-rules.md) | 0.5-1日 | Codex → 上位モデル採否 | 📋 仕様書済み (Codex渡し待ち) |
 | T16 | Web用複勝確率モデル | オッズなし3着内モデル。現行スコアとシャドー比較 | 2-3日 | Codex実装 → 上位モデル採否 | ⬜ |
 
 ## 4. Phase C/D/E: 蓄積後 (8-12週先)
@@ -69,7 +69,7 @@
 |---|---|---|---|---|---|
 | T22 | コース辞典PDF抽出の完走 | `extract_waku_rail.py` を日を分けて実行 (Gemini無料枠制限、23/269で停滞中)。完走後 `--build` | 実行のみ×数日 | 人手 (実行) → 下位モデル (--build確認) | ⬜ |
 | T23 | 血統ありcriteria再マイニング | 血統条件を含めたルール採掘 (T15と統合可) | 0.5-1日 | Codex → 上位モデル採否 | ⬜ |
-| T24 | 書籍血統ルールの解禁検証 | criteria.csv の血統ルールをsire_pts採用後の状態でOOS再検証 | 0.5日 | 下位モデル実行 → 上位モデル採否 | ⬜ |
+| T24 | 書籍血統ルールの解禁検証 | criteria.csv の血統ルールをsire_pts採用後の状態でOOS再検証 | 0.5日 | 下位モデル実行 → 上位モデル採否 | 🔄 進行中 |
 | T30 | ダッシュボードに日別実績一覧を追加 | 日付ごとにモデル別回収率・EV通知成績・WIN5結果 (x/5) を1まとまりで一覧表示。日付クリックで日別フィルタへ | 2-4h | 下位モデル → 上位モデル | ✅ 2026-07-13 |
 | T28 | サーバー起動時のポート二重バインド防止 | 5003/5004でSO_REUSEADDRにより新旧プロセスが同一ポートに同居し古いコードが応答し続ける事故が2回発生。4サーバーの起動時に既存リスナー検出でエラー終了するガードを追加。仕様書: [codex/SPEC-T28](codex/SPEC-T28-port-guard.md) | 1-2h | Codex → 上位モデル | 📋 仕様書済み (Codex渡し待ち) |
 | T25 | ev_log_report.py のSQLite付け替え | Neon ev_alert_log が書き込み不全で全期間0件のため、レポートをSQLiteロギング基盤に一本化。仕様書: [codex/SPEC-T25](codex/SPEC-T25-ev-log-report-sqlite.md) | 2-4h | Codex → 上位モデル | ✅ 2026-07-12 読取専用SQLiteへ一本化。alert 31件・LINE送信15件・単複回収/チャネル別/結果待ちを確認 |
