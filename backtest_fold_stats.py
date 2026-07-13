@@ -27,7 +27,8 @@ import analysis  # noqa: E402
 from backtest_ability import load_runs  # noqa: E402
 from backtest_ml import (FEATURES, build_dataset, coverage_from_scores,
                          fit_conditional_logit, fit_temperature)  # noqa: E402
-from backtest_win5 import load_upset_map, load_win5_cfg  # noqa: E402
+from backtest_win5 import (load_upset_map, load_win5_cfg,
+                           parse_final_odds)  # noqa: E402
 from fold_stats import FoldFactorTableProvider, fold_as_of_for  # noqa: E402
 
 
@@ -51,7 +52,9 @@ def _factor_loader(provider=None):
     # empty cache makes that independence explicit and prevents future changes
     # from silently importing criteria_weights (2024-2025) into this harness.
     analysis._criteria_weights_cache = {}
-    if provider is not None:
+    if provider is None:
+        scoring.load_factor_table = scoring.load_legacy_factor_table
+    else:
         scoring.load_factor_table = (
             lambda place, track, distance, _base_dir=None:
             provider(place, track, distance)
@@ -99,7 +102,127 @@ def conditional_log_loss(scores, labels, race_keys, temperature=1.0,
     return -log_likelihood / events
 
 
-def build_feature_dataset(runs, cfg, eval_to, provider=None):
+def _softmax(values, temperature=1.0):
+    values = np.asarray(values, dtype=float) / float(temperature or 1.0)
+    values = values - values.max()
+    exp_values = np.exp(values)
+    return exp_values / exp_values.sum()
+
+
+def same_population_metrics(scores, labels, race_keys, meta, *,
+                            temperature=1.0, min_race_no=9,
+                            min_horses=8, require_complete_field=True):
+    """Evaluate model and market on exactly the same races and runners.
+
+    Probability metrics require settled odds for every retained runner.  The
+    default also requires the feature rows to cover the official field size,
+    matching the strict comparison contract used by the no-market diagnostic.
+    """
+    grouped = {}
+    for score, label, key, runner in zip(scores, labels, race_keys, meta):
+        grouped.setdefault(key, []).append((float(score), int(label), runner))
+
+    races = []
+    skipped = Counter()
+    for key in sorted(grouped):
+        members = grouped[key]
+        race_no = key[2]
+        if race_no is None or race_no < min_race_no or len(members) < min_horses:
+            skipped["filter"] += 1
+            continue
+        if require_complete_field:
+            field_size = max(
+                (int(row.get("total_horses") or 0) for _, _, row in members),
+                default=0)
+            if field_size and len(members) != field_size:
+                skipped["incomplete_features"] += 1
+                continue
+        winner_indices = [
+            index for index, (_, label, _runner) in enumerate(members)
+            if label == 1
+        ]
+        if not winner_indices:
+            skipped["no_winner"] += 1
+            continue
+        odds = [parse_final_odds(row.get("win_pay"), row.get("rank"))
+                for _, _, row in members]
+        if any(value is None or value <= 1.0 for value in odds):
+            skipped["missing_odds"] += 1
+            continue
+
+        model_values = [score for score, _, _ in members]
+        model_order = sorted(
+            range(len(members)),
+            key=lambda index: (-model_values[index],
+                               int(members[index][2].get("umaban") or 99)))
+
+        def market_key(index):
+            popularity = members[index][2].get("popularity")
+            try:
+                popularity = int(popularity)
+            except (TypeError, ValueError):
+                popularity = 999
+            return (popularity, odds[index],
+                    int(members[index][2].get("umaban") or 99))
+
+        market_order = sorted(range(len(members)), key=market_key)
+        inverse_odds = np.asarray([1.0 / value for value in odds], dtype=float)
+        races.append({
+            "key": key,
+            "members": members,
+            "winner_indices": winner_indices,
+            "model_order": model_order,
+            "market_order": market_order,
+            "model_probabilities": _softmax(model_values, temperature),
+            "market_probabilities": inverse_odds / inverse_odds.sum(),
+        })
+
+    def aggregate(order_key, probability_key):
+        hits = [0] * 4
+        logloss = 0.0
+        winner_events = 0
+        brier = 0.0
+        horse_count = 0
+        for race in races:
+            winners = set(race["winner_indices"])
+            for index in range(4):
+                hits[index] += bool(
+                    winners.intersection(race[order_key][:index + 1]))
+            probabilities = np.asarray(race[probability_key], dtype=float)
+            for winner in winners:
+                logloss -= math.log(
+                    max(1e-15, float(probabilities[winner])))
+            winner_events += len(winners)
+            outcomes = np.zeros(len(probabilities), dtype=float)
+            outcomes[list(winners)] = 1.0
+            brier += float(np.square(outcomes - probabilities).sum())
+            horse_count += len(probabilities)
+        n_races = len(races)
+        return {
+            "coverage": [value / n_races for value in hits] if n_races else [],
+            "logloss": logloss / winner_events if winner_events else float("nan"),
+            "brier": brier / horse_count if horse_count else float("nan"),
+        }
+
+    signature = tuple(
+        (race["key"], tuple(sorted(
+            (str(row.get("umaban") or ""), str(row.get("horse") or ""))
+            for _, _, row in race["members"])))
+        for race in races)
+    return {
+        "races": len(races),
+        "horses": sum(len(race["members"]) for race in races),
+        "models": {
+            "model": aggregate("model_order", "model_probabilities"),
+            "market": aggregate("market_order", "market_probabilities"),
+        },
+        "skipped": dict(skipped),
+        "sample_signature": signature,
+    }
+
+
+def build_feature_dataset(runs, cfg, eval_to, provider=None, *,
+                          dataset_kwargs=None):
     """Build legacy features once or leak-free expanding yearly folds.
 
     Outcome-rate features are target encodings.  For fold mode every training
@@ -107,9 +230,10 @@ def build_feature_dataset(runs, cfg, eval_to, provider=None):
     2024-12-31 table on the 2021-2024 training rows would let each row's own
     result influence its jockey/frame/etc. feature.
     """
+    dataset_kwargs = dict(dataset_kwargs or {})
     if provider is None:
         with _factor_loader():
-            return build_dataset(runs, STATS_FROM, cfg)
+            return build_dataset(runs, STATS_FROM, cfg, **dataset_kwargs)
 
     feature_parts, label_parts, all_keys, all_meta = [], [], [], []
     for year in range(int(STATS_FROM[:4]), int(eval_to[:4]) + 1):
@@ -121,7 +245,7 @@ def build_feature_dataset(runs, cfg, eval_to, provider=None):
         snapshot = provider.for_as_of(snapshot_as_of)
         with _factor_loader(snapshot):
             features, labels, race_keys, meta = build_dataset(
-                runs, year_from, cfg)
+                runs, year_from, cfg, **dataset_kwargs)
         keep = np.array(
             [year_from <= key[0] <= year_to for key in race_keys], dtype=bool)
         if not keep.any():
@@ -136,10 +260,9 @@ def build_feature_dataset(runs, cfg, eval_to, provider=None):
             all_keys, all_meta)
 
 
-def evaluate_mode(runs, cfg, upset_map, eval_from, eval_to, provider=None):
-    """Fit on all years before eval_from and evaluate one fixed time fold."""
-    features, labels, race_keys, meta = build_feature_dataset(
-        runs, cfg, eval_to, provider)
+def evaluate_feature_dataset(features, labels, race_keys, meta, upset_map,
+                             eval_from, eval_to):
+    """Fit one fixed time fold from an already consistent feature dataset."""
     dates = np.array([key[0] for key in race_keys])
     train_to = fold_as_of_for(eval_from)
     train = dates <= train_to
@@ -183,6 +306,9 @@ def evaluate_mode(runs, cfg, upset_map, eval_from, eval_to, provider=None):
 
     coverage, counts = coverage_from_scores(
         test_scores, test_keys, test_meta, upset_map)
+    comparison = same_population_metrics(
+        test_scores, labels[test], test_keys, test_meta,
+        temperature=temperature)
     return {
         "features": len(FEATURES),
         "train_samples": int(train.sum()),
@@ -192,10 +318,19 @@ def evaluate_mode(runs, cfg, upset_map, eval_from, eval_to, provider=None):
         "temperature": temperature,
         "logloss": conditional_log_loss(
             test_scores, labels[test], test_keys, temperature),
+        "comparison": comparison,
         "_sample_signature": tuple(sorted(
             (key, str(row.get("umaban") or ""), str(row.get("horse") or ""))
             for key, row in zip(test_keys, test_meta))),
     }
+
+
+def evaluate_mode(runs, cfg, upset_map, eval_from, eval_to, provider=None):
+    """Fit on all years before eval_from and evaluate one fixed time fold."""
+    features, labels, race_keys, meta = build_feature_dataset(
+        runs, cfg, eval_to, provider)
+    return evaluate_feature_dataset(
+        features, labels, race_keys, meta, upset_map, eval_from, eval_to)
 
 
 def parse_args(argv=None):

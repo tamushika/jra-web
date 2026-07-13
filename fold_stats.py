@@ -496,7 +496,7 @@ def _main(argv=None) -> None:
 
     report = compare_with_legacy(
         provider.tables,
-        lambda place, surface, distance: scoring.load_factor_table(
+        lambda place, surface, distance: scoring.load_legacy_factor_table(
             place, surface, distance, api_dir),
     )
     print(f"現行CSVとの共通コース: {report['common_courses']}/{report['fold_courses']}")

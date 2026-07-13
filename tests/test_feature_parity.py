@@ -10,6 +10,8 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 import backtest_ml
 import analysis
 import scoring
@@ -17,6 +19,9 @@ from backtest_ability import load_runs
 from backtest_criteria import load_mawari
 from backtest_win5 import load_win5_cfg, parse_final_odds
 from past_data_service import calculate_waku
+from factor_snapshot import (build_snapshot_payload, reset_snapshot_cache,
+                             write_factor_snapshot)
+from fold_stats import FoldFactorTableProvider, fold_as_of_for
 
 
 ROOT = Path(__file__).parents[1]
@@ -118,7 +123,8 @@ def _print_report(features, mismatches, counts):
         print(f"{name:12s} | {mismatches[name]:7d}/{n:<4d} | {rate:7.2f}% | {status}", file=out)
 
 
-def test_training_and_live_feature_parity():
+@pytest.mark.parametrize("factor_source", ["legacy_fallback", "ability_snapshot"])
+def test_training_and_live_feature_parity(factor_source, tmp_path, monkeypatch):
     with MODEL_PATH.open(encoding="utf-8") as fh:
         features = json.load(fh)["features"]
     assert features == backtest_ml.FEATURES
@@ -130,6 +136,25 @@ def test_training_and_live_feature_parity():
         date_from = min(key[0] for key in selected)
         date_to = max(key[0] for key in selected)
         runs = load_runs(conn, date_from, date_to)
+
+    snapshot_path = tmp_path / "factor_snapshot.json"
+    monkeypatch.setattr(scoring, "FACTOR_SNAPSHOT_PATH", str(snapshot_path))
+    if factor_source == "ability_snapshot":
+        as_of = fold_as_of_for(date_to)
+        provider = FoldFactorTableProvider(
+            ABILITY_DB,
+            as_of,
+            pedigree_cache_path=ROOT / "pedigree_cache.json",
+            legacy_api_dir=ROOT / "api",
+        )
+        payload = build_snapshot_payload(
+            provider.tables,
+            as_of=provider.as_of,
+            stats_from=provider.stats_from,
+            generated_at="2026-07-13T00:00:00+09:00",
+        )
+        write_factor_snapshot(snapshot_path, payload)
+    reset_snapshot_cache()
 
     cfg = load_win5_cfg()
     X, _y, race_keys, meta = backtest_ml.build_dataset(runs, date_from, cfg)

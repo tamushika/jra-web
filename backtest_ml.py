@@ -61,6 +61,32 @@ FEATURES = ["j_pts", "f_pts", "tfeat", "cfeat", "agari_flag", "ln_odds",
 # M2は市場情報だけを外した診断モデル。本番モデルのFEATURESは変更しない。
 NO_MARKET_FEATURES = [name for name in FEATURES if name != "ln_odds"]
 
+# T13: レース内の相対比較を conditional logit に明示的に渡す診断特徴量。
+# 本番モデルの FEATURES は変更せず、--relative 相当の呼び出しでだけ末尾に加える。
+RELATIVE_FEATURES = [
+    "tfeat_rank",
+    "tfeat_gap_med",
+    "tfeat_gap_best",
+    "j_pts_dev",
+    "f_pts_dev",
+    "sire_pts_dev",
+    "kinryo_dev",
+    "n_prior_dev",
+]
+
+_RELATIVE_AVAILABILITY_BITS = {
+    name: 1 << index
+    for index, name in enumerate(
+        ("tfeat", "j_pts", "f_pts", "sire_pts", "kinryo", "n_prior")
+    )
+}
+
+
+def active_feature_names(relative=False):
+    """今回のデータセットに含める特徴量名を、列順どおりに返す。"""
+    return list(FEATURES) + (list(RELATIVE_FEATURES) if relative else [])
+
+
 PEDIGREE_MIN_COVERAGE = 0.70  # 評価出走の血統判明率がこれ未満なら sire_pts は無効のまま
 
 WET = {"稍", "重", "不"}
@@ -74,7 +100,94 @@ def _pci_dev(run):
     return run["pci"] - PCI_TRACK_MEAN[run["track_type"]]
 
 
-def build_dataset(runs, date_from, cfg):
+def _append_relative_features(X, race_keys, availability):
+    """絶対特徴量行列の末尾へ、同一レース内で計算した相対特徴量を加える。
+
+    ``availability`` は各行について元特徴量が実際に取得できたかを保持する。
+    欠損値を既存モデル用の既定値（0、斤量55など）と区別し、相対値は必ず0に
+    落とす。平均・中央値・順位は取得できた馬だけで計算する。
+    """
+    # The yearly T33 build can hold tens of thousands of Python row lists at
+    # once.  For that list input, first compact to float32 and release the row
+    # objects before allocating the 29-column result.  The default 21-column
+    # path never enters here, and ndarray callers retain their original dtype.
+    if isinstance(X, list):
+        base = np.empty((len(X), len(FEATURES)), dtype=np.float32)
+        for row_index, row in enumerate(X):
+            base[row_index] = row
+            X[row_index] = None
+        X.clear()
+    else:
+        base = np.asarray(X, dtype=float)
+    if base.ndim == 1 and base.size == 0:
+        base = np.empty((0, len(FEATURES)), dtype=float)
+    if base.ndim != 2 or base.shape[1] != len(FEATURES):
+        raise ValueError(f"相対特徴量の入力列数が不正です: {base.shape}")
+    if len(base) != len(race_keys) or len(base) != len(availability):
+        raise ValueError("特徴量・race_keys・欠損maskの行数が一致しません")
+
+    extended = np.zeros(
+        (len(base), len(FEATURES) + len(RELATIVE_FEATURES)), dtype=base.dtype)
+    extended[:, :len(FEATURES)] = base
+    relative = extended[:, len(FEATURES):]
+    race_rows = defaultdict(list)
+    for row_index, race_key in enumerate(race_keys):
+        race_rows[race_key].append(row_index)
+
+    source_columns = {
+        "tfeat": FEATURES.index("tfeat"),
+        "j_pts": FEATURES.index("j_pts"),
+        "f_pts": FEATURES.index("f_pts"),
+        "sire_pts": FEATURES.index("sire_pts"),
+        "kinryo": FEATURES.index("kinryo"),
+        "n_prior": FEATURES.index("n_prior"),
+    }
+
+    for rows in race_rows.values():
+        # tfeat順位・中央値差・最良値差。大きい値を上位とし、同値は平均順位。
+        t_rows = [i for i in rows if _relative_value_available(
+            availability[i], "tfeat")]
+        if t_rows:
+            values = np.asarray([base[i, source_columns["tfeat"]] for i in t_rows])
+            median = float(np.median(values))
+            best = float(np.max(values))
+            field_count = len(rows)
+            for i, value in zip(t_rows, values):
+                if field_count == 1:
+                    rank_score = 1.0
+                else:
+                    greater = int(np.count_nonzero(values > value))
+                    ties = int(np.count_nonzero(values == value))
+                    average_rank = greater + (ties + 1) / 2.0
+                    # SPEC-T13の「頭数で正規化」は取得可能頭数ではなく
+                    # レース全頭数を分母にする。欠損馬自身は引き続き0。
+                    rank_score = (
+                        (field_count - average_rank) / (field_count - 1))
+                relative[i, 0] = rank_score
+                relative[i, 1] = float(value) - median
+                relative[i, 2] = float(value) - best
+
+        for source, target_col in (("j_pts", 3), ("f_pts", 4),
+                                   ("sire_pts", 5), ("kinryo", 6),
+                                   ("n_prior", 7)):
+            available_rows = [i for i in rows if _relative_value_available(
+                availability[i], source)]
+            if not available_rows:
+                continue
+            mean = float(np.mean([base[i, source_columns[source]] for i in available_rows]))
+            for i in available_rows:
+                relative[i, target_col] = base[i, source_columns[source]] - mean
+
+    return extended
+
+
+def _relative_value_available(mask, source):
+    if isinstance(mask, (int, np.integer)):
+        return bool(mask & _RELATIVE_AVAILABILITY_BITS[source])
+    return bool(mask.get(source, False))
+
+
+def build_dataset(runs, date_from, cfg, relative=False):
     """評価出走ごとに特徴量ベクトルを構築 (score_all_runners と同じ部品を使用)"""
     from backtest_criteria import (load_filtered_criteria, load_mawari,
                                    build_h, attach_agari_rank)
@@ -131,6 +244,9 @@ def build_dataset(runs, date_from, cfg):
 
     jmatcher = JockeyMatcher()
     X, y, race_keys, meta = [], [], [], []
+    # Six availability flags fit in one byte per runner; a bytearray avoids
+    # retaining tens of thousands of Python dict/int objects in yearly folds.
+    relative_availability = bytearray()
 
     for horse, lst in by_horse.items():
         for i, cur in enumerate(lst):
@@ -141,6 +257,7 @@ def build_dataset(runs, date_from, cfg):
                 continue
 
             f = dict.fromkeys(FEATURES, 0.0)
+            available = 0
 
             # バイアス (騎手/枠/距離変更/コース替わり/所属) — db-keiba統計点を特徴量に
             table = get_ftable(cur["place"], cur["track_type"], cur["distance"])
@@ -154,17 +271,27 @@ def build_dataset(runs, date_from, cfg):
                         p, _ = scoring._factor_points(row, baseline, params, w, "win_rate")
                         return p
 
-                    row = jmatcher.match(table.get("jockey_w") or {}, cur["jockey"])
+                    # ability snapshotではability.db側の短縮名に合わせて、ライブ
+                    # _ml_featuresと同じ双方向fallbackを使う。従来CSVは既存の
+                    # JockeyMatcherを維持し、snapshot未配置時の挙動を変えない。
+                    if (table.get("_meta") or {}).get("source") == "ability.db:runs":
+                        row = scoring._match_entity(
+                            table.get("jockey_w"), cur["jockey"])
+                    else:
+                        row = jmatcher.match(
+                            table.get("jockey_w") or {}, cur["jockey"])
                     if row is not None:
                         p, _ = scoring._factor_points(row, baseline, params,
                                                       weights.get("jockey_w", 0), "win_rate")
                         if p is not None:
                             f["j_pts"] = p
+                            available |= _RELATIVE_AVAILABILITY_BITS["j_pts"]
                     waku = calculate_waku(cur["umaban"], cur["total_horses"])
                     if waku:
                         p = bias_pts(table.get("frame"), f"{waku}枠", weights.get("frame", 0))
                         if p is not None:
                             f["f_pts"] = p
+                            available |= _RELATIVE_AVAILABILITY_BITS["f_pts"]
                     # 距離変更 (前走距離との実差分 → db-keibaの7段階ラベル)
                     d_label = scoring._distance_label(cur["distance"], prior[0]["distance"])
                     p = bias_pts(table.get("distance"), scoring._norm(d_label) if d_label else None)
@@ -191,6 +318,7 @@ def build_dataset(runs, date_from, cfg):
                                 p, _ = scoring._factor_points(row, baseline, params, 1.0, "win_rate")
                                 if p is not None:
                                     f["sire_pts"] = p
+                                    available |= _RELATIVE_AVAILABILITY_BITS["sire_pts"]
 
             # 能力系
             tbest, cbest, amin = None, None, None
@@ -212,6 +340,8 @@ def build_dataset(runs, date_from, cfg):
                 if pr.get("agari_ratio") is not None:
                     amin = pr["agari_ratio"] if amin is None else min(amin, pr["agari_ratio"])
             f["tfeat"] = tbest if tbest is not None else 0.0
+            if tbest is not None:
+                available |= _RELATIVE_AVAILABILITY_BITS["tfeat"]
             f["cfeat"] = cbest if cbest is not None else 0.0
             f["agari_flag"] = 1.0 if (amin is not None and amin <= ab["agari_best_ratio"]) else 0.0
 
@@ -230,8 +360,11 @@ def build_dataset(runs, date_from, cfg):
             f["age"] = cur.get("age") or 4
             f["is_male"] = 1.0 if cur.get("sex") in ("牡", "セ") else 0.0
             f["kinryo"] = cur.get("kinryo") or 55.0
+            if cur.get("kinryo") is not None:
+                available |= _RELATIVE_AVAILABILITY_BITS["kinryo"]
             f["weight"] = cur.get("weight") or 470
             f["n_prior"] = len(prior)
+            available |= _RELATIVE_AVAILABILITY_BITS["n_prior"]
 
             # 道悪適性 (当日道悪 × 相対適性。backtest_wetで検証済みの定義)
             if cur.get("condition") in WET:
@@ -275,6 +408,10 @@ def build_dataset(runs, date_from, cfg):
             y.append(1 if cur["rank"] == 1 else 0)
             race_keys.append((cur["date"], cur["place"], cur["r"]))
             meta.append(cur)
+            if relative:
+                relative_availability.append(available)
+    if relative:
+        X = _append_relative_features(X, race_keys, relative_availability)
     return np.array(X), np.array(y), race_keys, meta
 
 
@@ -285,7 +422,7 @@ def coverage_from_scores(scores, race_keys, meta, upset_map):
     return measure_coverage(races, upset_map)
 
 
-def fit_conditional_logit(Xz, y, race_keys, l2=1.0, max_iter=300):
+def fit_conditional_logit(Xz, y, race_keys, l2=1.0, max_iter=300, offset=None):
     """
     conditional logit (レース内softmax / Plackett-Luce top-1) を L-BFGS で学習。
     通常のロジスティック回帰と違い「同レースの他馬との相対比較」を直接最適化する。
@@ -301,13 +438,20 @@ def fit_conditional_logit(Xz, y, race_keys, l2=1.0, max_iter=300):
         rid[i] = rid_map.setdefault(k, len(rid_map))
     order = np.argsort(rid, kind="stable")
     Xs, ys, rs = Xz[order], np.asarray(y)[order].astype(float), rid[order]
+    if offset is None:
+        offset_values = np.zeros(len(race_keys), dtype=float)
+    else:
+        offset_values = np.asarray(offset, dtype=float)
+        if offset_values.ndim != 1 or len(offset_values) != len(race_keys):
+            raise ValueError("offset must be a one-dimensional array matching race_keys")
+    offsets = offset_values[order]
     starts = np.flatnonzero(np.r_[True, rs[1:] != rs[:-1]])
     seg = np.repeat(np.arange(len(starts)), np.diff(np.r_[starts, len(rs)]))
     nwin = np.add.reduceat(ys, starts)          # レースごとの勝ち馬数 (通常1, 同着2)
     xwin_sum = Xs[ys == 1].sum(axis=0)
 
     def negll(w):
-        s = Xs @ w
+        s = offsets + Xs @ w
         smax = np.maximum.reduceat(s, starts)
         e = np.exp(s - smax[seg])
         z = np.add.reduceat(e, starts)
@@ -398,11 +542,15 @@ def build_prob_races(scores, race_keys, meta, temp=1.0):
 
 def feature_matrix(X, feature_names):
     """FEATURES順の行列から、指定した特徴量だけを同じ順序で取り出す。"""
-    unknown = [name for name in feature_names if name not in FEATURES]
+    matrix = np.asarray(X)
+    source_names = active_feature_names(
+        relative=(matrix.ndim == 2 and matrix.shape[1] == len(FEATURES) + len(RELATIVE_FEATURES))
+    )
+    unknown = [name for name in feature_names if name not in source_names]
     if unknown:
         raise ValueError(f"未知の特徴量: {unknown}")
-    indices = [FEATURES.index(name) for name in feature_names]
-    return np.asarray(X)[:, indices]
+    indices = [source_names.index(name) for name in feature_names]
+    return matrix[:, indices]
 
 
 def _softmax(scores, temperature=1.0):
@@ -778,18 +926,70 @@ def parse_cli_args(argv=None):
                     help="LightGBM LambdaRank も学習して比較 (要 lightgbm)")
     ap.add_argument("--no-market", action="store_true",
                     help="ln_oddsを除外したM2を現行CL・市場人気と比較")
+    ap.add_argument("--m3", action="store_true",
+                    help="ability年次as-of統計で市場offset+残差M3を評価")
+    ap.add_argument("--m4b", action="store_true",
+                    help="ability年次as-of統計で市場の限定補正M4-Bを評価")
+    ap.add_argument("--relative", action="store_true",
+                    help="ability年次as-of統計でT13レース内相対特徴を評価")
+    ap.add_argument("--stats-snapshot", action="store_true",
+                    help="ability.db年次as-of統計でT33凍結評価を実行")
+    ap.add_argument("--rules-file", action="append", default=None, metavar="PATH",
+                    help="--stats-snapshot評価に記録するmined rules CSV (複数可)")
     args = ap.parse_args(argv)
     if args.no_market and args.write:
         ap.error("--no-market と --write は同時に指定できません (M2は本番保存禁止)")
+    if args.m3 and args.write:
+        ap.error("--m3 と --write は同時に指定できません (M3は評価専用)")
+    if args.m4b and args.write:
+        ap.error("--m4b と --write は同時に指定できません (M4-Bは評価専用)")
+    if args.relative and args.write:
+        ap.error("--relative と --write は同時に指定できません (T13は評価専用)")
+    if args.stats_snapshot and args.write:
+        ap.error("--stats-snapshot と --write は同時に指定できません (T33は評価専用)")
+    if args.rules_file and not args.stats_snapshot:
+        ap.error("--rules-file は --stats-snapshot と併用してください")
+    if args.stats_snapshot and (args.no_market or args.lgbm or args.m4b):
+        ap.error("--stats-snapshot は --no-market/--lgbm/--m4b と同時に指定できません")
+    if args.m3 and (args.stats_snapshot or args.no_market or args.lgbm or args.m4b):
+        ap.error("--m3 は --stats-snapshot/--no-market/--lgbm/--m4b と同時に指定できません")
+    if args.relative and (args.m3 or args.m4b or args.stats_snapshot
+                          or args.no_market or args.lgbm):
+        ap.error("--relative は --m3/--m4b/--stats-snapshot/--no-market/--lgbm と同時に指定できません")
+    if args.m4b and (args.relative or args.stats_snapshot
+                     or args.no_market or args.lgbm):
+        ap.error("--m4b は --relative/--stats-snapshot/--no-market/--lgbm と同時に指定できません")
     return args
 
 
 def main():
+    args = parse_cli_args()
+    if args.relative:
+        from backtest_relative_diagnostics import main as relative_diagnostic_main
+        # 親CLIの --relative を子parserへ再送しない。
+        relative_diagnostic_main([])
+        return
+    if args.m4b:
+        from backtest_m4b_diagnostics import main as m4b_diagnostic_main
+        # 同様に親CLIの --m4b を評価専用の子parserへ再送しない。
+        m4b_diagnostic_main([])
+        return
+    if args.m3:
+        from backtest_market_diagnostics import main as m3_diagnostic_main
+        m3_diagnostic_main()
+        return
+    if args.stats_snapshot:
+        # T11/T13との衝突を避け、年次as-of構築と確率評価は独立ハーネスへ委譲。
+        from backtest_stats_retrain import main as stats_retrain_main
+        delegated = ["--stats-source", "all"]
+        for path in args.rules_file or []:
+            delegated.extend(["--rules-file", path])
+        stats_retrain_main(delegated)
+        return
+
     # 特徴量一致テストは学習器を使わないため、重い任意依存は実行時だけ読み込む。
     from sklearn.linear_model import LogisticRegression
     from sklearn.preprocessing import StandardScaler
-
-    args = parse_cli_args()
 
     cfg = load_win5_cfg()
     upset_map = load_upset_map()

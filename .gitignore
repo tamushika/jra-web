@@ -22,3 +22,9 @@ pedigree_cache.json
 
 # Common prediction/odds logging database
 data/jra_logging.db*
+
+# Generated locally after T33 adoption; production snapshot is never committed.
+api/data_files/common/factor_snapshot.json
+
+# T16 scratch place model (regenerated locally, never committed)
+web_place_model.json

@@ -13,6 +13,13 @@ import re
 import unicodedata
 
 try:
+    from .factor_snapshot import (SNAPSHOT_FILENAME, course_key,
+                                  load_factor_snapshot)
+except ImportError:  # api/ を sys.path に追加して ``import scoring`` する既存CLI
+    from factor_snapshot import (SNAPSHOT_FILENAME, course_key,
+                                 load_factor_snapshot)
+
+try:
     from analysis import VENUE_SLUG_MAP
 except ImportError:
     VENUE_SLUG_MAP = {
@@ -59,6 +66,11 @@ DEFAULT_CFG = {
 _NUM_KEYS = ("n1", "n2", "n3", "out", "starts")
 _RATE_KEYS = ("win_rate", "quinella_rate", "show_rate", "win_roi", "show_roi")
 
+FACTOR_SNAPSHOT_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "data_files", "common", SNAPSHOT_FILENAME,
+)
+
 
 # ─── 読み込み ────────────────────────────────────────────────────────────────
 
@@ -75,9 +87,28 @@ def load_score_weights(base_dir, filename="score_weights.json"):
 
 def load_factor_table(venue, race_type, dist_val, base_dir):
     """
-    factors CSV を読み込み {"baseline": row, "father_w": {正規化名: row}, ...} を返す。
+    factor snapshot を優先して読み込み、未配置・不正時は従来CSVへフォールバックする。
+    {"baseline": row, "father_w": {正規化名: row}, ...} を返す。
     ファイルが無い会場・コースは None (スコア算出なし)。
+
+    有効なsnapshotがある場合はそのファイルを単一の統計ソースとして扱い、
+    snapshotに無いコースをCSVで補完しない (統計期間の混在を防ぐ)。
     """
+    snapshot = load_factor_snapshot(FACTOR_SNAPSHOT_PATH)
+    if snapshot is not None:
+        key = course_key(venue, race_type, dist_val)
+        return snapshot["tables"].get(key) if key is not None else None
+
+    return load_legacy_factor_table(venue, race_type, dist_val, base_dir)
+
+
+def load_legacy_factor_table(venue, race_type, dist_val, base_dir):
+    """Read the pre-T33 db-keiba CSV source without snapshot auto-selection.
+
+    This explicit control loader is used only by offline A/B evaluation.  Live
+    callers must continue to use :func:`load_factor_table`.
+    """
+
     slug = VENUE_SLUG_MAP.get(venue)
     if not slug:
         return None
