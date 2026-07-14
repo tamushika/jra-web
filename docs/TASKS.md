@@ -67,7 +67,7 @@
 
 | ID | タスク | 内容 | 工数 | 担当 | 状態 |
 |---|---|---|---|---|---|
-| T22 | コース辞典PDF抽出の完走 | `extract_waku_rail.py` を日を分けて実行 (Gemini無料枠制限、23/269で停滞中)。完走後 `--build` | 実行のみ×数日 | 人手 (実行) → 下位モデル (--build確認) | ⬜ |
+| T22 | コース辞典PDF抽出の完走 | `extract_waku_rail.py` を日を分けて実行 (Gemini無料枠制限、23/269で停滞中)。完走後 `--build` | 実行のみ×数日 | 人手 (実行) → 下位モデル (--build確認) | ◐ 2026-07-14 **44/269まで前進** (Opus実行)。停滞の一因は jra-web/.env に GEMINI_API_KEY 未設定だったこと (シェル環境変数には有効キー有りでBash起動時は実行可・**batやスケジューラ経由の安定化には.envへ追記推奨**)。今回+21件処理し日次無料枠切れで自動STOP。内訳 other33/course_title8/waku_rail3、build()で **札幌 (ダ1700/芝1200/芝1500・各A/Cレール・6表・紐付け不能0)** を waku_rail_bias.json に生成。raw進捗は waku_rail_raw.jsonl (未追跡・再開可)。**残り約225件は翌日以降クォータ回復後に再実行**。全会場完走後に build → 内容レビュー → 本番採否・コミット (現状JSONは未追跡・未コミット) |
 | T23 | 血統ありcriteria再マイニング | 血統条件を含めたルール採掘 (T15と統合可)。仕様書: [codex/SPEC-T23](codex/SPEC-T23-pedigree-remine.md) | 0.5-1日 | Codex → 上位モデル採否 | 📝 2026-07-14 SPEC作成済み・**Codex渡し待ち**。技術ブロッカー特定済 (build_hがsire/bms="-"固定・mine_criteriaがsire_lineageに{}を渡す→血統・系統が評価されない)。接続点は pedigree_store.load_all + load_sire_lineage。**採否の勘所=sire_pts超えの増分** (T24でブック血統は非選択的と判明済) |
 | T24 | 書籍血統ルールの解禁検証 | criteria.csv の血統ルールをsire_pts採用後の状態でOOS再検証 | 0.5日 | 下位モデル実行 → 上位モデル採否 | ❌ 2026-07-13 不採用 (下記完了ログ) |
 | T32 | 7/4 Neon由来の重複行修正 | runs の20260704に同一(date,place,r,umaban)で内容が異なる行が5組 (Neon登録データの不整合)。netkeibaを正として修正 | 1-2h | 下位モデル → 上位モデル | ✅ 2026-07-13 誤行5行を削除 (バックアップ有)。修正後重複0・4レース全頭がnetkeibaと完全一致 |
