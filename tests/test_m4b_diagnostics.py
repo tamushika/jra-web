@@ -208,10 +208,17 @@ def test_full_evaluation_reuses_m3_and_asserts_same_sample(monkeypatch):
             {"features": list(m4b.NO_MARKET_FEATURES), "oof_folds": []},
         ),
     )
-    monkeypatch.setattr(
-        m4b, "fit_conditional_logit",
-        lambda matrix, *_args, **_kwargs: np.zeros(matrix.shape[1]),
-    )
+    fit_calls = []
+
+    def fake_fit(matrix, _labels, fit_keys, **kwargs):
+        fit_calls.append({
+            "rows": len(matrix),
+            "races": len(set(fit_keys)),
+            "l2": kwargs.get("l2"),
+        })
+        return np.zeros(matrix.shape[1])
+
+    monkeypatch.setattr(m4b, "fit_conditional_logit", fake_fit)
     report = m4b.evaluate_m4b_dataset(
         features, labels, keys, meta,
         prior_context=context,
@@ -220,10 +227,20 @@ def test_full_evaluation_reuses_m3_and_asserts_same_sample(monkeypatch):
 
     assert report["selection"]["selected_lambda"] == 100.0
     assert report["selection"]["selected_cap"] == 0.1
+    assert report["selection"]["train_races"] == 3
+    assert report["selection"]["selected_internal_l2"] == 300.0
+    assert report["selection"]["selected_residual_norm"] == 0.0
+    assert report["selection"]["final_fit_rows"] == 32
+    assert report["selection"]["final_fit_races"] == 4
+    assert report["selection"]["final_internal_l2"] == 400.0
+    assert report["selection"]["final_residual_norm"] == 0.0
+    assert fit_calls[-1] == {"rows": 32, "races": 4, "l2": 400.0}
     assert report["m3_reused"]["sample_signature_asserted"]
     assert report["candidate_features"]["selected"] == list(
         m4b.CORRECTION_FEATURES)
     assert len(report["coefficients"]) == 6
+    assert all("final_scale" in row and "train_scale" not in row
+               for row in report["coefficients"])
     for period in report["periods"].values():
         assert list(period["models"]) == ["m0", "current_cl", "m3", "m4b"]
         assert period["m4b_floor"]["passed"]

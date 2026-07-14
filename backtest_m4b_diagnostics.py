@@ -1,10 +1,13 @@
 """Evaluation-only diagnostics for M4-B selective market correction.
 
 M4-B keeps ``log(normalized 1 / final_odds)`` at coefficient one and learns a
-small residual that describes *where* the market may be wrong.  The M2 rank
-gap used by that residual is out-of-fold for the 2021-2023 training rows and
-is produced by one frozen 2021-2023 M2 model for every later row.  Nothing in
-this module writes a model or changes production scoring.
+small residual that describes *where* the market may be wrong.  Lambda and
+the inference cap are selected by a 2021-2023 fit and a 2024 tune split; the
+selected residual is then refitted on strict 2021-2024 races before the
+frozen 2025/2026H1 evaluation.  The M2 rank gap used by that residual is
+out-of-fold for the 2021-2023 training rows and is produced by one frozen
+2021-2023 M2 model for every later row.  Nothing in this module writes a model
+or changes production scoring.
 """
 from __future__ import annotations
 
@@ -462,6 +465,8 @@ def evaluate_m4b_dataset(features, labels, race_keys, meta, *, prior_context,
     complete = prepare_complete_races(features, labels, race_keys, meta)
     train = _required_subset(complete, TRAIN_PERIOD, "train")
     tune = _required_subset(complete, TUNE_PERIOD, "tune")
+    final_train = _required_subset(
+        complete, (TRAIN_PERIOD[0], TUNE_PERIOD[1]), "final train")
     evaluations = {
         name: _required_subset(complete, period, name)
         for name, period in EVALUATION_PERIODS.items()
@@ -492,26 +497,28 @@ def evaluate_m4b_dataset(features, labels, race_keys, meta, *, prior_context,
     candidate_matrix, candidate_available = candidates.selected()
     train_mask = _date_mask(complete.race_keys, TRAIN_PERIOD)
     tune_mask = _date_mask(complete.race_keys, TUNE_PERIOD)
-    imputation = _imputation_values(candidate_matrix[train_mask])
-    candidate_matrix = _impute(candidate_matrix, imputation)
+    final_mask = _date_mask(
+        complete.race_keys, (TRAIN_PERIOD[0], TUNE_PERIOD[1]))
+    selection_imputation = _imputation_values(candidate_matrix[train_mask])
+    selection_matrix = _impute(candidate_matrix, selection_imputation)
 
     from sklearn.preprocessing import StandardScaler
 
-    scaler = StandardScaler().fit(candidate_matrix[train_mask])
-    standardized = scaler.transform(candidate_matrix)
+    selection_scaler = StandardScaler().fit(selection_matrix[train_mask])
+    selection_standardized = selection_scaler.transform(selection_matrix)
     train_races = train.race_count
     diagnostics = []
     weights_by_lambda = {}
     train_keys = [key for key, keep in zip(complete.race_keys, train_mask) if keep]
     for regularization in lambda_grid:
         weights = fit_conditional_logit(
-            standardized[train_mask],
+            selection_standardized[train_mask],
             complete.labels[train_mask],
             train_keys,
             l2=regularization * train_races,
             offset=complete.market_offsets[train_mask],
         )
-        uncapped_tune = standardized[tune_mask] @ weights
+        uncapped_tune = selection_standardized[tune_mask] @ weights
         for cap in cap_grid:
             tune_scores = (
                 complete.market_offsets[tune_mask]
@@ -533,7 +540,25 @@ def evaluate_m4b_dataset(features, labels, race_keys, meta, *, prior_context,
     selected = select_lambda_cap(diagnostics)
     selected_lambda = float(selected["lambda"])
     selected_cap = float(selected["cap"])
-    selected_weights = weights_by_lambda[selected_lambda]
+    selection_weights = weights_by_lambda[selected_lambda]
+
+    # The 2024 rows choose only lambda/cap.  Refit every learned preprocessing
+    # quantity and the offset residual on strict 2021-2024 races, then freeze
+    # this final model for both OOS periods.  The inference cap itself is not
+    # fitted and remains the value selected on 2024.
+    final_imputation = _imputation_values(candidate_matrix[final_mask])
+    final_matrix = _impute(candidate_matrix, final_imputation)
+    final_scaler = StandardScaler().fit(final_matrix[final_mask])
+    final_standardized = final_scaler.transform(final_matrix)
+    final_races = final_train.race_count
+    final_internal_l2 = selected_lambda * final_races
+    final_weights = fit_conditional_logit(
+        final_standardized[final_mask],
+        complete.labels[final_mask],
+        [key for key, keep in zip(complete.race_keys, final_mask) if keep],
+        l2=final_internal_l2,
+        offset=complete.market_offsets[final_mask],
+    )
 
     availability = {}
     periods_for_availability = {
@@ -550,24 +575,24 @@ def evaluate_m4b_dataset(features, labels, race_keys, meta, *, prior_context,
 
     coefficients = []
     for index, name in enumerate(CORRECTION_FEATURES):
-        standardized_weight = float(selected_weights[index])
-        raw_weight = standardized_weight / float(scaler.scale_[index])
+        standardized_weight = float(final_weights[index])
+        raw_weight = standardized_weight / float(final_scaler.scale_[index])
         coefficients.append({
             "feature": name,
             "standardized_weight": standardized_weight,
             "raw_weight": raw_weight,
             "sign": ("positive" if standardized_weight > 0 else
                      "negative" if standardized_weight < 0 else "zero"),
-            "train_mean_after_imputation": float(scaler.mean_[index]),
-            "train_scale": float(scaler.scale_[index]),
-            "train_imputation": float(imputation[index]),
+            "final_mean_after_imputation": float(final_scaler.mean_[index]),
+            "final_scale": float(final_scaler.scale_[index]),
+            "final_imputation": float(final_imputation[index]),
             "availability": availability[name],
         })
 
     period_results = {}
     for period_name, dataset in evaluations.items():
         mask = _date_mask(complete.race_keys, EVALUATION_PERIODS[period_name])
-        uncapped = standardized[mask] @ selected_weights
+        uncapped = final_standardized[mask] @ final_weights
         correction = clip_correction(uncapped, selected_cap)
         scores = dataset.market_offsets + correction
         m4b_only = evaluate_same_population(dataset, {"m4b": scores})
@@ -602,7 +627,8 @@ def evaluate_m4b_dataset(features, labels, race_keys, meta, *, prior_context,
             "sample_signature": m4b_only["sample_signature"],
         }
 
-    del weights_by_lambda, standardized
+    del (weights_by_lambda, selection_standardized, final_standardized,
+         selection_matrix, final_matrix)
     gc.collect()
     return {
         "stats_source": "ability yearly as-of",
@@ -628,6 +654,12 @@ def evaluate_m4b_dataset(features, labels, race_keys, meta, *, prior_context,
             "selected_lambda": selected_lambda,
             "selected_cap": selected_cap,
             "selected_internal_l2": float(selected["internal_l2"]),
+            "selected_residual_norm": float(np.linalg.norm(selection_weights)),
+            "final_fit_period": (TRAIN_PERIOD[0], TUNE_PERIOD[1]),
+            "final_fit_rows": int(final_mask.sum()),
+            "final_fit_races": final_races,
+            "final_internal_l2": final_internal_l2,
+            "final_residual_norm": float(np.linalg.norm(final_weights)),
         },
         "coefficients": coefficients,
         "m3_reused": {
@@ -681,7 +713,16 @@ def print_report(report, *, file=None):
     print(
         f"selected on 2024 LL: lambda={selection['selected_lambda']:g}, "
         f"cap={selection['selected_cap']:g}, "
-        f"internal L2={selection['selected_internal_l2']:.6g}",
+        f"selection races={selection['train_races']}, "
+        f"internal L2={selection['selected_internal_l2']:.6g}, "
+        f"||w||={selection['selected_residual_norm']:.6f}",
+        file=stream,
+    )
+    print(
+        "final refit: 2021-2024, "
+        f"{selection['final_fit_races']} races, "
+        f"internal L2={selection['final_internal_l2']:.6g}, "
+        f"||w||={selection['final_residual_norm']:.6f}",
         file=stream,
     )
     print("lambda | cap | tune LL | ||w|| | sat | pair rate | any swap",
