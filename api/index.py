@@ -578,6 +578,12 @@ def analyze_race_url(url, mode='簡易'):
             h['score_ml'], h['score_ml_details'] = scoring.compute_score_ml(
                 h, race_context, factor_table, win5_cfg)
 
+            # T36: 表示・予測ログ専用の市場非依存複勝確率。
+            # T16学習と同じ特徴設定 (win5_weights.json) でパリティを保つ。
+            # EV/通知/WIN5買い目には接続しない。
+            h['place_prob'], h['place_prob_details'] = scoring.compute_place_prob(
+                h, race_context, factor_table, win5_cfg)
+
             horses_out.append(h)
 
         # 血統の受動的蓄積 (将来のML血統特徴量用)。失敗しても解析は継続

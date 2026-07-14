@@ -21,7 +21,7 @@ def scalar(store, sql):
 
 
 def test_initialize_is_one_command_and_enables_wal(store):
-    assert scalar(store, "SELECT count(*) FROM schema_migrations") == 6
+    assert scalar(store, "SELECT count(*) FROM schema_migrations") == 7
     with sqlite3.connect(store.db_path) as conn:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 
@@ -34,6 +34,34 @@ def test_run_and_prediction_are_idempotent(store):
     assert store.save_predictions(run1, [row]) == 1
     assert store.save_predictions(run1, [row]) == 0
     assert scalar(store, "SELECT count(*) FROM predictions") == 1
+
+
+def test_place_probability_is_nullable_and_old_database_is_migrated(tmp_path):
+    db_path = tmp_path / "old-logging.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""CREATE TABLE predictions (
+            prediction_run_id TEXT NOT NULL, race_id TEXT NOT NULL,
+            horse_id TEXT NOT NULL, predicted_at TEXT NOT NULL,
+            web_score REAL, win5_score REAL, ml_score REAL,
+            raw_win_probability REAL, calibrated_win_probability REAL,
+            confidence REAL, score_details_json TEXT,
+            feature_snapshot_json TEXT, data_quality_flags_json TEXT,
+            PRIMARY KEY (prediction_run_id,race_id,horse_id))""")
+
+    migrated = LoggingStore(db_path)
+    migrated.initialize()
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(predictions)")}
+    assert "place_probability" in columns
+
+    run_id = migrated.start_run(app_name="web")
+    migrated.save_predictions(run_id, [{
+        "race_id": "r1", "horse_id": "h1", "place_probability": 0.375,
+    }])
+    with sqlite3.connect(db_path) as conn:
+        stored = conn.execute(
+            "SELECT place_probability FROM predictions").fetchone()[0]
+    assert stored == pytest.approx(0.375)
 
 
 def test_separate_runs_append_prediction_snapshots(store):

@@ -140,6 +140,66 @@ def test_scratch_output_path_rejects_production_or_other_model_names(tmp_path):
             place_model.API_DIR + "/data_files/common/web_place_model.json")
 
 
+def test_production_refit_periods_and_metadata_are_explicit():
+    rng = np.random.default_rng(36)
+    rows_per_period = 8
+    matrix = rng.normal(size=(rows_per_period * 3, len(backtest_ml.FEATURES)))
+    targets = np.asarray([0, 1] * (len(matrix) // 2), dtype=int)
+    dates = np.asarray(
+        ["20210101"] * rows_per_period
+        + ["20240101"] * rows_per_period
+        + ["20250101"] * rows_per_period
+    )
+
+    model = place_model.fit_place_model(
+        matrix, targets, dates,
+        train_from=place_model.PRODUCTION_TRAIN_FROM,
+        train_to=place_model.PRODUCTION_TRAIN_TO,
+        calibration_from=place_model.PRODUCTION_CALIBRATION_FROM,
+        calibration_to=place_model.PRODUCTION_CALIBRATION_TO,
+        purpose="web_shadow_display",
+    )
+
+    assert model["meta"] == {
+        "created_at": model["meta"]["created_at"],
+        "purpose": "web_shadow_display",
+        "statistics_source": "ability_db_yearly_as_of",
+        "feature_config": "win5_weights.json",
+        "train_period": "20210101-20241231",
+        "calibration_period": "20250101-20251231",
+        "n_train": 16,
+        "n_calibration": 8,
+    }
+    assert "ln_odds" not in model["features"]
+
+
+def test_private_factor_snapshot_attachment_is_explicit_and_valid():
+    payload = place_model.build_snapshot_payload(
+        {
+            ("東京", "芝", 1600): {
+                "baseline": {"win_rate": 8.0, "show_rate": 24.0},
+                "jockey_w": {
+                    "騎手A": {"win_rate": 10.0, "show_rate": 30.0},
+                },
+            },
+        },
+        as_of="20251231", stats_from="20210101",
+        generated_at="2026-07-14T00:00:00+09:00",
+    )
+    model = {"meta": {"purpose": "web_shadow_display"}}
+
+    assert place_model.attach_private_factor_snapshot(model, payload) is model
+    assert model["meta"]["private_factor_snapshot"] == {
+        "scope": "compute_place_prob_only",
+        "source": "ability.db:runs",
+        "schema_version": 1,
+        "as_of": "20251231",
+        "stats_from": "20210101",
+        "strict_as_of": True,
+        "course_count": 1,
+    }
+
+
 def test_platt_application_is_monotonic():
     calibration = {"method": "platt", "slope": 1.5, "intercept": -0.2}
     probabilities = place_model.apply_platt([-2.0, 0.0, 2.0], calibration)

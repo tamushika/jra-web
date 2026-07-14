@@ -409,10 +409,10 @@ async function fetchWindData(venue) {
     }
 }
 
-let activeSortCol = null;  // '回収スコア' | '的中スコア' | null(馬番順)
+let activeSortCol = null;  // '回収スコア' | '的中スコア' | '複勝率β' | null(馬番順)
 
 function setupScoreSortHeader() {
-    const fields = { '回収スコア': 'score', '的中スコア': 'score_ml' };
+    const fields = { '回収スコア': 'score', '的中スコア': 'score_ml', '複勝率β': 'place_prob' };
     const ths = document.querySelectorAll('#horsesTable thead th');
     ths.forEach(th => {
         const label = th.textContent.replace('▼', '').trim();
@@ -467,7 +467,9 @@ function renderHorsesTable(horses) {
 
         // Other Cols
         const cols = [
-            h.num, h.grade || '-', (h.score ?? '-'), (h.score_ml ?? '-'), h.odds, h.pop || '-', h.iv, h.dist_diff || '-',
+            h.num, h.grade || '-', (h.score ?? '-'), (h.score_ml ?? '-'),
+            (h.place_prob != null ? (h.place_prob * 100).toFixed(1) + '%' : '-'),
+            h.odds, h.pop || '-', h.iv, h.dist_diff || '-',
             h.name, h.sex_age, h.kyakushitsu, h.kg, h.jock || h.jockey,
             h.affi, h.sire, h.bms
         ];
@@ -476,7 +478,7 @@ function renderHorsesTable(horses) {
         cols.forEach((val, idx) => {
             const td = document.createElement('td');
 
-            if (idx === 8) { // idx 8 is now h.name
+            if (idx === 9) { // idx 9 is h.name
                 td.style.textAlign = 'left';
                 const expandBtn = document.createElement('button');
                 expandBtn.textContent = '+';
@@ -498,7 +500,7 @@ function renderHorsesTable(horses) {
                         const histRow = document.createElement('tr');
                         histRow.className = 'history-row';
                         const histTd = document.createElement('td');
-                        histTd.colSpan = 18; // 枠+16列+印列
+                        histTd.colSpan = 19; // 枠+17列+印列
                         histTd.innerHTML = buildMiniHistoryTable(h.hist);
                         histRow.appendChild(histTd);
                         tr.after(histRow);
@@ -550,8 +552,17 @@ function renderHorsesTable(horses) {
                 if (rankIdx >= 0) td.classList.add(`score-top-${rankIdx + 1}`);
             }
 
-            // Sire Ranking Highlight (idx 14 corresponds to h.sire now)
-            if (idx === 14 && h.sire_rank) {
+            // 複勝率β列 (idx 4): 市場非依存モデルの参考表示のみ
+            if (idx === 4 && h.place_prob_details && h.place_prob_details.length > 0) {
+                td.classList.add('grade-tooltip-target');
+                const tooltipSpan = document.createElement('span');
+                tooltipSpan.className = 'tooltip-text';
+                tooltipSpan.innerHTML = h.place_prob_details.join('<br>');
+                td.appendChild(tooltipSpan);
+            }
+
+            // Sire Ranking Highlight (idx 15 corresponds to h.sire)
+            if (idx === 15 && h.sire_rank) {
                 if (h.sire_rank === 1) td.classList.add('sire-rank-1');
                 else if (h.sire_rank <= 5) td.classList.add('sire-rank-2-5');
                 else if (h.sire_rank <= 10) td.classList.add('sire-rank-6-10');

@@ -27,4 +27,4 @@ data/jra_logging.db*
 api/data_files/common/factor_snapshot.json
 
 # T16 scratch place model (regenerated locally, never committed)
-web_place_model.json
+/web_place_model.json

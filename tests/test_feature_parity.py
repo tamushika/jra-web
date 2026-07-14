@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 import backtest_ml
+from backtest_ml import NO_MARKET_FEATURES
 import analysis
 import scoring
 from backtest_ability import load_runs
@@ -214,5 +215,12 @@ def test_training_and_live_feature_parity(factor_source, tmp_path, monkeypatch):
     _print_report(features, mismatches, counts)
     unexpected = {name: examples[name] for name in features
                   if name not in EXPECTED_MISMATCHES and mismatches[name]}
+    place_feature_mismatches = {
+        name: examples[name] for name in NO_MARKET_FEATURES if mismatches[name]
+    }
+    assert not place_feature_mismatches, (
+        "T36 place-model live/training mismatches: "
+        f"{place_feature_mismatches}"
+    )
     assert not unexpected, f"unexpected live/training feature mismatches: {unexpected}"
     assert all(counts[name] > 0 for name in features)

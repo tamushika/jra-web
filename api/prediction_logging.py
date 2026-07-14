@@ -67,9 +67,11 @@ def log_race_prediction(result: dict[str, Any], *, app_name: str, config: Any,
             "ml_score": horse.get("score_ml", horse.get("score") if app_name == "win5" else None),
             "raw_win_probability": horse.get("win_prob"),
             "calibrated_win_probability": horse.get("calibrated_win_probability"),
+            "place_probability": horse.get("place_prob"),
             "score_details": {
                 "primary": horse.get("score_details", []),
                 "ml": horse.get("score_ml_details", []),
+                "place": horse.get("place_prob_details", []),
                 "grade": horse.get("grade"),
             },
             "feature_snapshot": {

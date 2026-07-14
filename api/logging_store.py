@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS predictions (
     ml_score REAL,
     raw_win_probability REAL,
     calibrated_win_probability REAL,
+    place_probability REAL,
     confidence REAL,
     score_details_json TEXT,
     feature_snapshot_json TEXT,
@@ -264,12 +265,19 @@ class LoggingStore:
             cols = {row[1] for row in conn.execute("PRAGMA table_info(odds_snapshots)")}
             if "stage" not in cols:
                 conn.execute("ALTER TABLE odds_snapshots ADD COLUMN stage TEXT")
+            prediction_cols = {
+                row[1] for row in conn.execute("PRAGMA table_info(predictions)")
+            }
+            if "place_probability" not in prediction_cols:
+                conn.execute(
+                    "ALTER TABLE predictions ADD COLUMN place_probability REAL")
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(1, ?)", (utc_now(),))
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(2, ?)", (utc_now(),))
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(3, ?)", (utc_now(),))
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(4, ?)", (utc_now(),))
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(5, ?)", (utc_now(),))
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(6, ?)", (utc_now(),))
+            conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(7, ?)", (utc_now(),))
         self._write(op)
 
     def start_run(self, *, app_name: str, trigger_type: str = "manual", model_name: str | None = None,
@@ -301,11 +309,16 @@ class LoggingStore:
         for row in rows:
             values.append((run_id, str(row["race_id"]), str(row["horse_id"]), _utc(row.get("predicted_at")) or utc_now(),
                 row.get("web_score"), row.get("win5_score"), row.get("ml_score"), row.get("raw_win_probability"),
-                row.get("calibrated_win_probability"), row.get("confidence"), stable_json(row.get("score_details", {})),
+                row.get("calibrated_win_probability"), row.get("place_probability"), row.get("confidence"),
+                stable_json(row.get("score_details", {})),
                 stable_json(row.get("feature_snapshot", {})), stable_json(row.get("data_quality_flags", []))))
         def op(conn):
             before = conn.total_changes
-            conn.executemany("""INSERT OR IGNORE INTO predictions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
+            conn.executemany("""INSERT OR IGNORE INTO predictions
+                (prediction_run_id,race_id,horse_id,predicted_at,web_score,win5_score,ml_score,
+                 raw_win_probability,calibrated_win_probability,place_probability,confidence,
+                 score_details_json,feature_snapshot_json,data_quality_flags_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
             return conn.total_changes - before
         return self._write(op)
 

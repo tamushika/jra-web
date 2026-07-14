@@ -14,10 +14,12 @@ import unicodedata
 
 try:
     from .factor_snapshot import (SNAPSHOT_FILENAME, course_key,
-                                  load_factor_snapshot)
+                                  load_factor_snapshot,
+                                  validate_snapshot_payload)
 except ImportError:  # api/ を sys.path に追加して ``import scoring`` する既存CLI
     from factor_snapshot import (SNAPSHOT_FILENAME, course_key,
-                                 load_factor_snapshot)
+                                 load_factor_snapshot,
+                                 validate_snapshot_payload)
 
 try:
     from analysis import VENUE_SLUG_MAP
@@ -501,6 +503,12 @@ def eval_wet_aptitude(h, race_context, cfg):
 # ─── MLスコア (ロジスティック回帰, WIN5用) ───────────────────────────────────
 
 _ML_CACHE = {"model": None}
+_PLACE_MODEL_CACHE = {"model": None}
+
+PLACE_MODEL_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "data_files", "common", "web_place_model.json",
+)
 
 PCI_TRACK_MEAN = {"芝": 51.96, "ダート": 45.83}
 
@@ -582,6 +590,66 @@ def load_ml_model():
     except Exception:
         _ML_CACHE["model"] = {}
     return _ML_CACHE["model"] or None
+
+
+def load_place_model():
+    """Web表示用の市場非依存複勝確率モデル。無ければ None。"""
+    if _PLACE_MODEL_CACHE["model"] is not None:
+        return _PLACE_MODEL_CACHE["model"] or None
+    try:
+        with open(PLACE_MODEL_PATH, "r", encoding="utf-8-sig") as file_obj:
+            _PLACE_MODEL_CACHE["model"] = json.load(file_obj)
+        _index_private_place_factor_tables(_PLACE_MODEL_CACHE["model"])
+    except Exception:
+        _PLACE_MODEL_CACHE["model"] = {}
+    return _PLACE_MODEL_CACHE["model"] or None
+
+
+def _index_private_place_factor_tables(model):
+    """Index an embedded T36 snapshot without changing the global factor source.
+
+    Invalid/missing snapshots deliberately become an empty index so an older
+    place artifact can continue using the factor table supplied by its caller.
+    """
+    if "_private_factor_tables" in model:
+        return model["_private_factor_tables"]
+    tables = {}
+    payload = model.get("private_factor_snapshot")
+    if payload is not None:
+        try:
+            tables = validate_snapshot_payload(payload)["tables"]
+        except (TypeError, ValueError):
+            tables = {}
+    model["_private_factor_tables"] = tables
+    return tables
+
+
+def _place_factor_table(model, race_context, fallback):
+    """Select the factor table used only by ``compute_place_prob``.
+
+    Artifacts created before T36 have no private-snapshot contract and retain
+    the caller-table fallback from the original interface.  Once an artifact
+    declares/embeds the private snapshot, however, corruption or a missing
+    course must fail closed: silently mixing legacy statistics would invalidate
+    the probability calibration while still presenting it as a normal beta.
+    """
+    has_private_contract = (
+        "private_factor_snapshot" in model
+        or "private_factor_snapshot" in (model.get("meta") or {})
+    )
+    if not has_private_contract:
+        return fallback
+
+    tables = _index_private_place_factor_tables(model)
+    key = course_key(
+        race_context.get("venue"),
+        race_context.get("race_type") or race_context.get("type"),
+        race_context.get("distance") or race_context.get("dist"),
+    )
+    private = tables.get(key) if key is not None else None
+    if private is None:
+        raise ValueError("複勝モデル専用factor snapshotに対象コースがありません")
+    return private
 
 
 _TRAINABLE_RULE_IDS_CACHE = {}
@@ -858,6 +926,77 @@ def compute_score_ml(h, race_context, factor_table, cfg):
         return score, details
     except Exception:
         return compute_score(h, race_context, factor_table, cfg)
+
+
+def compute_place_prob(h, race_context, factor_table, cfg):
+    """Webシャドー表示用の校正済み複勝確率。
+
+    T16の学習と同じ ``_ml_features`` を使う。表示と予測ログ専用で、
+    モデル欠損・不正時は他スコアにフォールバックしない。
+    """
+    model = load_place_model()
+    if model is None:
+        return None, []
+    try:
+        import math
+
+        features = model["features"]
+        expected_features = [name for name in _ML_LABELS if name != "ln_odds"]
+        assert features == expected_features, (
+            "複勝モデルの20特徴契約が一致しません")
+        assert "ln_odds" not in features, "複勝モデルはオッズを参照できません"
+        forbidden_tokens = ("odds", "popularity", "market", "pop_", "_pop")
+        assert not any(
+            token in str(name).casefold()
+            for name in features for token in forbidden_tokens
+        ), "複勝モデルは市場・人気特徴を参照できません"
+
+        mean = model["mean"]
+        scale = model["scale"]
+        coef = model["coef"]
+        if not (len(features) == len(mean) == len(scale) == len(coef)):
+            raise ValueError("複勝モデルの係数数が一致しません")
+
+        # T36 model-private snapshot keeps the fitted ability-as-of feature
+        # source consistent without installing T33 globally.  Only this shadow
+        # path receives the private table; old artifacts safely use the caller's.
+        place_factor_table = _place_factor_table(
+            model, race_context, factor_table)
+        feature_values = _ml_features(
+            h, race_context, place_factor_table, cfg)
+        raw_score = float(model["intercept"])
+        raw_contributions = []
+        for name, center, divisor, coefficient in zip(
+                features, mean, scale, coef):
+            divisor = float(divisor)
+            if divisor == 0.0:
+                raise ValueError("複勝モデルのscaleは0にできません")
+            contribution = ((float(feature_values.get(name, 0.0)) - float(center))
+                            / divisor * float(coefficient))
+            raw_score += contribution
+            raw_contributions.append((name, contribution))
+
+        calibration = model["calibration"]
+        if calibration.get("method") != "platt":
+            raise ValueError("未対応の複勝確率校正方式です")
+        slope = float(calibration["slope"])
+        calibrated_logit = slope * raw_score + float(calibration["intercept"])
+        calibrated_logit = max(-35.0, min(35.0, calibrated_logit))
+        probability = 1.0 / (1.0 + math.exp(-calibrated_logit))
+
+        ranked = sorted(
+            ((abs(slope * value), name, slope * value)
+             for name, value in raw_contributions),
+            reverse=True,
+        )
+        details = [
+            f"複勝 {_ML_LABELS.get(name, name)}: {value:+.2f}"
+            for _magnitude, name, value in ranked[:6]
+        ]
+        details.append(f"校正済み複勝率: {probability * 100:.1f}%")
+        return probability, details
+    except Exception:
+        return None, []
 
 
 # ─── WIN5 買い目配分 (荒れランク別カバレッジの貪欲最適化) ────────────────────

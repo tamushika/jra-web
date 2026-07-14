@@ -889,7 +889,7 @@ tbody tr:hover { background: var(--row-hover); }
     #horsesTable tr {
         display: grid;
         grid-template-columns: auto auto 1fr auto;
-        grid-template-rows: auto auto auto auto auto auto;
+        grid-template-rows: auto auto auto auto auto auto auto;
         gap: 8px;
         background: rgba(0,0,0,0.25);
         border: 1px solid var(--border-color);
@@ -907,34 +907,35 @@ tbody tr:hover { background: var(--row-hover); }
         white-space: nowrap;
     }
 
-    /* 新列順: 1枠 2番 3判定 4回収S 5的中S 6オッズ 7人気 8間隔 9距離 10馬名
-       11性齢 12脚質 13斤量 14騎手 15所属 16父 17母父 18印 */
-    /* 非表示: 距離増減(9) / 所属(15) / 母父(17) */
-    #horsesTable td:nth-child(9),
-    #horsesTable td:nth-child(15),
-    #horsesTable td:nth-child(17) { display: none !important; }
+    /* 新列順: 1枠 2番 3判定 4回収S 5的中S 6複勝率β 7オッズ 8人気 9間隔 10距離
+       11馬名 12性齢 13脚質 14斤量 15騎手 16所属 17父 18母父 19印 */
+    /* 非表示: 距離増減(10) / 所属(16) / 母父(18) */
+    #horsesTable td:nth-child(10),
+    #horsesTable td:nth-child(16),
+    #horsesTable td:nth-child(18) { display: none !important; }
 
     #horsesTable td:nth-child(1) { grid-column: 1; grid-row: 1; width: 28px; height: 28px; justify-content: center; border-radius: 4px; font-weight: bold; font-size: 14px; }
     #horsesTable td:nth-child(2) { grid-column: 2; grid-row: 1; width: 28px; height: 28px; justify-content: center; background: rgba(255,255,255,0.1); border-radius: 4px; font-weight: bold; font-size: 14px; }
-    #horsesTable td:nth-child(10) { grid-column: 3; grid-row: 1; font-weight: bold; font-size: 15px; white-space: normal; color: var(--primary); padding-left: 4px; }
+    #horsesTable td:nth-child(11) { grid-column: 3; grid-row: 1; font-weight: bold; font-size: 15px; white-space: normal; color: var(--primary); padding-left: 4px; }
     #horsesTable td:nth-child(3) { grid-column: 4; grid-row: 1; justify-content: flex-end; font-weight: bold; font-size: 14px; }
 
-    #horsesTable td:nth-child(6) { grid-column: 1 / 3; grid-row: 2; }
-    #horsesTable td:nth-child(7) { grid-column: 3; grid-row: 2; padding-left: 4px; }
-    #horsesTable td:nth-child(12) { grid-column: 4; grid-row: 2; justify-content: flex-end; }
+    #horsesTable td:nth-child(7) { grid-column: 1 / 3; grid-row: 2; }
+    #horsesTable td:nth-child(8) { grid-column: 3; grid-row: 2; padding-left: 4px; }
+    #horsesTable td:nth-child(13) { grid-column: 4; grid-row: 2; justify-content: flex-end; }
 
-    #horsesTable td:nth-child(13) { grid-column: 1 / 3; grid-row: 3; }
-    #horsesTable td:nth-child(14) { grid-column: 3; grid-row: 3; padding-left: 4px; white-space: normal; }
-    #horsesTable td:nth-child(8) { grid-column: 4; grid-row: 3; justify-content: flex-end; }
+    #horsesTable td:nth-child(14) { grid-column: 1 / 3; grid-row: 3; }
+    #horsesTable td:nth-child(15) { grid-column: 3; grid-row: 3; padding-left: 4px; white-space: normal; }
+    #horsesTable td:nth-child(9) { grid-column: 4; grid-row: 3; justify-content: flex-end; }
 
-    #horsesTable td:nth-child(11) { grid-column: 4; grid-row: 4; justify-content: flex-end; }
-    #horsesTable td:nth-child(16) { grid-column: 1 / 4; grid-row: 4; border-top: 1px dashed var(--border-color); padding-top: 6px; margin-top: 2px; white-space: normal; color: var(--text-muted); }
+    #horsesTable td:nth-child(12) { grid-column: 4; grid-row: 4; justify-content: flex-end; }
+    #horsesTable td:nth-child(17) { grid-column: 1 / 4; grid-row: 4; border-top: 1px dashed var(--border-color); padding-top: 6px; margin-top: 2px; white-space: normal; color: var(--text-muted); }
 
-    /* スコア行: 回収(4) と 的中(5) を横並び */
+    /* スコア行: 回収(4) と 的中(5) を横並び、参考の複勝率β(6)は次行 */
     #horsesTable td:nth-child(4) { grid-column: 1 / 3; grid-row: 5; border-top: 1px dashed var(--border-color); padding-top: 6px; margin-top: 2px; font-weight: bold; font-size: 14px; }
     #horsesTable td:nth-child(5) { grid-column: 3 / -1; grid-row: 5; border-top: 1px dashed var(--border-color); padding-top: 6px; margin-top: 2px; font-weight: bold; font-size: 14px; justify-content: flex-end; }
+    #horsesTable td:nth-child(6) { grid-column: 1 / -1; grid-row: 6; font-weight: bold; font-size: 14px; justify-content: flex-end; }
 
-    #horsesTable td:nth-child(18) { grid-column: 1 / -1; grid-row: 6; border-top: 1px dashed var(--border-color); padding-top: 6px; margin-top: 2px; justify-content: center; }
+    #horsesTable td:nth-child(19) { grid-column: 1 / -1; grid-row: 7; border-top: 1px dashed var(--border-color); padding-top: 6px; margin-top: 2px; justify-content: center; }
 
     /* History row specific mobile fixes */
     #horsesTable tr.history-row {
@@ -991,14 +992,15 @@ tbody tr:hover { background: var(--row-hover); }
     /* Column Labels */
     #horsesTable td:nth-child(4)::before { content: "回収S: "; color: #8b949e; font-size: 11px; margin-right: 4px; font-weight: normal; }
     #horsesTable td:nth-child(5)::before { content: "的中S: "; color: #8b949e; font-size: 11px; margin-right: 4px; font-weight: normal; }
-    #horsesTable td:nth-child(6)::before { content: "オッズ: "; color: #8b949e; font-size: 11px; margin-right: 4px; }
-    #horsesTable td:nth-child(7)::before { content: "人気: "; color: #8b949e; font-size: 11px; margin-right: 4px; }
-    #horsesTable td:nth-child(8)::before { content: "間隔: "; color: #8b949e; font-size: 11px; margin-right: 4px; }
-    #horsesTable td:nth-child(11)::before { content: "性齢: "; color: #8b949e; font-size: 11px; margin-right: 4px; }
-    #horsesTable td:nth-child(12)::before { content: "脚質: "; color: #8b949e; font-size: 11px; margin-right: 4px; }
-    #horsesTable td:nth-child(13)::before { content: "斤量: "; color: #8b949e; font-size: 11px; margin-right: 4px; }
-    #horsesTable td:nth-child(14)::before { content: "騎手: "; color: #8b949e; font-size: 11px; margin-right: 4px; }
-    #horsesTable td:nth-child(16)::before { content: "父: "; color: #8b949e; font-size: 11px; margin-right: 4px; }
+    #horsesTable td:nth-child(6)::before { content: "複勝率β: "; color: #8b949e; font-size: 11px; margin-right: 4px; font-weight: normal; }
+    #horsesTable td:nth-child(7)::before { content: "オッズ: "; color: #8b949e; font-size: 11px; margin-right: 4px; }
+    #horsesTable td:nth-child(8)::before { content: "人気: "; color: #8b949e; font-size: 11px; margin-right: 4px; }
+    #horsesTable td:nth-child(9)::before { content: "間隔: "; color: #8b949e; font-size: 11px; margin-right: 4px; }
+    #horsesTable td:nth-child(12)::before { content: "性齢: "; color: #8b949e; font-size: 11px; margin-right: 4px; }
+    #horsesTable td:nth-child(13)::before { content: "脚質: "; color: #8b949e; font-size: 11px; margin-right: 4px; }
+    #horsesTable td:nth-child(14)::before { content: "斤量: "; color: #8b949e; font-size: 11px; margin-right: 4px; }
+    #horsesTable td:nth-child(15)::before { content: "騎手: "; color: #8b949e; font-size: 11px; margin-right: 4px; }
+    #horsesTable td:nth-child(17)::before { content: "父: "; color: #8b949e; font-size: 11px; margin-right: 4px; }
 
     /* Other Table adjustments */
     th, td {

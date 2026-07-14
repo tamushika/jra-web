@@ -31,16 +31,25 @@ from backtest_ability import load_runs  # noqa: E402
 from backtest_ml import FEATURES, NO_MARKET_FEATURES, feature_matrix  # noqa: E402
 from backtest_stats_retrain import build_consistent_feature_dataset  # noqa: E402
 from backtest_win5 import load_win5_cfg, score_all_runners  # noqa: E402
-from fold_stats import FoldFactorTableProvider, fold_as_of_for  # noqa: E402
+from factor_snapshot import (build_snapshot_payload,
+                             validate_snapshot_payload)  # noqa: E402
+from fold_stats import (FoldFactorTableProvider, discover_legacy_courses,
+                        fold_as_of_for)  # noqa: E402
 
 DB_PATH = os.path.join(BASE_DIR, "ability.db")
 MODEL_PATH = os.path.join(BASE_DIR, "web_place_model.json")
+PRODUCTION_MODEL_PATH = os.path.join(
+    API_DIR, "data_files", "common", "web_place_model.json")
 
 DATA_FROM, DATA_TO = "20210101", "20260630"
 TRAIN_FROM, TRAIN_TO = "20210101", "20231231"
 CALIBRATION_FROM, CALIBRATION_TO = "20240101", "20241231"
 TEST_FROM, TEST_TO = "20250101", "20251231"
 ADDITIONAL_FROM, ADDITIONAL_TO = "20260101", "20260630"
+
+PRODUCTION_TRAIN_FROM, PRODUCTION_TRAIN_TO = "20210101", "20241231"
+PRODUCTION_CALIBRATION_FROM, PRODUCTION_CALIBRATION_TO = "20250101", "20251231"
+PRODUCTION_FACTOR_AS_OF = "20251231"
 
 RELIABILITY_EDGES = (0.0, 0.10, 0.20, 0.30, 0.40, 0.50, 0.70, 1.0)
 MODEL_LABEL = "新・複勝確率"
@@ -93,8 +102,12 @@ def apply_platt(scores, calibration):
 
 
 def fit_place_model(X, targets, dates,
-                    statistics_source="ability_db_yearly_as_of"):
-    """2021-23でL2ロジスティック回帰、2024でPlatt校正を学習する。"""
+                    statistics_source="ability_db_yearly_as_of", *,
+                    train_from=TRAIN_FROM, train_to=TRAIN_TO,
+                    calibration_from=CALIBRATION_FROM,
+                    calibration_to=CALIBRATION_TO,
+                    purpose="offline_shadow_evaluation_only"):
+    """L2ロジスティック回帰と後続期間のPlatt校正を学習する。"""
     from sklearn.linear_model import LogisticRegression
     from sklearn.preprocessing import StandardScaler
 
@@ -104,8 +117,9 @@ def fit_place_model(X, targets, dates,
         raise AssertionError("NO_MARKET_FEATURESはln_oddsだけを除外する必要があります")
 
     matrix = feature_matrix(X, NO_MARKET_FEATURES)
-    train = (dates >= TRAIN_FROM) & (dates <= TRAIN_TO)
-    calibration = (dates >= CALIBRATION_FROM) & (dates <= CALIBRATION_TO)
+    train = (dates >= train_from) & (dates <= train_to)
+    calibration = ((dates >= calibration_from)
+                   & (dates <= calibration_to))
     if not train.any() or not calibration.any():
         raise ValueError("学習または校正期間のデータがありません")
 
@@ -118,10 +132,11 @@ def fit_place_model(X, targets, dates,
     return {
         "meta": {
             "created_at": datetime.now().strftime("%Y-%m-%d"),
-            "purpose": "offline_shadow_evaluation_only",
+            "purpose": purpose,
             "statistics_source": statistics_source,
-            "train_period": f"{TRAIN_FROM}-{TRAIN_TO}",
-            "calibration_period": f"{CALIBRATION_FROM}-{CALIBRATION_TO}",
+            "feature_config": "win5_weights.json",
+            "train_period": f"{train_from}-{train_to}",
+            "calibration_period": f"{calibration_from}-{calibration_to}",
             "n_train": int(train.sum()),
             "n_calibration": int(calibration.sum()),
         },
@@ -158,6 +173,58 @@ def save_model(model, path=MODEL_PATH):
 def load_model(path=MODEL_PATH):
     with open(path, "r", encoding="utf-8") as file_obj:
         return json.load(file_obj)
+
+
+def build_private_factor_snapshot(db_path=DB_PATH, *,
+                                  as_of=PRODUCTION_FACTOR_AS_OF,
+                                  generated_at=None):
+    """Build the place-model-only ability factor snapshot used in live inference.
+
+    T33's global production snapshot remains intentionally uninstalled.  T36
+    instead embeds the same as-of factor tables in its own artifact so only the
+    shadow place model sees them; current Web/ML/EV scoring remains untouched.
+    """
+    provider = FoldFactorTableProvider(
+        db_path,
+        as_of,
+        pedigree_cache_path=os.path.join(BASE_DIR, "pedigree_cache.json"),
+        legacy_api_dir=API_DIR,
+    )
+    generated_courses = set(provider.tables)
+    expected_courses = discover_legacy_courses(API_DIR)
+    if not expected_courses or generated_courses != expected_courses:
+        missing = sorted(expected_courses - generated_courses)
+        extra = sorted(generated_courses - expected_courses)
+        raise ValueError(
+            "private factor snapshot course coverage mismatch: "
+            f"missing={missing!r}; extra={extra!r}"
+        )
+    payload = build_snapshot_payload(
+        provider.tables,
+        as_of=provider.as_of,
+        stats_from=provider.stats_from,
+        generated_at=(generated_at or datetime.now().astimezone().isoformat(
+            timespec="seconds")),
+    )
+    validate_snapshot_payload(payload)
+    return payload
+
+
+def attach_private_factor_snapshot(model, payload):
+    """Validate and attach one versioned snapshot to a production artifact."""
+    indexed = validate_snapshot_payload(payload)
+    snapshot_meta = indexed["meta"]
+    model["private_factor_snapshot"] = payload
+    model.setdefault("meta", {})["private_factor_snapshot"] = {
+        "scope": "compute_place_prob_only",
+        "source": snapshot_meta["source"],
+        "schema_version": snapshot_meta["schema_version"],
+        "as_of": snapshot_meta["as_of"],
+        "stats_from": snapshot_meta["stats_from"],
+        "strict_as_of": snapshot_meta["strict_as_of"],
+        "course_count": snapshot_meta["course_count"],
+    }
+    return model
 
 
 def load_place_payouts(connection, date_from, date_to):
@@ -453,21 +520,38 @@ def main():
     parser.add_argument("--db", default=DB_PATH)
     parser.add_argument("--model-out", default=MODEL_PATH,
                         help="スクラッチモデルJSONの出力先 (本番ディレクトリは禁止)")
+    parser.add_argument(
+        "--production", action="store_true",
+        help="2021-24学習/2025校正でWebシャドー表示用モデルを固定本番パスへ保存",
+    )
     parser.add_argument("--stats-source", choices=("ability", "current"),
                         default="ability", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
-    try:
-        output_path = validate_model_output_path(args.model_out)
-    except ValueError as exc:
-        parser.error(str(exc))
+    if args.production:
+        if args.stats_source != "ability":
+            parser.error("--production の統計ソースは ability 固定です")
+        output_path = PRODUCTION_MODEL_PATH
+        data_to = PRODUCTION_CALIBRATION_TO
+        print("【警告】本番Webシャドー表示用モデルを上書きします")
+        print(f"保存先: {output_path}")
+    else:
+        try:
+            output_path = validate_model_output_path(args.model_out)
+        except ValueError as exc:
+            parser.error(str(exc))
+        data_to = DATA_TO
 
     cfg = load_win5_cfg()
     web_cfg = scoring.load_score_weights(API_DIR)
     with sqlite3.connect(args.db) as connection:
-        runs = load_runs(connection, DATA_FROM, DATA_TO)
-        payouts = load_place_payouts(connection, TEST_FROM, ADDITIONAL_TO)
-    print(f"ロード: {len(runs)}行 / 複勝払戻: {len(payouts)}頭")
+        runs = load_runs(connection, DATA_FROM, data_to)
+        payouts = ({} if args.production else
+                   load_place_payouts(connection, TEST_FROM, ADDITIONAL_TO))
+    if args.production:
+        print(f"ロード: {len(runs)}行 (2026H1は未使用)")
+    else:
+        print(f"ロード: {len(runs)}行 / 複勝払戻: {len(payouts)}頭")
     if args.stats_source == "ability":
         statistics_label = "ability_db_yearly_as_of"
         print("統計ソース: ability.db 年次as-of (T33公開IF、各行の前年末まで)")
@@ -476,16 +560,45 @@ def main():
         print("統計ソース: 現行Web production CSV (暫定対照)")
 
     X, _winner_y, race_keys, meta = build_place_feature_dataset(
-        runs, cfg, DATA_TO, db_path=args.db, stats_source=args.stats_source)
+        runs, cfg, data_to, db_path=args.db, stats_source=args.stats_source)
     dates = np.asarray([key[0] for key in race_keys])
     targets = np.asarray([
         place_target(runner.get("rank"), runner.get("total_horses"))
         for runner in meta
     ], dtype=int)
+    fit_kwargs = {}
+    if args.production:
+        fit_kwargs = {
+            "train_from": PRODUCTION_TRAIN_FROM,
+            "train_to": PRODUCTION_TRAIN_TO,
+            "calibration_from": PRODUCTION_CALIBRATION_FROM,
+            "calibration_to": PRODUCTION_CALIBRATION_TO,
+            "purpose": "web_shadow_display",
+        }
     model = fit_place_model(
-        X, targets, dates, statistics_source=statistics_label)
+        X, targets, dates, statistics_source=statistics_label, **fit_kwargs)
+    if args.production:
+        # The private provider reads ability.db once more.  Release the large
+        # per-runner training objects first so production refit stays bounded.
+        del runs, X, _winner_y, race_keys, meta, dates, targets
+        import gc
+        gc.collect()
+        private_snapshot = build_private_factor_snapshot(args.db)
+        attach_private_factor_snapshot(model, private_snapshot)
     save_model(model, output_path)
     model = load_model(output_path)
+    if args.production:
+        print(f"本番モデル保存: {output_path}")
+        print(f"分割: 学習 {model['meta']['n_train']}走 (2021-24) / "
+              f"校正 {model['meta']['n_calibration']}走 (2025)")
+        private_meta = model["meta"]["private_factor_snapshot"]
+        print("モデル専用統計: "
+              f"{private_meta['source']} as-of {private_meta['as_of']} / "
+              f"schema {private_meta['schema_version']} / "
+              f"{private_meta['course_count']}コース")
+        print("用途: Web複勝率βの表示・予測ログ専用 (馬券シグナル非接続)")
+        print("特徴量: 20 (ln_odds・人気を不使用) / 2026H1未使用")
+        return
     model_probabilities = predict_place_probability(model, X)
 
     current_scores = current_web_scores(
@@ -532,4 +645,3 @@ def validate_model_output_path(path):
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     main()
-
