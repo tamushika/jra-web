@@ -486,18 +486,49 @@ def check_condition(cond, h, r, sire_lineage, mawari_map):
 
         # 5. 血統判定 (父/母父)
         if "父" in cond:
-            # 置換対象を増やして「父か母父が」などにも対応
+            # 父限定・母父限定・父/母父ORを区別する。「母父が」に
+            # 「父が」の単純replaceを掛けると target に「母」が残り、
+            # 母父条件が常に偽になるため、長いprefixを1回だけ除去する。
+            bms_only = "母父が" in cond and not any(
+                prefix in cond for prefix in ("父or母父が", "父・母父が", "父か母父が"))
+            sire_or_bms = any(
+                prefix in cond for prefix in ("父or母父が", "父・母父が", "父か母父が"))
             target = cond
-            # 「父が」は他のprefixの部分文字列でもあるため、より長い(複合)prefixを先に
-            # 除去しないと「父か母父が」等が中途半端に切れてしまう(例:「父か母」が残る)。
-            # 同様に「以外の種牡馬」も「以外」より先に「以外の」を除去しないと「の」が残る。
-            for prefix in ["父or母父が", "父・母父が", "父か母父が", "父が", "系", "以外の", "以外", "種牡馬"]:
-                target = target.replace(prefix, "")
+            for prefix in ("父or母父が", "父・母父が", "父か母父が", "母父が", "父が"):
+                if prefix in target:
+                    target = target.replace(prefix, "", 1)
+                    break
+            for suffix in ("以外の種牡馬", "以外の", "以外", "種牡馬", "系"):
+                target = target.replace(suffix, "")
             target = re.sub(r"\s+", "", target).strip()
-            
-            match = (target == h['sire']) or (target in sire_lineage.get(h['sire'], ""))
-            if "母父" in cond:
-                match = match or (target == h.get('bms', "")) or (target in sire_lineage.get(h.get('bms', ""), ""))
+            if not target:
+                return False
+
+            sire_raw = h.get('sire', '')
+            bms_raw = h.get('bms', '')
+            sire = re.sub(r"\s+", "", str(sire_raw))
+            bms = re.sub(r"\s+", "", str(bms_raw))
+            sire_group = re.sub(r"\s+", "", str(sire_lineage.get(sire_raw, "")))
+            bms_group = re.sub(r"\s+", "", str(sire_lineage.get(bms_raw, "")))
+            # 種牡馬名と系統名は別の候補空間。「父がディープインパクト」
+            # を、父キズナ（ディープインパクト系）まで広げてはならない。
+            lineage_condition = "系" in cond
+            if lineage_condition:
+                # 系統の始祖本人はlineage mapに無い／上位群だけが付く場合が
+                # あるため、名称一致も含める（例: ディープインパクト系）。
+                sire_match = (target == sire) or (
+                    bool(sire_group) and target in sire_group)
+                bms_match = (target == bms) or (
+                    bool(bms_group) and target in bms_group)
+            else:
+                sire_match = target == sire
+                bms_match = target == bms
+            if bms_only:
+                match = bms_match
+            elif sire_or_bms:
+                match = sire_match or bms_match
+            else:
+                match = sire_match
             
             if ("以外" in cond and match) or ("以外" not in cond and not match): return False
             return True

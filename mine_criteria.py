@@ -11,17 +11,19 @@ ability.db から criteria.csv 形式の条件 (最大3条件の組み合わせ)
     選抜を通過したルールのみ出力する
   - 2025 / 2026H1 は固定テスト。候補生成・選抜には一切参照しない
   - 買い (コース平均より複勝率が高い) と 消し (低い) の両方を探索
-  - 血統条件は horse_pedigree 蓄積完了後に追加予定 (現状DBに父が無い)
+  - horse_pedigree のローカルキャッシュから父・母父を付与し、血統条件も候補化
 
 【使い方】
   python mine_criteria.py                # 全コース (30-60分)
   python mine_criteria.py --venue 東京 --output tmp_tokyo_rules.csv
   python mine_criteria.py --discover-to 20231231 --select-from 20240101 --select-to 20241231
-出力: mined_rules_v2.csv (本番 mined_rules.csv は変更しない)
+出力: mined_rules_v3.csv (本番 mined_rules.csv / v2 は変更しない)
 """
 import argparse
 import csv
+import hashlib
 import os
+import re
 import sqlite3
 import sys
 from collections import defaultdict
@@ -32,9 +34,13 @@ API_DIR = os.path.join(BASE_DIR, "api")
 sys.path.insert(0, API_DIR)
 
 import analysis  # noqa: E402
+import pedigree_store  # noqa: E402
+import scoring  # noqa: E402
 from backtest_ability import load_runs  # noqa: E402
 from backtest_criteria import build_h, attach_agari_rank, load_mawari  # noqa: E402
 from backtest_ability import parse_win_payout  # noqa: E402
+from backtest_win5 import load_win5_cfg  # noqa: E402
+from fold_stats import FoldFactorTableProvider  # noqa: E402
 
 DB_PATH = os.path.join(BASE_DIR, "ability.db")
 
@@ -45,7 +51,9 @@ EVAL_PERIODS = (
     ("2026H1", "20260101", "20260630"),
 )
 PRODUCTION_RULES_PATH = os.path.join(API_DIR, "data_files", "common", "mined_rules.csv")
-DEFAULT_OUTPUT_PATH = os.path.join(BASE_DIR, "mined_rules_v2.csv")
+V2_RULES_PATH = os.path.join(BASE_DIR, "mined_rules_v2.csv")
+DEFAULT_OUTPUT_PATH = os.path.join(BASE_DIR, "mined_rules_v3.csv")
+PEDIGREE_CACHE_PATH = os.path.join(BASE_DIR, "pedigree_cache.json")
 
 MIN_DISCOVER_N = 30
 MIN_SELECT_N = 15
@@ -55,9 +63,75 @@ SELECT_LIFT = 2.0          # 選抜期間での方向維持ライン (pt)
 SHRINK_N0 = 50.0
 BEAM = 12           # 各段で残す候補数
 MAX_RULES = 3       # 買い/消しそれぞれコースあたり上限
+PEDIGREE_TOP_N = 8
+PEDIGREE_COND_RE = re.compile(r"父|母父|系")
+SIRE_PTS_AS_OF = {"2025": "20241231", "2026H1": "20251231"}
 
 
-def candidate_conditions(course_runs, discover_from, discover_to):
+def _pedigree_value(value):
+    value = str(value or "").strip()
+    return value if value and value != "-" else ""
+
+
+def attach_pedigree(h, horse, pedigree):
+    """Attach cached sire/bms to a mining horse without changing build_h."""
+    ped = (pedigree or {}).get(str(horse or "").strip()) or {}
+    sire = _pedigree_value(ped.get("sire"))
+    bms = _pedigree_value(ped.get("bms"))
+    if sire:
+        h["sire"] = sire
+    if bms:
+        h["bms"] = bms
+    return h
+
+
+def pedigree_coverage(runs, pedigree):
+    """Return unique-horse sire/bms coverage for a reproducible run universe."""
+    horses = {str(r.get("horse") or "").strip() for r in runs if r.get("horse")}
+    sire_n = bms_n = both_n = 0
+    for horse in horses:
+        ped = (pedigree or {}).get(horse) or {}
+        has_sire = bool(_pedigree_value(ped.get("sire")))
+        has_bms = bool(_pedigree_value(ped.get("bms")))
+        sire_n += has_sire
+        bms_n += has_bms
+        both_n += has_sire and has_bms
+    return {
+        "horses": len(horses), "sire": sire_n, "bms": bms_n, "both": both_n,
+    }
+
+
+def is_pedigree_rule(rule):
+    return any(PEDIGREE_COND_RE.search(str(cond or "")) for cond in rule.get("conds", ()))
+
+
+def _matches_rule(rule, h, ctx, sire_lineage, mawari_map):
+    try:
+        return all(analysis.check_condition(c, h, ctx, sire_lineage, mawari_map)
+                   for c in rule["conds"])
+    except Exception:
+        return False
+
+
+def _matches_non_pedigree_context(rule, h, ctx, sire_lineage, mawari_map):
+    """Match the same rule after removing only its pedigree predicates.
+
+    This defines the comparison universe for pedigree increment: a horse that
+    never met the rule's other conditions is not a valid control for whether
+    adding the pedigree condition helped.
+    """
+    try:
+        return all(
+            analysis.check_condition(cond, h, ctx, sire_lineage, mawari_map)
+            for cond in rule["conds"]
+            if not PEDIGREE_COND_RE.search(str(cond or ""))
+        )
+    except Exception:
+        return False
+
+
+def candidate_conditions(course_runs, discover_from, discover_to, *,
+                         pedigree=None, sire_lineage=None):
     """コースの候補条件文リスト (check_condition が解釈できる語彙のみ)"""
     conds = [
         "馬齢が3歳以下", "馬齢が4歳以下", "馬齢が5歳以上", "馬齢が6歳以上",
@@ -79,6 +153,41 @@ def candidate_conditions(course_runs, discover_from, discover_to):
     for j, n in sorted(jcount.items(), key=lambda x: (-x[1], x[0]))[:8]:
         if n >= MIN_DISCOVER_N and j:
             conds.append(f"騎手が{j}")
+
+    # 血統候補の頻度集計も発見期間のみ。固定テスト期間の
+    # 血統分布が候補集合に混入しないことが重要。
+    sire_count = defaultdict(int)
+    bms_count = defaultdict(int)
+    lineage_count = defaultdict(int)
+    pedigree = pedigree or {}
+    sire_lineage = sire_lineage or {}
+    for cur, _prev in course_runs:
+        if not discover_from <= cur["date"] <= discover_to:
+            continue
+        ped = pedigree.get(str(cur.get("horse") or "").strip()) or {}
+        sire = _pedigree_value(ped.get("sire"))
+        bms = _pedigree_value(ped.get("bms"))
+        if sire:
+            sire_count[sire] += 1
+            lineage = _pedigree_value(sire_lineage.get(sire))
+            if lineage:
+                # syuboba.csv の群名は通常「○○系」。条件文側で
+                # 「系」を付けるため、二重の「系系」を避ける。
+                lineage_count[re.sub(r"系$", "", lineage)] += 1
+        if bms:
+            bms_count[bms] += 1
+
+    def top_names(counts):
+        return [(name, n) for name, n in
+                sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:PEDIGREE_TOP_N]
+                if name and n >= MIN_DISCOVER_N]
+
+    conds.extend(f"父が{name}" for name, _n in top_names(sire_count))
+    conds.extend(f"母父が{name}" for name, _n in top_names(bms_count))
+    # 系統は実数が少ないため、上位Nではなく件数下限を満たす全群。
+    conds.extend(f"父が{name}系" for name, n in
+                 sorted(lineage_count.items(), key=lambda item: (-item[1], item[0]))
+                 if name and n >= MIN_DISCOVER_N)
     return conds
 
 
@@ -88,7 +197,8 @@ def shrunk_lift(top3, n, base):
 
 def mine_course(place, tt, dist, course_runs, mawari_map, report, *,
                 discover_from=DISCOVER_FROM, discover_to=DISCOVER_TO,
-                select_from=SELECT_FROM, select_to=SELECT_TO):
+                select_from=SELECT_FROM, select_to=SELECT_TO,
+                pedigree=None, sire_lineage=None):
     """1コースをマイニング。course_runs: [(cur, prev), ...] 時系列属性つき
     戻り値: (buy_rules, kill_rules)。固定テスト期間は本関数の選抜に使わない。"""
 
@@ -99,7 +209,7 @@ def mine_course(place, tt, dist, course_runs, mawari_map, report, *,
         in_select = select_from <= cur["date"] <= select_to
         if not (in_discover or in_select):
             continue  # 固定テストは特徴量構築・候補評価にも渡さない
-        h = build_h(cur, prev)
+        h = attach_pedigree(build_h(cur, prev), cur.get("horse"), pedigree)
         hs.append((h, {"type": tt, "dist": dist, "venue": place,
                        "total_horses": cur["total_horses"], "class": cur["race_class"]}))
         is_discover.append(in_discover)
@@ -115,7 +225,9 @@ def mine_course(place, tt, dist, course_runs, mawari_map, report, *,
     if not select_idx:
         return [], []
 
-    conds = candidate_conditions(course_runs, discover_from, discover_to)
+    conds = candidate_conditions(
+        course_runs, discover_from, discover_to,
+        pedigree=pedigree, sire_lineage=sire_lineage)
     # 条件ごとの真偽ベクトル (check_condition を1条件×1走ごとに評価)。
     # ほぼ全馬に該当/非該当の条件はパーサー未対応 (常にTrue) の疑いがあるため除外
     # 候補の除外判定と重複判定も発見期間のみで行う。
@@ -126,7 +238,7 @@ def mine_course(place, tt, dist, course_runs, mawari_map, report, *,
         v = bytearray(n_all)
         for i, (h, r_ctx) in enumerate(hs):
             try:
-                if analysis.check_condition(c, h, r_ctx, {}, mawari_map):
+                if analysis.check_condition(c, h, r_ctx, sire_lineage or {}, mawari_map):
                     v[i] = 1
             except Exception:
                 pass
@@ -282,7 +394,7 @@ def _selection_points(rule):
 
 
 def mine_all_courses(courses, mawari_map, *, discover_from, discover_to,
-                     select_from, select_to):
+                     select_from, select_to, pedigree=None, sire_lineage=None):
     report, output_rules = [], []
     ordered = sorted(courses.items(), key=lambda x: (-len(x[1]), x[0]))
     print(f"対象コース: {len(ordered)}")
@@ -291,12 +403,16 @@ def mine_all_courses(courses, mawari_map, *, discover_from, discover_to,
         buys, kills = mine_course(
             place, tt, dist, course_runs, mawari_map, report,
             discover_from=discover_from, discover_to=discover_to,
-            select_from=select_from, select_to=select_to)
+            select_from=select_from, select_to=select_to,
+            pedigree=pedigree, sire_lineage=sire_lineage)
         for rule in buys + kills:
             output_rules.append({
                 "place": place, "track_type": tt, "distance": dist,
                 "conds": rule["conds"], "kind": rule["kind"],
                 "points": _selection_points(rule),
+                # CSVには書かず、発見→選抜→OOS方向安定性の報告にだけ使う。
+                "discover_dev": rule["discover_rate"] - rule["discover_base"],
+                "select_dev": rule["select_rate"] - rule["select_base"],
             })
         if (idx + 1) % 10 == 0:
             n_buy = sum(r["kind"] == "買い" for r in output_rules)
@@ -372,7 +488,8 @@ def attach_place_payouts(conn, runs, date_from, date_to):
             (run.get("date"), run.get("place"), run.get("r"), umaban))
 
 
-def evaluate_rules(rules, courses, mawari_map, period_name, date_from, date_to):
+def evaluate_rules(rules, courses, mawari_map, period_name, date_from, date_to, *,
+                   pedigree=None, sire_lineage=None):
     """各種別で「1つ以上のルールに該当した馬」を1頭1件として集計する。"""
     indexed = defaultdict(list)
     rule_counts = defaultdict(int)
@@ -391,20 +508,13 @@ def evaluate_rules(rules, courses, mawari_map, period_name, date_from, date_to):
         for cur, prev in course_runs:
             if not date_from <= cur["date"] <= date_to:
                 continue
-            h = build_h(cur, prev)
+            h = attach_pedigree(build_h(cur, prev), cur.get("horse"), pedigree)
             ctx = {"type": tt, "dist": dist, "venue": place,
                    "total_horses": cur["total_horses"], "class": cur["race_class"]}
             for kind in ("買い", "消し"):
                 candidates = indexed.get((place, tt, dist, kind), ())
-                matched = False
-                for rule in candidates:
-                    try:
-                        if all(analysis.check_condition(c, h, ctx, {}, mawari_map)
-                               for c in rule["conds"]):
-                            matched = True
-                            break
-                    except Exception:
-                        continue
+                matched = any(_matches_rule(rule, h, ctx, sire_lineage or {}, mawari_map)
+                              for rule in candidates)
                 if not matched:
                     continue
                 row = accum[kind]
@@ -431,13 +541,285 @@ def evaluate_rules(rules, courses, mawari_map, period_name, date_from, date_to):
     return [accum["買い"], accum["消し"]]
 
 
-def print_evaluation(rule_sets, courses, mawari_map):
+def build_sire_pts_provider(period_name, pedigree):
+    """Build the leakage-free ability snapshot used for a fixed OOS period."""
+    try:
+        as_of = SIRE_PTS_AS_OF[period_name]
+    except KeyError as exc:
+        raise ValueError(f"sire_pts統計のas-ofが未定義です: {period_name}") from exc
+    pedigree_by_horse = {
+        str(horse).strip(): _pedigree_value((ped or {}).get("sire"))
+        for horse, ped in (pedigree or {}).items()
+        if _pedigree_value((ped or {}).get("sire"))
+    }
+    return FoldFactorTableProvider(
+        DB_PATH, as_of,
+        pedigree_by_horse=pedigree_by_horse,
+        legacy_api_dir=API_DIR,
+    )
+
+
+def _sire_points(place, tt, dist, sire, factor_table_provider, cfg):
+    """Return (sire_pts, available), matching the ML builder's zero fallback."""
+    if not sire:
+        return 0.0, False
+    table = factor_table_provider(place, tt, dist)
+    if not table:
+        return 0.0, False
+    baseline = (table.get("baseline") or {}).get("win_rate")
+    if baseline is None:
+        return 0.0, False
+    row = scoring._match_entity(table.get("father_w"), sire)
+    if row is None:
+        return 0.0, False
+    points, _note = scoring._factor_points(
+        row, baseline, cfg["params"], 1.0, "win_rate")
+    return (float(points), True) if points is not None else (0.0, False)
+
+
+def _tertile_cuts(values):
+    """Deterministic observation-weighted terciles; equal scores stay together."""
+    ordered = sorted(values)
+    if not ordered:
+        return None
+    last = len(ordered) - 1
+    return ordered[last // 3], ordered[(2 * last) // 3]
+
+
+def _sire_band(value, cuts):
+    low_cut, high_cut = cuts
+    if value <= low_cut:
+        return "低"
+    if value <= high_cut:
+        return "中"
+    return "高"
+
+
+def _group_comparison_rates(matched, control):
+    """Return rates/increment, using None when a comparison is unobserved."""
+    matched_rate = (100.0 * sum(row["top3"] for row in matched) / len(matched)
+                    if matched else None)
+    control_rate = (100.0 * sum(row["top3"] for row in control) / len(control)
+                    if control else None)
+    increment = (matched_rate - control_rate
+                 if matched_rate is not None and control_rate is not None
+                 else None)
+    return matched_rate, control_rate, increment
+
+
+def evaluate_pedigree_increment(rules, courses, mawari_map, period_name,
+                                date_from, date_to, *, pedigree,
+                                sire_lineage, factor_table_provider=None):
+    """Compare pedigree-rule hits with non-hits inside the same sire_pts band.
+
+    The comparison universe is limited to horses satisfying the non-pedigree
+    predicates of at least one selected pedigree rule of the same course/kind.
+    Thus a composite rule such as ``previous top5 AND sire X`` compares sire X
+    with other sires among previous-top5 horses, rather than with the whole
+    course.  Multiple rules are unioned so each runner remains one observation.
+    """
+    indexed = defaultdict(list)
+    for rule in rules:
+        if is_pedigree_rule(rule):
+            indexed[(rule["place"], rule["track_type"], rule["distance"],
+                     rule["kind"])].append(rule)
+
+    # 2025に2025年成績を、2026H1に2026年成績を混ぜない。
+    # T14/T33と同じability.db年次as-of統計とWIN5設定を使う。
+    factor_table_provider = (factor_table_provider or
+                             build_sire_pts_provider(period_name, pedigree))
+    cfg = load_win5_cfg()
+    rows_by_kind = defaultdict(list)
+    unavailable = defaultdict(int)
+    for (place, tt, dist), course_runs in courses.items():
+        for kind in ("買い", "消し"):
+            candidates = indexed.get((place, tt, dist, kind), ())
+            if not candidates:
+                continue
+            for cur, prev in course_runs:
+                if not date_from <= cur["date"] <= date_to:
+                    continue
+                h = attach_pedigree(build_h(cur, prev), cur.get("horse"), pedigree)
+                ctx = {"type": tt, "dist": dist, "venue": place,
+                       "total_horses": cur["total_horses"], "class": cur["race_class"]}
+                eligible = any(
+                    _matches_non_pedigree_context(
+                        rule, h, ctx, sire_lineage, mawari_map)
+                    for rule in candidates
+                )
+                if not eligible:
+                    continue
+                pts, pts_available = _sire_points(
+                    place, tt, dist, _pedigree_value(h.get("sire")),
+                    factor_table_provider, cfg)
+                if not pts_available:
+                    unavailable[kind] += 1
+                matched = any(_matches_rule(rule, h, ctx, sire_lineage, mawari_map)
+                              for rule in candidates)
+                rows_by_kind[kind].append({
+                    "points": float(pts), "matched": matched,
+                    "available": bool(pts_available),
+                    "top3": int(cur["rank"] <= 3),
+                })
+
+    output = []
+    for kind in ("買い", "消し"):
+        rows = rows_by_kind[kind]
+        # MLでは統計行なしを0点へfallbackするが、層別評価まで同じ箱へ
+        # 混ぜると欠損が多数のとき三分位が全て0になる。欠損を独立帯にし、
+        # 実際にsire_ptsを算出できた馬だけで低/中/高を定義する。
+        cuts = _tertile_cuts([
+            row["points"] for row in rows if row["available"]
+        ])
+        if cuts is None:
+            matched = [row for row in rows if row["matched"]]
+            control = [row for row in rows if not row["matched"]]
+            matched_rate, control_rate, increment = _group_comparison_rates(
+                matched, control)
+            output.append({
+                "period": period_name, "kind": kind, "band": "欠損",
+                "matched_n": len(matched), "matched_rate": matched_rate,
+                "control_n": len(control), "control_rate": control_rate,
+                "increment": increment,
+                "overlap_top": 0.0, "unavailable": unavailable[kind],
+                "low_cut": None, "high_cut": None,
+            })
+            continue
+        matched_total = sum(row["matched"] for row in rows)
+        matched_high = sum(
+            row["matched"] and row["available"]
+            and _sire_band(row["points"], cuts) == "高"
+            for row in rows
+        )
+        overlap = 100.0 * matched_high / matched_total if matched_total else 0.0
+        for band in ("欠損", "低", "中", "高"):
+            group = [
+                row for row in rows
+                if ((not row["available"] and band == "欠損")
+                    or (row["available"] and band != "欠損"
+                        and _sire_band(row["points"], cuts) == band))
+            ]
+            matched = [row for row in group if row["matched"]]
+            control = [row for row in group if not row["matched"]]
+            matched_rate, control_rate, increment = _group_comparison_rates(
+                matched, control)
+            output.append({
+                "period": period_name, "kind": kind, "band": band,
+                "matched_n": len(matched), "matched_rate": matched_rate,
+                "control_n": len(control), "control_rate": control_rate,
+                "increment": increment,
+                "overlap_top": overlap, "unavailable": unavailable[kind],
+                "low_cut": (None if band == "欠損" else cuts[0]),
+                "high_cut": (None if band == "欠損" else cuts[1]),
+            })
+    return output
+
+
+def evaluate_direction_stability(rules, courses, mawari_map, period_name,
+                                 date_from, date_to, *, pedigree,
+                                 sire_lineage):
+    """Count v3 rules whose discover/select/fixed-test deviations agree."""
+    stats = {
+        "all": {"rules": 0, "evaluable": 0, "consistent": 0},
+        "pedigree": {"rules": 0, "evaluable": 0, "consistent": 0},
+    }
+    for rule in rules:
+        groups = ["all"] + (["pedigree"] if is_pedigree_rule(rule) else [])
+        for group in groups:
+            stats[group]["rules"] += 1
+        course_runs = courses.get(
+            (rule["place"], rule["track_type"], rule["distance"]), ())
+        base_n = base_top3 = matched_n = matched_top3 = 0
+        for cur, prev in course_runs:
+            if not date_from <= cur["date"] <= date_to:
+                continue
+            base_n += 1
+            base_top3 += cur["rank"] <= 3
+            h = attach_pedigree(build_h(cur, prev), cur.get("horse"), pedigree)
+            ctx = {"type": rule["track_type"], "dist": rule["distance"],
+                   "venue": rule["place"], "total_horses": cur["total_horses"],
+                   "class": cur["race_class"]}
+            if _matches_rule(rule, h, ctx, sire_lineage, mawari_map):
+                matched_n += 1
+                matched_top3 += cur["rank"] <= 3
+        if not base_n or not matched_n:
+            continue
+        fixed_dev = 100.0 * matched_top3 / matched_n - 100.0 * base_top3 / base_n
+        expected = 1.0 if rule["kind"] == "買い" else -1.0
+        devs = (rule.get("discover_dev"), rule.get("select_dev"), fixed_dev)
+        if any(dev is None for dev in devs):
+            continue
+        consistent = all(expected * dev > 0 for dev in devs)
+        for group in groups:
+            stats[group]["evaluable"] += 1
+            stats[group]["consistent"] += consistent
+    for row in stats.values():
+        row["period"] = period_name
+        row["rate"] = (100.0 * row["consistent"] / row["evaluable"]
+                       if row["evaluable"] else 0.0)
+    return stats
+
+
+def print_pedigree_increment(rules, courses, mawari_map, *, pedigree,
+                             sire_lineage):
+    print("\nsire_pts層別の血統ルール増分 "
+          "(同種別の血統ルールがあるコース内):")
+    print("期間     種別  層  該当n 該当複勝  非該当n 非該当複勝  差      "
+          "上位層重複  sire_pts境界")
+    for period_name, date_from, date_to in EVAL_PERIODS:
+        rows = evaluate_pedigree_increment(
+            rules, courses, mawari_map, period_name, date_from, date_to,
+            pedigree=pedigree, sire_lineage=sire_lineage)
+        for row in rows:
+            cuts = ("-" if row["low_cut"] is None else
+                    f"<={row['low_cut']:.2f}/<={row['high_cut']:.2f}/high")
+            matched_rate = ("N/A" if row["matched_rate"] is None else
+                            f"{row['matched_rate']:.1f}%")
+            control_rate = ("N/A" if row["control_rate"] is None else
+                            f"{row['control_rate']:.1f}%")
+            increment = ("N/A" if row["increment"] is None else
+                         f"{row['increment']:+.1f}pt")
+            print(f"{period_name:<8} {row['kind']:<3} {row['band']:<2} "
+                  f"{row['matched_n']:>6} {matched_rate:>9} "
+                  f"{row['control_n']:>8} {control_rate:>11} "
+                  f"{increment:>8} {row['overlap_top']:>9.1f}%  {cuts}")
+        if rows:
+            print(f"  sire_pts統計行なし(0点フォールバック): "
+                  f"買い{rows[0]['unavailable']}", end="")
+            kill = next((row for row in rows if row["kind"] == "消し"), None)
+            print(f" / 消し{kill['unavailable'] if kill else 0}")
+
+    print("\n方向安定性 (発見21-23→選抜24→固定テスト):")
+    for period_name, date_from, date_to in EVAL_PERIODS:
+        stats = evaluate_direction_stability(
+            rules, courses, mawari_map, period_name, date_from, date_to,
+            pedigree=pedigree, sire_lineage=sire_lineage)
+        for group in ("all", "pedigree"):
+            row = stats[group]
+            print(f"{period_name:<8} {group:<8} {row['consistent']}/{row['evaluable']} "
+                  f"({row['rate']:.1f}%, ルール全数{row['rules']})")
+
+
+def _file_sha256(path):
+    if not os.path.exists(path):
+        return None
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def print_evaluation(rule_sets, courses, mawari_map, *, pedigree=None,
+                     sire_lineage=None):
     print("\n固定テスト比較 (各種別で複数ルール該当馬は1頭1件):")
     print("期間     ルール       種別  本数    該当n  複勝率  単回収  複回収  複勝配当欠損")
     for period_name, date_from, date_to in EVAL_PERIODS:
         for set_name, rules in rule_sets:
             for row in evaluate_rules(rules, courses, mawari_map,
-                                      period_name, date_from, date_to):
+                                      period_name, date_from, date_to,
+                                      pedigree=pedigree,
+                                      sire_lineage=sire_lineage):
                 print(f"{period_name:<8} {set_name:<12} {row['kind']:<3} "
                       f"{row['rules']:>4} {row['matches']:>8} "
                       f"{row['show_rate']:>6.1f}% {row['win_roi']:>6.1f}% "
@@ -460,12 +842,35 @@ def main():
 
     validate_windows(args.discover_from, args.discover_to,
                      args.select_from, args.select_to)
+    if os.path.normcase(os.path.abspath(args.output)) == os.path.normcase(
+            os.path.abspath(V2_RULES_PATH)):
+        raise ValueError("T23では既存 mined_rules_v2.csv を上書きできません")
+    protected_hashes = {
+        PRODUCTION_RULES_PATH: _file_sha256(PRODUCTION_RULES_PATH),
+        V2_RULES_PATH: _file_sha256(V2_RULES_PATH),
+    }
+    if not os.path.exists(PEDIGREE_CACHE_PATH):
+        raise RuntimeError(
+            "pedigree_cache.json がありません。T23はネット再取得を行いません")
+    # use_cache=True + キャッシュ存在ガードにより、Neon/外部サイトへ
+    # 接続せず、既存のローカルデータだけを使う。
+    pedigree = pedigree_store.load_all(use_cache=True)
+    sire_lineage = analysis.load_sire_lineage(API_DIR)
     eval_to = EVAL_PERIODS[-1][2]
     conn = sqlite3.connect(DB_PATH)
     runs = load_runs(conn, args.discover_from, eval_to)
     attach_place_payouts(conn, runs, EVAL_PERIODS[0][1], eval_to)
     conn.close()
     print(f"ロード: {len(runs)}行")
+    coverage = pedigree_coverage(
+        (r for r in runs if r["date"] >= args.discover_from), pedigree)
+    total = coverage["horses"]
+    pct = lambda n: 100.0 * n / total if total else 0.0
+    print("血統カバレッジ(対象期間の固有馬): "
+          f"父 {coverage['sire']}/{total} ({pct(coverage['sire']):.1f}%) / "
+          f"母父 {coverage['bms']}/{total} ({pct(coverage['bms']):.1f}%) / "
+          f"両方 {coverage['both']}/{total} ({pct(coverage['both']):.1f}%)")
+    print(f"系統マップ: {len(sire_lineage)}種牡馬")
     print(f"発見: {args.discover_from}-{args.discover_to} "
           f"(n>={MIN_DISCOVER_N}, 収縮lift 買い+{DISCOVER_LIFT_BUY:g}pt/"
           f"消し-{DISCOVER_LIFT_KILL:g}pt) / "
@@ -474,20 +879,42 @@ def main():
     attach_agari_rank(runs)
     mawari_map = load_mawari()
     courses = build_course_runs(runs, args.discover_from, eval_to, args.venue)
-    rules_v2, _report = mine_all_courses(
+    rules_v3, _report = mine_all_courses(
         courses, mawari_map, discover_from=args.discover_from,
         discover_to=args.discover_to, select_from=args.select_from,
-        select_to=args.select_to)
-    write_rules(args.output, rules_v2)
-    n_buy = sum(r["kind"] == "買い" for r in rules_v2)
-    n_kill = len(rules_v2) - n_buy
+        select_to=args.select_to, pedigree=pedigree,
+        sire_lineage=sire_lineage)
+    write_rules(args.output, rules_v3)
+    n_buy = sum(r["kind"] == "買い" for r in rules_v3)
+    n_kill = len(rules_v3) - n_buy
+    n_pedigree = sum(is_pedigree_rule(rule) for rule in rules_v3)
+    n_broad_exclusion = sum(
+        any("以外" in cond for cond in rule["conds"]) for rule in rules_v3)
     print(f"\n[OK] 買い{n_buy}本 / 消し{n_kill}本 -> {os.path.abspath(args.output)}")
+    print(f"血統条件を含むルール: {n_pedigree}本 / "
+          f"「以外」型: {n_broad_exclusion}本")
 
     if not args.skip_evaluation:
         current_rules = load_rules(PRODUCTION_RULES_PATH)
-        print(f"ルール数: 現行{len(current_rules)} -> v2 {len(rules_v2)}")
-        print_evaluation((("現行(リークあり)", current_rules), ("v2(クリーン)", rules_v2)),
-                         courses, mawari_map)
+        v2_rules = load_rules(V2_RULES_PATH) if os.path.exists(V2_RULES_PATH) else []
+        print(f"ルール数: 現行{len(current_rules)} / v2 {len(v2_rules)} / "
+              f"v3 {len(rules_v3)}")
+        print_evaluation(
+            (("現行(リークあり)", current_rules),
+             ("v2(クリーン)", v2_rules),
+             ("v3(血統込み)", rules_v3)),
+            courses, mawari_map, pedigree=pedigree,
+            sire_lineage=sire_lineage)
+        print_pedigree_increment(
+            rules_v3, courses, mawari_map, pedigree=pedigree,
+            sire_lineage=sire_lineage)
+
+    changed = [path for path, before in protected_hashes.items()
+               if _file_sha256(path) != before]
+    if changed:
+        raise RuntimeError("保護対象のルールCSVが変更されました: "
+                           + ", ".join(changed))
+    print("保護CSV SHA-256: 本番/v2 ともに不変")
 
 
 if __name__ == "__main__":
