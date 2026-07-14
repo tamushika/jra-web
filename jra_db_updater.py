@@ -54,6 +54,10 @@ PLACE_MAP = {
 }
 
 NATURAL_KEY_COLUMNS = ("date", "place", "race_num", "horse_number")
+PARTIAL_NATURAL_KEY_PREDICATE = (
+    '"date" IS NOT NULL AND "place" IS NOT NULL '
+    'AND "race_num" IS NOT NULL AND "horse_number" IS NOT NULL'
+)
 UPSERT_COLUMNS = (
     "date", "place", "kaisai", "track_type", "distance", "condition",
     "race_name", "total_horses", "horse_number", "馬名", "rank",
@@ -231,7 +235,9 @@ def build_races_upsert_sql() -> str:
     key_columns = ", ".join(_quote_identifier(column) for column in NATURAL_KEY_COLUMNS)
     return (
         f'INSERT INTO "races" ({columns}) VALUES ({values}) '
-        f"ON CONFLICT ({key_columns}) DO UPDATE SET {updates_sql}"
+        f"ON CONFLICT ({key_columns}) "
+        f"WHERE {PARTIAL_NATURAL_KEY_PREDICATE} "
+        f"DO UPDATE SET {updates_sql}"
     )
 
 def parse_payouts(soup: BeautifulSoup) -> tuple[dict, dict]:
@@ -523,6 +529,19 @@ def insert_into_db(data: dict, url: str) -> dict:
             "斤量": m_kin.group(1) if m_kin else None,
             "所属": (r.get("調教師名") or r.get("調教師") or r.get("厩舎") or r.get("所属") or "").strip() or None,
         }
+        missing_key_columns = [
+            column for column in NATURAL_KEY_COLUMNS
+            if row_dict.get(column) is None
+            or (isinstance(row_dict.get(column), str)
+                and not row_dict[column].strip())
+        ]
+        if missing_key_columns:
+            return {
+                "error": (
+                    "自然キー(date/place/race_num/horse_number)が不完全です"
+                    f"（{', '.join(missing_key_columns)}）。登録を中止します。"
+                )
+            }
         df_rows.append(row_dict)
 
     if not df_rows:
@@ -571,8 +590,13 @@ def insert_into_db(data: dict, url: str) -> dict:
                 "unique" in error_text.lower() or "constraint" in error_text.lower()):
             return {
                 "error": (
-                    "自然キーの一意制約がありません。"
-                    "migrations/20260714_t34_races_natural_key.sql を適用してください。"
+                    "自然キーの有効な部分一意インデックスがありません。"
+                    "racesへの書き込みを停止し、"
+                    "migrations/20260714_t34_races_natural_key_preflight.sql、"
+                    "migrations/20260714_t34_races_natural_key.sql"
+                    "（autocommit・transaction外）、"
+                    "migrations/20260714_t34_races_natural_key_postcheck.sql "
+                    "の順に確認してください。"
                 )
             }
         return {"error": str(e)}

@@ -1,4 +1,5 @@
 from pathlib import Path
+import inspect
 
 from bs4 import BeautifulSoup
 from sqlalchemy import create_engine, text
@@ -6,28 +7,36 @@ from sqlalchemy import create_engine, text
 import jra_db_updater as updater
 
 
+PARTIAL_KEY_PREDICATE = (
+    '"date" IS NOT NULL AND "place" IS NOT NULL '
+    'AND "race_num" IS NOT NULL AND "horse_number" IS NOT NULL'
+)
+
+
 def _create_races_table(engine, *, unique=True):
     column_types = {
         "distance": "INTEGER",
         "total_horses": "INTEGER",
-        "horse_number": "INTEGER NOT NULL",
+        "horse_number": "INTEGER",
         "rank": "REAL",
         "corner_4": "INTEGER",
         "horse_odds": "REAL",
         "weight": "REAL",
-        "race_num": "INTEGER NOT NULL",
+        "race_num": "INTEGER",
     }
     definitions = [
         f'"{column}" {column_types.get(column, "TEXT")}'
         for column in updater.UPSERT_COLUMNS
     ]
-    if unique:
-        definitions.append(
-            'UNIQUE ("date", "place", "race_num", "horse_number")'
-        )
     ddl = 'CREATE TABLE "races" (' + ", ".join(definitions) + ")"
     with engine.begin() as connection:
         connection.execute(text(ddl))
+        if unique:
+            connection.execute(text(
+                'CREATE UNIQUE INDEX "uq_races_natural_key" ON "races" '
+                '("date", "place", "race_num", "horse_number") WHERE '
+                + PARTIAL_KEY_PREDICATE
+            ))
 
 
 def _race_data(*, race_name="テスト特別", rank="1"):
@@ -235,20 +244,93 @@ def test_preexisting_duplicate_aborts_instead_of_silently_selecting_a_row(monkey
     assert count == 2
 
 
-def test_migration_checks_nulls_and_duplicates_before_not_null_and_unique():
-    migration = (
-        Path(__file__).parents[1]
-        / "migrations"
-        / "20260714_t34_races_natural_key.sql"
-    ).read_text(encoding="utf-8")
-    null_check = migration.index("WHERE date IS NULL")
-    duplicate_check = migration.index("HAVING COUNT(*) > 1")
-    not_null = migration.index("ALTER COLUMN date SET NOT NULL")
-    unique_constraint = migration.index(
-        "ADD CONSTRAINT uq_races_date_place_race_num_horse_number"
-    )
-    assert null_check < not_null < unique_constraint
-    assert duplicate_check < not_null
-    for column in ("date", "place", "race_num", "horse_number"):
-        assert f"ALTER COLUMN {column} SET NOT NULL" in migration
-    assert "UNIQUE (date, place, race_num, horse_number)" in migration
+def test_partial_index_migrations_are_split_and_do_not_restore_global_not_null():
+    migration_dir = Path(__file__).parents[1] / "migrations"
+    preflight = (migration_dir / (
+        "20260714_t34_races_natural_key_preflight.sql"
+    )).read_text(encoding="utf-8")
+    create = (migration_dir / (
+        "20260714_t34_races_natural_key.sql"
+    )).read_text(encoding="utf-8")
+    postcheck = (migration_dir / (
+        "20260714_t34_races_natural_key_postcheck.sql"
+    )).read_text(encoding="utf-8")
+
+    normalized_create = " ".join(create.split()).upper()
+    assert "CREATE UNIQUE INDEX CONCURRENTLY UQ_RACES_NATURAL_KEY" in normalized_create
+    assert "ON PUBLIC.RACES (DATE, PLACE, RACE_NUM, HORSE_NUMBER)" in normalized_create
+    assert "IF NOT EXISTS" not in normalized_create
+    assert "BEGIN" not in normalized_create
+    assert "COMMIT" not in normalized_create
+    assert "ALTER COLUMN" not in normalized_create
+    for sql in (preflight, create, postcheck):
+        normalized = " ".join(sql.split()).lower()
+        for condition in (
+            "date is not null", "place is not null",
+            "race_num is not null", "horse_number is not null",
+        ):
+            assert condition in normalized
+
+    normalized_preflight = " ".join(preflight.split()).lower()
+    normalized_postcheck = " ".join(postcheck.split()).lower()
+    assert "having count(*) > 1" in normalized_preflight
+    assert "indisunique" in normalized_preflight
+    assert "indisvalid" in normalized_preflight
+    assert "indisready" in normalized_preflight
+    assert "having count(*) > 1" in normalized_postcheck
+    assert "indisunique" in normalized_postcheck
+    assert "indisvalid" in normalized_postcheck
+    assert "indisready" in normalized_postcheck
+
+    updater_source = inspect.getsource(updater.insert_into_db)
+    for filename in (
+        "20260714_t34_races_natural_key_preflight.sql",
+        "20260714_t34_races_natural_key.sql",
+        "20260714_t34_races_natural_key_postcheck.sql",
+    ):
+        assert filename in updater_source
+    assert "autocommit" in updater_source
+
+
+def test_upsert_conflict_target_matches_partial_index_and_preserves_odds():
+    sql = " ".join(updater.build_races_upsert_sql().split())
+    assert (
+        'ON CONFLICT ("date", "place", "race_num", "horse_number") '
+        'WHERE "date" IS NOT NULL AND "place" IS NOT NULL '
+        'AND "race_num" IS NOT NULL AND "horse_number" IS NOT NULL'
+    ) in sql
+    assert (
+        '"horse_odds" = COALESCE(excluded."horse_odds", '
+        '"races"."horse_odds")'
+    ) in sql
+
+
+def test_sqlite_partial_index_excludes_null_keys_but_protects_complete_keys():
+    sqlite_engine = create_engine("sqlite+pysqlite:///:memory:")
+    _create_races_table(sqlite_engine)
+    row = {column: None for column in updater.UPSERT_COLUMNS}
+    columns = ", ".join(f'"{column}"' for column in updater.UPSERT_COLUMNS)
+    values = ", ".join(f":{column}" for column in updater.UPSERT_COLUMNS)
+    insert = text(f'INSERT INTO "races" ({columns}) VALUES ({values})')
+
+    # Incomplete historical keys remain outside the partial index.
+    incomplete = {**row, "date": "250105", "place": "東京",
+                  "race_num": None, "horse_number": 3}
+    with sqlite_engine.begin() as connection:
+        connection.execute(insert, [incomplete, incomplete])
+        assert connection.execute(text(
+            'SELECT COUNT(*) FROM "races" WHERE "race_num" IS NULL'
+        )).scalar_one() == 2
+
+    # Complete keys are protected and the updater SQL converges to one row.
+    complete = {**row, "date": "250105", "place": "東京",
+                "race_num": 11, "horse_number": 3, "horse_odds": 4.2}
+    changed = {**complete, "rank": 2.0, "horse_odds": None}
+    with sqlite_engine.begin() as connection:
+        connection.execute(text(updater.build_races_upsert_sql()), complete)
+        connection.execute(text(updater.build_races_upsert_sql()), changed)
+        saved = connection.execute(text(
+            'SELECT COUNT(*), MAX("rank"), MAX("horse_odds") FROM "races" '
+            'WHERE "race_num"=11 AND "horse_number"=3'
+        )).one()
+    assert tuple(saved) == (1, 2.0, 4.2)

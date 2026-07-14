@@ -37,6 +37,21 @@
 7. Neonとability.dbで日付形式が異なり、ability.dbに存在しない成績もある。
    日付変換、truthのcoverage、照合に使える列、補助列を明文化する。
 
+### 2026-07-14 実装時安全補足（T34b v2.1）
+
+独立実装レビューで、canonical plan SHA-256だけでは `manifest.json` 内のDB識別情報、
+ability.db SHA-256、artifact SHA-256の承認後改変を検出できないことが判明した。planの内容が
+不変でも別DB・別truth・差し替えbackupを参照できる承認境界の欠陥になるため、次を追加する。
+
+1. `--apply` はcanonical plan SHA-256に加え、承認対象となった `manifest.json` 実ファイルの
+   raw bytes SHA-256も明示指定し、JSON解析より前に一致を検証する。
+2. manifestはformat、mode、DB識別、ability情報、件数、artifact、snapshotの固定schemaで
+   検証し、未知・欠落・型違いのmetadataを拒否する。
+3. lossless JSONLではfloat、Decimal、date/datetime、bytesを自己記述型タグで保存し、
+   NULL・空文字だけでなく値型も区別する。未知型は文字列化せず安全停止する。
+4. dry-runが成果物を生成できてもplanが `NOT_APPLICABLE` ならCLIは非0で終了し、
+   自動処理がmigrationへ連鎖しないようにする。
+
 ## 2. 実データの現実（2026-07-14 READ-ONLY preflight）
 
 `races` は2001～2025年を含む全履歴テーブルであり、1,232,092行ある。
@@ -246,6 +261,8 @@ dry-runごとにtimestamp付きディレクトリへ次を出力する。
 - `manifest.json`: DB識別情報（資格情報を除く）、snapshot時刻、件数、ability.db情報、
   各ファイルSHA-256、canonical plan SHA-256、applicable判定、§5.4の必須列ごとの
   NULL・変換不能・不一致件数。
+- CLI出力の `manifest_sha256`: 上記manifest実ファイルのraw bytes SHA-256。自己参照を避けるため
+  manifest内へ埋め込まず、plan SHA-256と組にして承認記録へ保存する。
 
 論理plan hashには変動する `ctid` を含めず、完全同一行はoccurrence countを含むmultisetとして扱う。
 CSV/JSONL/manifestの書き込み、再読込、件数、hashの検証が完了しない場合はplan生成失敗とし、
@@ -253,7 +270,8 @@ apply可能な成果物として扱わない。
 
 ### 6.5 apply前提とtransaction
 
-`--apply` は少なくとも承認済みplanとそのSHA-256の明示指定を要求する。
+`--apply` は承認済みmanifestのパス、manifest実ファイルSHA-256、canonical plan SHA-256の
+3点すべての明示指定を要求する。manifest SHA-256はJSON解析より前に検証する。
 実行手順は以下とする。
 
 1. `races` writerが停止済みであることを運用チェックする。
@@ -363,10 +381,11 @@ DO UPDATE SET ...
 
 1. Codexが合成fixtureと非本番DBで実装・テストを完了する。
 2. 上位モデルが本番NeonでREAD-ONLY dry-runを実行する。
-3. 上位モデルが分類、`UNRESOLVED`、バックアップ、ability hash、plan hash、観測件数を確認する。
+3. 上位モデルが分類、`UNRESOLVED`、バックアップ、ability hash、manifest hash、plan hash、観測件数を確認する。
 4. planが `APPLICABLE` の場合だけ、上位モデルが適用を明示承認する。
 5. 旧updaterを含むすべての `races` writerを停止する。
-6. `fix_races_2025_dups.py --apply` を実行し、commit条件を確認する。
+6. manifestパス、承認済みmanifest SHA-256、承認済みplan SHA-256を明示して
+   `fix_races_2025_dups.py --apply` を実行し、commit条件を確認する。
 7. migration preflightを実行する。
 8. autocommitで `CREATE UNIQUE INDEX CONCURRENTLY` を実行する。
 9. catalog postcheckと非破壊smoke testを実行する。
