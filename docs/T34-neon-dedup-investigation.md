@@ -89,6 +89,32 @@ ORDER BY place, race_num, horse_number, "馬名";
 - race_num が NULL のグループがあれば原因2の裏取り。
 - 5組の実体 (どちらが netkeiba と一致するか) を確定してから B の削除対象を決める。
 
+## 2026-07-14 追記: migration preflight で設計是正が必要と判明
+
+当初の migration (`race_num SET NOT NULL` + 全体 `UNIQUE`) を本番Neonへ適用する前に
+READ-ONLY の preflight を実施した結果、**当初設計は実データに適用不能**と判明:
+
+| 項目 | 値 |
+|---|---|
+| `races` 総行数 | 1,232,092 (2001-2025を含む全履歴。想定した「recentな結果表」ではない) |
+| **race_num が NULL** | **1,178,074 (95.6%)**。race_num充填は2025以降のみ (2025: 44,634 / 2026: 9,384) |
+| place が NULL | 34,219 |
+| **非NULLキーの重複** | **338グループ (676行)・全て2025年**。7/4の5組以外 |
+
+- `race_num SET NOT NULL` は95.6%がNULLの履歴テーブルに不可能 → **全体UNIQUEは断念**。
+- 2025年338組の重複は7/4と症状が異なり、同一 (place,race_num,horse_number) に**別々の2頭**
+  = **race_numの誤付与** (単純な誤行削除では直らず、正しいrace_num判定が要る)。
+- **連鎖問題**: コミット済updaterの `ON CONFLICT (自然キー)` は対応制約が未作成のため、
+  今のNeonに新updaterで登録するとinsertが失敗する。制約作成が前提。
+
+**是正方針** → [SPEC-T34b](codex/SPEC-T34b-partial-unique-index.md):
+1. 全体UNIQUE → **部分ユニークインデックス** (`WHERE race_num IS NOT NULL AND place IS NOT NULL`)
+   で履歴117万NULL行に触れず今後の登録行だけ保護。
+2. 2025年338組の是正スクリプト (ability.db 2025 truth 照合・dry-run/バックアップ/承認後apply)。
+3. updater の ON CONFLICT を部分インデックス述語に整合。
+
 ## 状態
-- 根本原因 = 特定済み (主因: 重複ガードの race_num 欠落 + race_num 抽出の脆さ)。
-- **未実施 (承認待ち)**: Neon 確認クエリの実行、誤行削除、登録アプリ修正 SPEC の起票。
+- 根本原因 = 特定済み。7/4の5組は是正済み (Neon)。登録アプリ再発防止コード = コミット済 (7e5ce59)。
+- **migration は未適用** (当初設計が実データに不適合と判明 → SPEC-T34b で再設計)。
+- **未実施 (承認待ち)**: SPEC-T34b の Codex実装レビュー、2025年338組の是正実行 (承認後)、
+  部分ユニークインデックスの本番適用。
