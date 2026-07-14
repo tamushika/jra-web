@@ -52,6 +52,32 @@ ability.db SHA-256、artifact SHA-256の承認後改変を検出できないこ�
 4. dry-runが成果物を生成できてもplanが `NOT_APPLICABLE` ならCLIは非0で終了し、
    自動処理がmigrationへ連鎖しないようにする。
 
+### 2026-07-14 本番dry-run所見と要修正（T34b v2.2 — 未実装）
+
+上位モデルが本番Neonで初回のREAD-ONLY dry-runを実行 (無変更) した結果、
+候補676行+移動先40行=**716行すべてが `UNRESOLVED`**、planは `NOT_APPLICABLE`。
+原因を分解すると、**唯一の不一致列は `time` で709/709件がmismatch**、他14列
+(date/place/horse/horse_number/rank/jockey/track_type/distance/total_horses/
+condition/corner_4/weight/agari_3f/race_name) はすべてmatch。
+
+真因は**データの不整合ではなく `time` 解析の取りこぼし**。Neon `races.time` は
+`M:SS.d` でも秒表現でもなく、**区切り無しの圧縮桁列** (末尾1桁=0.1秒、その上2桁=秒、
+残り=分) だった。例:
+- `"3137"` = 3分13.7秒 = 193.7s = 1937 deciseconds (= ability `time_sec` 193.7)
+- `"1134"` = 1:13.4 = 73.4s = 734 / `"1143"` = 743 / `"1095"` = 695 — すべてtruthと一致。
+
+現行 `to_deciseconds` はこれを「3137秒」等と誤解釈するため必須列 `time` が全滅し、
+本来 KEEP/MOVE に解決できる行まで `UNRESOLVED` に落ちる (fail-safeなので誤DELETEは無い)。
+
+**要修正 (Codex)**:
+1. Neon `time` パーサを圧縮桁列 (M SS d / MM SS d、末尾=0.1秒) に対応させる。`M:SS.d`・
+   秒表現も引き続き受理し、桁数不足/非数字/矛盾は従来どおり証拠不足 (`UNRESOLVED`)。
+   `agari_3f` (小数点あり) の既存解釈は変えない。
+2. §5.2/§5.4の「Neon `time` 形式」の記述を圧縮桁列を含めて訂正する。
+3. 実値 (`"3137"→1937`, `"1134"→734` 等) を使った回帰テストを追加。
+4. 修正後、上位モデルが本番dry-runを再実行し、`UNRESOLVED` が期待どおり縮小することを確認する
+   (残る `UNRESOLVED` は truth不在/複数候補/coverage外の真に判定不能な組に限られるはず)。
+
 ## 2. 実データの現実（2026-07-14 READ-ONLY preflight）
 
 `races` は2001～2025年を含む全履歴テーブルであり、1,232,092行ある。
