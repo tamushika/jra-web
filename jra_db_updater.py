@@ -23,7 +23,6 @@ from urllib.parse import urlparse, parse_qs, unquote
 
 import requests
 from bs4 import BeautifulSoup
-import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy.sql import text
 from dotenv import load_dotenv
@@ -53,6 +52,187 @@ PLACE_MAP = {
     "東京": "東京", "中山": "中山", "中京": "中京", "京都": "京都",
     "阪神": "阪神", "小倉": "小倉"
 }
+
+NATURAL_KEY_COLUMNS = ("date", "place", "race_num", "horse_number")
+UPSERT_COLUMNS = (
+    "date", "place", "kaisai", "track_type", "distance", "condition",
+    "race_name", "total_horses", "horse_number", "馬名", "rank",
+    "corner_4", "jockey", "time", "agari_3f", "popularity", "odds",
+    "horse_odds", "weight", "race_num", "sex_age", "斤量", "所属",
+)
+
+
+def _as_valid_race_num(value) -> int | None:
+    """Return a JRA race number only when it is in the supported 1..12 range."""
+    try:
+        race_num = int(clean_obj(value))
+    except (TypeError, ValueError):
+        return None
+    return race_num if 1 <= race_num <= 12 else None
+
+
+def extract_race_num(url: str, *page_texts: str) -> int | None:
+    """Extract the R number from known JRA URL forms, then visible page text.
+
+    CNAME is the authoritative source.  Explicit query parameters are accepted
+    for alternate/front-end URL forms.  The text fallback intentionally requires
+    a race marker (``R``, ``レース`` or ``競走``), so meeting numbers and dates are
+    not mistaken for the race number.
+    """
+    decoded_url = urllib.parse.unquote(url or "")
+    normalized_url = clean_obj(decoded_url)
+
+    url_patterns = (
+        # CNAME=pw01sde<2><2><year><meeting/day><R><yyyymmdd>/...
+        r"pw01sde\d{2}\d{2}\d{4}\d{4}(\d{2})20\d{6}",
+        # Alternate URLs used by wrappers/bookmarks.
+        r"(?:[?&](?:race_num|race_no|raceno|raceNum)=)(\d{1,2})(?:[&#/]|$)",
+    )
+    for pattern in url_patterns:
+        match = re.search(pattern, normalized_url, flags=re.IGNORECASE)
+        if match:
+            race_num = _as_valid_race_num(match.group(1))
+            if race_num is not None:
+                return race_num
+
+    text_patterns = (
+        r"(?:第\s*)?([0-9]{1,2})\s*(?:レース|競走)",
+        r"(?:^|[^A-Z0-9])([0-9]{1,2})\s*R(?:ACE)?(?:[^A-Z0-9]|$)",
+    )
+    for page_text in page_texts:
+        normalized_text = clean_obj(page_text or "").upper()
+        for pattern in text_patterns:
+            match = re.search(pattern, normalized_text, flags=re.IGNORECASE)
+            if match:
+                race_num = _as_valid_race_num(match.group(1))
+                if race_num is not None:
+                    return race_num
+    return None
+
+
+def _header_labels(header_cells) -> tuple[list[str], dict[str, str]]:
+    """Build semantic header identities from text/id/class, never position."""
+    labels: list[str] = []
+    identity_to_label: dict[str, str] = {}
+    for header in header_cells:
+        label = header.get_text("", strip=True)
+        labels.append(label)
+        if header.get("id"):
+            identity_to_label[f"id:{header['id']}"] = label
+        for class_name in header.get("class", []):
+            identity_to_label[f"class:{class_name}"] = label
+        identity_to_label[f"label:{clean_obj(label)}"] = label
+    return labels, identity_to_label
+
+
+def _cell_header_label(cell, identity_to_label: dict[str, str]) -> str | None:
+    """Resolve a data cell to its visible header using semantic HTML metadata."""
+    headers = cell.get("headers", [])
+    if isinstance(headers, str):
+        headers = headers.split()
+    for header_id in headers:
+        label = identity_to_label.get(f"id:{header_id}")
+        if label:
+            return label
+
+    for attr in ("data-label", "aria-label"):
+        if cell.get(attr):
+            label = identity_to_label.get(f"label:{clean_obj(cell[attr])}")
+            if label:
+                return label
+
+    matches = {
+        identity_to_label[f"class:{class_name}"]
+        for class_name in cell.get("class", [])
+        if f"class:{class_name}" in identity_to_label
+    }
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def parse_result_table(target_table, tansho: dict[str, str],
+                       fukusho: dict[str, str]) -> tuple[list[str], list[dict], list[str]]:
+    """Parse a result table through semantic header/cell associations.
+
+    Rows whose shape or semantic associations are ambiguous are skipped rather
+    than shifted into the wrong columns.  This is especially important for
+    cancelled/excluded horses and markup containing rowspan/colspan.
+    """
+    header_row = target_table.find("tr")
+    header_cells = header_row.find_all("th", recursive=False) if header_row else []
+    labels, identity_to_label = _header_labels(header_cells)
+    warnings_out: list[str] = []
+    rows: list[dict] = []
+
+    if not labels or any(not label for label in labels) or len(set(labels)) != len(labels):
+        return [], [], ["結果テーブルの見出しを一意に特定できないため登録対象外にしました。"]
+
+    for row_number, tr in enumerate(target_table.find_all("tr")[1:], start=1):
+        cells = tr.find_all("td", recursive=False)
+        if not cells:
+            continue
+        has_span = any(
+            str(cell.get(attr, "1")) != "1"
+            for cell in cells for attr in ("rowspan", "colspan")
+        )
+        if has_span or len(cells) != len(header_cells):
+            warnings_out.append(
+                f"結果テーブル{row_number}行目: 見出し数{len(header_cells)}と"
+                f"セル数{len(cells)}が一致しないためスキップしました。"
+            )
+            continue
+
+        row: dict[str, str] = {}
+        unresolved = False
+        for cell in cells:
+            label = _cell_header_label(cell, identity_to_label)
+            if not label or label in row:
+                unresolved = True
+                break
+            row[label] = cell.get_text(" ", strip=True)
+        if unresolved or set(row) != set(labels):
+            warnings_out.append(
+                f"結果テーブル{row_number}行目: セルと見出しの対応を特定できないため"
+                "スキップしました。"
+            )
+            continue
+
+        rank_str = clean_obj(row.get("着順", ""))
+        rank_match = re.search(r"\d+", rank_str)
+        rank = int(rank_match.group()) if rank_match else 99
+        horse_number = clean_obj(row.get("馬番", ""))
+        row["単勝配当"] = tansho.get(horse_number, "") if rank == 1 else ""
+        row["複勝配当"] = fukusho.get(horse_number, "") if rank <= 3 else ""
+        rows.append(row)
+
+    return labels + ["単勝配当", "複勝配当"], rows, warnings_out
+
+
+def _quote_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def build_races_upsert_sql() -> str:
+    """Return an explicit PostgreSQL/SQLite compatible natural-key upsert."""
+    columns = ", ".join(_quote_identifier(column) for column in UPSERT_COLUMNS)
+    values = ", ".join(f":{column}" for column in UPSERT_COLUMNS)
+    update_columns = [column for column in UPSERT_COLUMNS if column not in NATURAL_KEY_COLUMNS]
+    updates = []
+    for column in update_columns:
+        quoted = _quote_identifier(column)
+        if column == "horse_odds":
+            # 結果ページに確定オッズが無い再登録でも、別処理で
+            # backfill済みの値は消さない。新しい非NULL値は通常どおり更新する。
+            updates.append(
+                f'{quoted} = COALESCE(excluded.{quoted}, "races".{quoted})'
+            )
+        else:
+            updates.append(f"{quoted} = excluded.{quoted}")
+    updates_sql = ", ".join(updates)
+    key_columns = ", ".join(_quote_identifier(column) for column in NATURAL_KEY_COLUMNS)
+    return (
+        f'INSERT INTO "races" ({columns}) VALUES ({values}) '
+        f"ON CONFLICT ({key_columns}) DO UPDATE SET {updates_sql}"
+    )
 
 def parse_payouts(soup: BeautifulSoup) -> tuple[dict, dict]:
     tansho: dict[str, str] = {}
@@ -130,6 +310,35 @@ def format_time_str(time_str):
     if ':' in time_str: return time_str
     return time_str
 
+
+def extract_page_headings(soup: BeautifulSoup) -> tuple[str, str]:
+    """Find the actual race heading, ignoring site-wide accessibility headings."""
+    h1_candidates = [
+        (tag, tag.get_text(" ", strip=True)) for tag in soup.find_all("h1")
+    ]
+    race_heading = next(
+        ((tag, label) for tag, label in h1_candidates
+         if label and (
+             "レース結果" in label
+             or (re.search(r"20\d{2}年\d{1,2}月\d{1,2}日", label)
+                 and re.search(r"(?:\d{1,2}レース|第\d{1,2}競走)", clean_obj(label)))
+         )),
+        None,
+    )
+    if race_heading is None:
+        race_heading = next(((tag, label) for tag, label in h1_candidates if label), None)
+
+    race_info = race_heading[1] if race_heading else ""
+    ignored_h2 = {"検索ウィンドウ", "緊急情報", "払戻金", "JRAからのお知らせ"}
+    h2_scope = race_heading[0].find_all_next("h2") if race_heading else soup.find_all("h2")
+    race_name = next(
+        (tag.get_text(" ", strip=True) for tag in h2_scope
+         if tag.get_text(" ", strip=True)
+         and tag.get_text(" ", strip=True) not in ignored_h2),
+        "",
+    )
+    return race_info, race_name
+
 def fetch_and_parse(url: str) -> dict:
     resp = requests.get(url, headers=FETCH_HEADERS, timeout=20)
     resp.raise_for_status()
@@ -137,10 +346,22 @@ def fetch_and_parse(url: str) -> dict:
     soup = BeautifulSoup(resp.text, "html.parser")
 
     info = {}
-    h1 = soup.find("h1")
-    if h1: info["レース情報"] = h1.get_text(strip=True)
-    h2 = soup.find("h2")
-    if h2: info["レース名"] = h2.get_text(strip=True)
+    race_info, race_name = extract_page_headings(soup)
+    if race_info:
+        info["レース情報"] = race_info
+    if race_name:
+        info["レース名"] = race_name
+
+    current_race_nav = soup.select_one(".race-num .current")
+    current_race_text = ""
+    if current_race_nav:
+        current_race_text = current_race_nav.get_text(" ", strip=True)
+        current_race_image = current_race_nav.find("img")
+        if current_race_image:
+            current_race_text += " " + (current_race_image.get("alt") or "")
+    body_race_num = extract_race_num("", race_info, current_race_text)
+    if body_race_num is not None:
+        info["R番号"] = body_race_num
 
     for tag in soup.find_all(string=re.compile(r"メートル")):
         txt = tag.strip()
@@ -162,33 +383,17 @@ def fetch_and_parse(url: str) -> dict:
 
     columns = []
     rows = []
+    parse_warnings = []
 
     if target_table:
-        header_row = target_table.find("tr")
-        columns = [th.get_text(strip=True) for th in header_row.find_all("th")]
-        columns += ["単勝配当", "複勝配当"]
+        columns, rows, parse_warnings = parse_result_table(target_table, tansho, fukusho)
+        for warning in parse_warnings:
+            print(f"[警告] {warning}")
 
-        for tr in target_table.find_all("tr")[1:]:
-            cells = [td.get_text(" ", strip=True) for td in tr.find_all("td")]
-            if not cells: continue
-            base_cols = [c for c in columns if c not in ("単勝配当", "複勝配当")]
-            row = {base_cols[i]: cells[i] for i in range(min(len(base_cols), len(cells)))}
-
-            rank_str = clean_obj(row.get("着順", ""))
-            m_rank = re.search(r'\d+', rank_str)
-            rank = int(m_rank.group()) if m_rank else 99
-
-            banum = clean_obj(row.get("馬番", ""))
-            row["単勝配当"] = tansho.get(banum, "") if rank == 1 else ""
-            row["複勝配当"] = fukusho.get(banum, "") if rank <= 3 else ""
-            rows.append(row)
-
-    return {"info": info, "columns": columns, "rows": rows}
+    return {"info": info, "columns": columns, "rows": rows,
+            "warnings": parse_warnings}
 
 def insert_into_db(data: dict, url: str) -> dict:
-    if not engine:
-        return {"error": "データベース接続設定(DATABASE_URL)が見つかりません"}
-        
     info = data.get("info", {})
     rows = data.get("rows", [])
     if not rows:
@@ -204,11 +409,24 @@ def insert_into_db(data: dict, url: str) -> dict:
     if dates_in_url:
         date_val = dates_in_url[-1]
 
-    # レース番号 (CNAME: pw01sde <開催回> <場コード> <年> <回日> <R番号> <日付8桁>)
-    race_num_val = None
-    m_rn = re.search(r'pw01sde\d{2}\d{2}\d{4}\d{4}(\d{2})20\d{6}', url)
-    if m_rn:
-        race_num_val = int(m_rn.group(1))
+    # URL（CNAME/明示query）を先に評価し、本文はフォールバックに限定する。
+    # 両方あるのに食い違う場合は、古いプレビューdataと別URLの混在を疑い、
+    # 権威ソースを黙って選ぶのではなく誤レース登録を防ぐため中断する。
+    url_race_num = extract_race_num(url)
+    body_race_num = _as_valid_race_num(info.get("R番号"))
+    if body_race_num is None:
+        body_race_num = extract_race_num("", r_info, r_name)
+    if (url_race_num is not None and body_race_num is not None
+            and url_race_num != body_race_num):
+        return {
+            "error": (
+                f"URLのR番号({url_race_num}R)と本文のR番号"
+                f"({body_race_num}R)が一致しないため、登録を中止します。"
+            )
+        }
+    race_num_val = url_race_num if url_race_num is not None else body_race_num
+    if race_num_val is None:
+        return {"error": "URLまたは本文からR番号を特定できませんでした。登録を中止します。"}
     
     m_date = re.search(r'20(\d{2})年(\d{1,2})月(\d{1,2})日', r_info)
     if m_date:
@@ -224,6 +442,9 @@ def insert_into_db(data: dict, url: str) -> dict:
             
     if not place_val:
         return {"error": "競馬場を特定できませんでした。"}
+
+    if not engine:
+        return {"error": "データベース接続設定(DATABASE_URL)が見つかりません"}
         
     track_type = ""
     if "芝" in course_txt: track_type = "芝"
@@ -234,28 +455,27 @@ def insert_into_db(data: dict, url: str) -> dict:
     if m_dist: distance = int(m_dist.group(1))
     
     condition = ""
-    if "良" in baba_txt: condition = "良"
+    if "不良" in baba_txt or "不" in baba_txt: condition = "不"
     elif "稍重" in baba_txt or "稍" in baba_txt: condition = "稍"
-    elif "不良" in baba_txt or "不" in baba_txt: condition = "不"
     elif "重" in baba_txt: condition = "重"
-
-    try:
-        with engine.begin() as conn:
-            check_q = text("SELECT COUNT(*) FROM races WHERE date=:d AND place=:p AND race_name=:rn")
-            cnt = conn.execute(check_q, {"d": date_val, "p": place_val, "rn": r_name}).scalar()
-            if cnt > 0:
-                return {"error": f"このレース({place_val} {r_name})は既にデータベースに登録されています！"}
-    except Exception as e:
-        print("Duplicate check error:", e)
+    elif "良" in baba_txt: condition = "良"
 
     df_rows = []
     total_horses = len(rows)
-    for r in rows:
-        c4 = r.get("通過", "")
-        m_c4 = re.search(r'\d+', c4.split('-')[-1]) if '-' in c4 else re.search(r'\d+', c4)
-        c4_val = int(m_c4.group()) if m_c4 else None
+    skipped_rows = 0
+    for row_number, r in enumerate(rows, start=1):
+        horse_number_match = re.search(r"\d+", clean_obj(r.get("馬番", "")))
+        horse_number = int(horse_number_match.group()) if horse_number_match else None
+        if horse_number is None or not 1 <= horse_number <= 18:
+            skipped_rows += 1
+            print(f"[警告] 登録データ{row_number}行目: 馬番を特定できないためスキップしました。")
+            continue
+
+        c4 = r.get("通過") or r.get("コーナー通過順位") or ""
+        corner_positions = re.findall(r"\d+", c4)
+        c4_val = int(corner_positions[-1]) if corner_positions else None
         
-        weight_str = r.get("馬体重", "")
+        weight_str = r.get("馬体重") or r.get("馬体重（増減）") or ""
         m_w = re.search(r'^\s*(\d+)', weight_str)
         w_val = float(m_w.group(1)) if m_w else None
         
@@ -265,6 +485,8 @@ def insert_into_db(data: dict, url: str) -> dict:
         tansho_str = r.get("単勝配当", "")
         tansho_str = tansho_str.replace('円', '').replace(',', '').strip()
 
+        # JRAの結果ページでは確定単勝オッズを取得できないことが多い。
+        # 欠損時は推測せずNULLとし、充填は backfill_odds_netkeiba.py に委ねる。
         horse_odds_raw = (r.get("単勝") or r.get("単勝オッズ") or r.get("オッズ") or "").strip()
         try:
             horse_odds_val = float(horse_odds_raw) if horse_odds_raw else None
@@ -284,13 +506,12 @@ def insert_into_db(data: dict, url: str) -> dict:
             "condition": condition,
             "race_name": r_name,
             "total_horses": total_horses,
-            "horse_number": r.get("馬番"),
-            "馬名": r.get("馬名"),
+            "horse_number": horse_number,
             "rank": float(m_r.group()) if m_r else 99.0,
             "corner_4": c4_val,
-            "jockey": r.get("騎手"),
+            "jockey": r.get("騎手") or r.get("騎手名"),
             "time": format_time_str(r.get("タイム", "")),
-            "agari_3f": r.get("上り", "").replace(' ', '').replace('　', ''),
+            "agari_3f": (r.get("上り") or r.get("推定上り") or "").replace(' ', '').replace('　', ''),
             "popularity": r.get("人気") or r.get("単勝人気"),
             "odds": tansho_str,
             "horse_odds": horse_odds_val,
@@ -303,13 +524,57 @@ def insert_into_db(data: dict, url: str) -> dict:
             "所属": (r.get("調教師名") or r.get("調教師") or r.get("厩舎") or r.get("所属") or "").strip() or None,
         }
         df_rows.append(row_dict)
-        
-    df = pd.DataFrame(df_rows)
-    
+
+    if not df_rows:
+        return {"error": "有効な馬番を持つ登録対象行がありません。"}
+
+    race_key = {"d": date_val, "p": place_val, "r": race_num_val}
     try:
-        df.to_sql('races', engine, if_exists='append', index=False, method='multi')
-        return {"success": True, "message": f"{total_horses}頭分のデータをPostgreSQLに追加登録しました！"}
+        with engine.begin() as conn:
+            # race_nameは表記揺れがあるため、レースの自然キーだけで既存確認する。
+            check_q = text(
+                'SELECT COUNT(*) FROM "races" '
+                'WHERE "date"=:d AND "place"=:p AND "race_num"=:r'
+            )
+            existing_count = int(conn.execute(check_q, race_key).scalar() or 0)
+
+            # UNIQUE migration前の壊れたDBをupsertで暗黙修復しない。明示的に中断する。
+            duplicate_q = text(
+                'SELECT "horse_number", COUNT(*) AS n FROM "races" '
+                'WHERE "date"=:d AND "place"=:p AND "race_num"=:r '
+                'GROUP BY "horse_number" HAVING COUNT(*) > 1 LIMIT 1'
+            )
+            duplicate = conn.execute(duplicate_q, race_key).first()
+            if duplicate is not None:
+                return {
+                    "error": (
+                        f"既存データに自然キー重複があります({place_val} {race_num_val}R "
+                        f"馬番{duplicate[0]})。登録を中止しました。"
+                    )
+                }
+
+            conn.execute(text(build_races_upsert_sql()), df_rows)
+
+        action = "上書き登録" if existing_count else "追加登録"
+        skipped_message = f" ({skipped_rows}行スキップ)" if skipped_rows else ""
+        return {
+            "success": True,
+            "updated": bool(existing_count),
+            "message": (
+                f"{len(df_rows)}頭分のデータをPostgreSQLに{action}しました！"
+                f"{skipped_message}"
+            ),
+        }
     except Exception as e:
+        error_text = str(e)
+        if "ON CONFLICT" in error_text and (
+                "unique" in error_text.lower() or "constraint" in error_text.lower()):
+            return {
+                "error": (
+                    "自然キーの一意制約がありません。"
+                    "migrations/20260714_t34_races_natural_key.sql を適用してください。"
+                )
+            }
         return {"error": str(e)}
 
 HTML = r"""<!DOCTYPE html>
@@ -431,7 +696,7 @@ tbody tr:hover td{background:var(--surf2)}
     <div class="res-hd">
       <h2 id="raceTitle">レース結果プレビュー</h2>
       <button class="btn-dl" id="insertBtn" onclick="doInsert()">
-        データベースへ追加登録 (INSERT)
+        データベースへ追加／上書き登録
       </button>
     </div>
     <div id="chips" class="chips"></div>
@@ -473,7 +738,9 @@ async function doFetch(){
 
     gData = j;
     render(j);
-    setStat("ok", `取得完了 — ${j.rows.length}頭分のデータをプレビューに表示しています`);
+    const warningText = (j.warnings && j.warnings.length)
+      ? `（${j.warnings.length}行を安全のためスキップ）` : "";
+    setStat("ok", `取得完了 — ${j.rows.length}頭分のデータをプレビューに表示しています${warningText}`);
     document.getElementById("insertBtn").disabled = false;
   }catch(e){
     setStat("ng", "エラー: " + e.message);
