@@ -362,14 +362,8 @@ def check_condition(cond, h, r, sire_lineage, mawari_map):
                 # 引数の mawari_map を優先し、なければ DEFAULT_MAWARI を使う
                 actual_mawari = mawari_map.get(prev_venue) or DEFAULT_MAWARI.get(prev_venue, "")
                 
-                # デバッグ用 (判定が怪しい馬の名前を指定)
-                if "シェーラ" in h['name'] or "ミスターエメラルド" in h['name']:
-                    print(f"--- 【回りデバッグ】 {h['name']} ---")
-                    print(f"前走場所: {prev_venue}, 判定データ: {actual_mawari}, 目標: {target}")
-
                 if target not in actual_mawari: return False
             else:
-                if "シェーラ" in h['name']: print(f"⚠️ {h['name']}: 前走の競馬場名が見つかりません (raw: {raw_hist[:30]}...)")
                 return False
             return True
 
