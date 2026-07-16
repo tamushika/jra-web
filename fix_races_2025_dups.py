@@ -112,6 +112,39 @@ def to_deciseconds(value: Any) -> int | None:
         return None
 
 
+def to_neon_time_deciseconds(value: Any) -> int | None:
+    """Parse Neon ``races.time`` without changing generic seconds semantics.
+
+    Digit-only text is the source-specific compact representation ``MSSd`` or
+    ``MMSSd``.  A decimal point or colon makes the representation explicit and
+    delegates to :func:`to_deciseconds`.  Numeric Python values are seconds,
+    matching the ability.db contract.  Ambiguous or non-canonical digit text is
+    rejected instead of being guessed.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if not isinstance(value, str):
+        return to_deciseconds(value)
+
+    raw = unicodedata.normalize("NFKC", value).strip()
+    if not raw:
+        return None
+    if ":" in raw or "." in raw:
+        return to_deciseconds(raw)
+    if re.fullmatch(r"\d{4,5}", raw) is None:
+        return None
+    if len(raw) == 5 and raw.startswith("0"):
+        return None
+
+    minutes = int(raw[:-3])
+    seconds = int(raw[-3:-1])
+    tenths = int(raw[-1])
+    if seconds >= 60:
+        return None
+    result = (minutes * 60 + seconds) * 10 + tenths
+    return result if result > 0 else None
+
+
 def canonical_track_type(value: Any) -> str | None:
     raw = normalize_text(value)
     if raw in {"ダ", "ダート"}:
@@ -289,7 +322,7 @@ def _normalized_pair(field: str, row: Mapping[str, Any], truth: Mapping[str, Any
     if field == "rank":
         return strict_int(row.get("rank"), 1, 18), strict_int(truth.get("rank"), 1, 18)
     if field == "time":
-        return to_deciseconds(row.get("time")), to_deciseconds(truth.get("time_sec"))
+        return to_neon_time_deciseconds(row.get("time")), to_deciseconds(truth.get("time_sec"))
     if field == "track_type":
         return canonical_track_type(row.get("track_type")), canonical_track_type(truth.get("track_type"))
     if field == "distance":

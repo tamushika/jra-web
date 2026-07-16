@@ -52,7 +52,7 @@ ability.db SHA-256、artifact SHA-256の承認後改変を検出できないこ�
 4. dry-runが成果物を生成できてもplanが `NOT_APPLICABLE` ならCLIは非0で終了し、
    自動処理がmigrationへ連鎖しないようにする。
 
-### 2026-07-14 本番dry-run所見と要修正（T34b v2.2 — 未実装）
+### 2026-07-14 本番dry-run所見と修正（T34b v2.2 — 2026-07-16 Codex実装済み）
 
 上位モデルが本番Neonで初回のREAD-ONLY dry-runを実行 (無変更) した結果、
 候補676行+移動先40行=**716行すべてが `UNRESOLVED`**、planは `NOT_APPLICABLE`。
@@ -66,17 +66,24 @@ condition/corner_4/weight/agari_3f/race_name) はすべてmatch。
 - `"3137"` = 3分13.7秒 = 193.7s = 1937 deciseconds (= ability `time_sec` 193.7)
 - `"1134"` = 1:13.4 = 73.4s = 734 / `"1143"` = 743 / `"1095"` = 695 — すべてtruthと一致。
 
-現行 `to_deciseconds` はこれを「3137秒」等と誤解釈するため必須列 `time` が全滅し、
+v2.1時点の汎用 `to_deciseconds` はこれを「3137秒」等と誤解釈するため必須列 `time` が全滅し、
 本来 KEEP/MOVE に解決できる行まで `UNRESOLVED` に落ちる (fail-safeなので誤DELETEは無い)。
 
-**要修正 (Codex)**:
-1. Neon `time` パーサを圧縮桁列 (M SS d / MM SS d、末尾=0.1秒) に対応させる。`M:SS.d`・
-   秒表現も引き続き受理し、桁数不足/非数字/矛盾は従来どおり証拠不足 (`UNRESOLVED`)。
-   `agari_3f` (小数点あり) の既存解釈は変えない。
-2. §5.2/§5.4の「Neon `time` 形式」の記述を圧縮桁列を含めて訂正する。
-3. 実値 (`"3137"→1937`, `"1134"→734` 等) を使った回帰テストを追加。
+**実装内容 (Codex, 2026-07-16)**:
+1. Neon `time` 専用パーサを追加し、圧縮桁列 (M SS d / MM SS d、末尾=0.1秒) に対応した。
+   `M:SS.d`・明示的な秒表現も引き続き受理し、桁数不足/非数字/矛盾は証拠不足
+   (`UNRESOLVED`) とする。ability `time_sec` と `agari_3f` は汎用秒パーサのまま変更しない。
+2. §5.2/§5.4の「Neon `time` 形式」を圧縮桁列を含むsource-specific契約へ訂正した。
+3. 実値 (`"3137"→1937`, `"1134"→734` 等)、境界、不正形式、payload分類、
+   `agari_3f` 非回帰のテストを追加した。
 4. 修正後、上位モデルが本番dry-runを再実行し、`UNRESOLVED` が期待どおり縮小することを確認する
    (残る `UNRESOLVED` は truth不在/複数候補/coverage外の真に判定不能な組に限られるはず)。
+
+Codex検証は専用 `75 passed / 2 skipped`、全体 `267 passed / 2 skipped`。本番Neonへの接続・
+dry-run・mutationは行っていない。残ゲートは上位モデルによるREAD-ONLY再dry-runである。
+初回dry-runの保存済みbundleをDB再接続なしで形式集計したところ、716件中709件が4桁digit-onlyで
+新パーサにより解析でき、残る非digit 7件は安全に拒否された。この確認は現在snapshotでの再分類を
+代替しないため、本番適用判断には上位モデルの再dry-runを必須とする。
 
 ## 2. 実データの現実（2026-07-14 READ-ONLY preflight）
 
@@ -169,6 +176,13 @@ SQLite URIのread-only modeで開く。apply終了時にもhash不変を検証�
 - place、horse等の文字比較は既存プロジェクトの正規化規則を優先し、NFKCと前後空白除去を
   比較用に適用する。raw値とnormalized値を両方ログへ残し、DB値自体は書き換えない。
 - `rank`、`umaban` は整数へ厳格変換し、有効範囲外や解析不能を `UNRESOLVED` とする。
+- Neon `races.time` はsource-specificに解釈する。NFKC・trim後のdigit-only文字列は、正規形の
+  4桁 `MSSd` または5桁 `MMSSd` だけを圧縮時刻として受理する。末尾1桁を0.1秒、直前2桁を
+  秒、残りを分とし、秒部60以上、5桁の先頭0、総時間0、4/5桁以外は証拠不足とする。
+  `:` または小数点を含む文字列、およびPython数値型は明示的な秒表現として扱う。
+  digit-onlyの短い文字列をtruth値に合わせて秒または圧縮時刻へ推測してはならない。
+- ability `time_sec` は数値秒として汎用秒パーサで0.1秒単位へ変換する。Neon専用の圧縮解釈を
+  ability値や `agari_3f` / `agari` へ適用しない。
 - jockeyはTARGET短縮名、JRAフルネーム、空白、減量記号の差があるため、主キーや単独の
   MOVE/DELETE根拠に使わず、補助確認・レポート列に限定する。
 
@@ -189,7 +203,7 @@ truth 0件または複数候補は必ず `UNRESOLVED` とする。
 | `馬名` | `horse` | NFKC・空白正規化後に完全一致 | 必須 |
 | `horse_number` | `umaban` | 整数として完全一致 | 必須 |
 | `rank` | `rank` | 整数値として完全一致。99、非整数、範囲外は証拠不足 | 必須 |
-| `time` | `time_sec` | 両方を0.1秒単位の整数へ変換して完全一致 | 必須 |
+| `time` | `time_sec` | Neon側は§5.2の圧縮/明示秒形式、ability側は数値秒として0.1秒単位の整数へ変換し完全一致 | 必須 |
 | `track_type` | `track_type` | `ダ`/`ダート`等を既存規則でcanonical化して完全一致 | 必須 |
 | `distance` | `distance` | 整数として完全一致 | 必須 |
 | `total_horses` | `total_horses` | 整数として完全一致 | 必須 |
@@ -200,9 +214,10 @@ truth 0件または複数候補は必ず `UNRESOLVED` とする。
 | `jockey` | `jockey` | raw/normalized値と一致可否をレポート | 補助のみ |
 | `race_name` | `race_name` | raw/normalized値と一致可否をレポート | 補助のみ |
 
-Neon `time` は `M:SS.d` または秒表現、ability `time_sec` は数値秒として受け取り、
+Neon `time` のdigit-only文字列は `MSSd` / `MMSSd` の圧縮形式として扱い、`M:SS.d`、
+小数点付き秒文字列、数値型の秒表現も受理する。ability `time_sec` は数値秒として受け取り、
 丸め誤差を避けるため両方を整数decisecondへ変換する。入力精度は0.1秒とし、許容差は設けない。
-書式不明、NULL、変換不能は必須証拠不足とする。
+Neon圧縮形式の秒部60以上、非正規桁数、書式不明、NULL、変換不能は必須証拠不足とする。
 
 `KEEP_CURRENT`、`MOVE_CANDIDATE`、DELETE時の保持行は、必須列がすべて存在・一致することを要求する。
 整合性veto列は、片方がNULLなら判定材料にしないが、両方が存在して不一致ならMOVE/DELETEを許可しない。
@@ -431,6 +446,10 @@ postcheck失敗時はwriterを停止したまま、上位モデルが復旧方�
 - 馬名だけ一致する行をMOVEしない。
 - 移動先既存行、同一targetへの複数MOVE、連鎖、循環、対象外行との衝突を検出する。
 - 不正な6桁日付、2025年外、Neon/ability日付変換を検証する。
+- Neon圧縮timeの実値 (`3137→1937`, `1134→734`, `1143→743`, `1095→695`) と
+  秒部60以上・桁不足・過剰桁・非数字を検証する。
+- 圧縮timeでKEEP/MOVEが成立し、不正timeは `UNRESOLVED` となり、ability `time_sec` と
+  `agari_3f` の従来の秒解釈が変わらないことを検証する。
 - canonical plan hashが順序差で変化せず、内容差で変化する。
 
 ### 10.2 dry-run/apply安全性
@@ -473,6 +492,8 @@ SQLite成功だけでPostgreSQL固有動作を検証済みとはしない。
   manifest/hashを出力する。
 - `--apply` が承認plan照合、fresh再分類、transaction内guard、全postcheckを備える。
 - 判定不能やtruth不存在をDELETEしないテストがある。
+- Neon圧縮timeがsource-specificに解析され、ability `time_sec` / `agari_3f` を誤って
+  圧縮形式として扱わない回帰テストがある。
 - updaterの `ON CONFLICT` と部分indexのpredicateが一致し、odds保全ロジックを維持する。
 - SQLiteと専用非本番PostgreSQLのテストパスが成功する。
 - updaterのエラー案内が実際のT34b適用手順を指す。

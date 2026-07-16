@@ -110,6 +110,71 @@ def test_normalizers_are_strict_and_canonical():
 
 
 @pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("3137", 1937),
+        ("1134", 734),
+        ("1143", 743),
+        ("1095", 695),
+        ("1000", 600),
+        ("1599", 1199),
+        ("10000", 6000),
+        ("0599", 599),
+        ("３１３７", 1937),
+        ("3:13.7", 1937),
+        ("193.7", 1937),
+        (193.7, 1937),
+    ],
+)
+def test_neon_time_parser_accepts_compact_and_explicit_seconds(raw, expected):
+    assert fixer.to_neon_time_deciseconds(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["1600", "1999", "137", "95", "123456", "01134", "0000", "+1134", "11 34", "11A4"],
+)
+def test_neon_time_parser_rejects_ambiguous_or_invalid_compact_values(raw):
+    assert fixer.to_neon_time_deciseconds(raw) is None
+
+
+def test_compact_neon_time_matches_truth_without_changing_agari_semantics():
+    comparison = fixer.compare_payload(
+        _row(time="3137", agari_3f="345"),
+        _truth(time_sec=193.7, agari=34.5),
+    )
+
+    assert comparison["fields"]["time"]["status"] == "match"
+    assert comparison["mandatory_ok"] is True
+    assert comparison["fields"]["agari_3f"]["status"] == "mismatch"
+    assert comparison["veto_ok"] is False
+    assert fixer.to_deciseconds("3137") == 31370
+
+
+def test_compact_neon_time_enables_keep_and_move_but_invalid_time_is_unresolved():
+    plan = fixer.build_operation_plan(
+        [
+            _row(horse="A", race_num=1, ctid="(1,1)", time="1134"),
+            _row(horse="B", race_num=1, ctid="(1,2)", time="1143"),
+        ],
+        [
+            _truth(horse="A", race=1, time_sec=73.4),
+            _truth(horse="B", race=2, time_sec=74.3),
+        ],
+    )
+    assert plan["status"] == "APPLICABLE"
+    assert sorted(_classifications(plan)) == ["KEEP_CURRENT", "MOVE_CANDIDATE"]
+
+    invalid = fixer.build_operation_plan(
+        [_row(time="1600")],
+        [_truth(time_sec=100.0)],
+    )
+    assert invalid["status"] == "NOT_APPLICABLE"
+    assert _classifications(invalid) == ["UNRESOLVED"]
+    assert invalid["classifications"][0]["comparison"]["fields"]["time"]["status"] == "invalid"
+
+
+@pytest.mark.parametrize(
     "bad_date",
     ["20250230", "20251301", "2025010", "2025015", "20240105"],
 )
