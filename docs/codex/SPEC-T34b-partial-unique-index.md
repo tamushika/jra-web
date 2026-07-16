@@ -199,6 +199,25 @@ v2.2のままである点、および以下の曖昧さの指摘を受けた。�
 7. **手動是正ゲートの機械照合 (§9)**: 既知6行が期待キーに存在することを
    dry-run/preflightで照合する検査を追加 (衝突再発の検出だけに頼らない)。
 
+### 2026-07-16 決定表・閉包・status排他性の修正（T34b v2.3.3 — Codex第3回レビュー反映）
+
+1. **NON_RUNNER_KEEPの到達可能化 (§6.2)**: 変換検査を「identity列」と「payload列」に
+   分離した。#1はidentity列 (truth照会と最終状態シミュレーションに必要な
+   date/place/race_num/horse_number/馬名) の変換不能のみを対象とし、
+   非出走マーカー (rank NULL・time NULL/`"----"`) の判定はpayload変換より先に行う。
+   payload変換不能はtruth 1件の行に対する#5で扱う。
+2. **DELETE再分類の範囲拡張と閉包の補完 (§6.1/§6.2)**: `MOVE_CANDIDATE` の移動先に
+   同一truthへ検証済みで一致するkeeper行が既存する場合を、v2どおり冗長DELETE対象として
+   第2段で再分類可能にした (証明条件を満たさない場合は従来どおり `UNRESOLVED`)。
+   keeper検索は自然キーグループ内に限らず**truth identity単位**で行う。対象閉包に
+   「exactly-one truthを持つ全候補のtruth位置にある全行」を追加した。
+3. **plan statusの排他化 (§6.3)**: `NOT_APPLICABLE` の判定を最優先とし、
+   `NO_MUTATIONS_NEEDED` にも「target衝突なし・最終重複なし・plan整合性違反なし」を
+   要求した (mutation 0件でも最終重複が残る場合は `NOT_APPLICABLE`)。
+4. **§11.2の観測基準値を是正後の値へ更新** (重複334組・(b)2,584・(c)514)。
+5. **format v3の具体構造を固定 (§6.4)**: JSONキー名・0埋め件数マップ・plan.jsonの
+   version・CSVでのnull/空配列表現を明記した。
+
 ## 2. 実データの現実（2026-07-14 READ-ONLY preflight）
 
 `races` は2001～2025年を含む全履歴テーブルであり、1,232,092行ある。
@@ -221,7 +240,8 @@ v2.2のままである点、および以下の曖昧さの指摘を受けた。�
 ### 3.1 目標
 
 1. 履歴の不完全キー行を変更せず、4列の自然キーがすべて非NULLの行だけを一意に保護する。
-2. 2025年の既存重複を、凍結truthとの一致を証明できる場合だけ是正する。
+2. 2025年の既存重複およびtruth不一致の誤キー行を、凍結truthとの一致を
+   証明できる場合だけ是正する。
 3. updaterの再登録をupsertで1行へ収束させ、`horse_odds=COALESCE` の既存保全挙動を維持する。
 4. 不明点、状態変化、衝突、バックアップ不備があれば、書き込み前またはcommit前に安全停止する。
 
@@ -364,8 +384,14 @@ AND horse_number IS NOT NULL
 - **(c) truth不在**: 自然キーがtruthに存在しない。
 
 各行は候補理由 (a/b/c、複数可) を保持し、分類・plan・manifestに記録する。
-候補に加え、各MOVE候補の移動先自然キーに存在する全行、そこから参照される移動先を
-「対象閉包」として取得する。34,219件の `place IS NULL` 行および履歴の `race_num IS NULL` 行は対象外。
+候補に加え、次を「対象閉包」として取得する (v2.3.3):
+
+- 各MOVE候補の移動先自然キーに存在する全行、そこから参照される移動先。
+- **exactly-one truthを持つ全候補について、そのtruth位置
+  (`date, place, truth.r, truth.umaban`) に存在する全行** — 第2段のkeeper検索
+  (truth identity単位) がPAYLOAD_MISMATCH等の行でも機能するために必要。
+
+34,219件の `place IS NULL` 行および履歴の `race_num IS NULL` 行は対象外。
 
 観測基準値 (2026-07-16 上位モデル再監査、**手動是正6行の後**): 2025年完全キー行
 44,634行中、馬名一致41,536 / (b)相当2,584 / (c)結果あり179 / (c)非出走マーカー335、
@@ -423,31 +449,44 @@ truthロードが**200,000行**、候補+閉包が**100,000行**を超えた場�
 
 - **第1段 — 行単位の一次分類**: 下の決定表を各候補行へ上から順に適用する
   (最初に該当した行で確定)。
-- **第2段 — グループ単位のDELETE再分類**: 同一自然キーグループ内で、
+- **第2段 — DELETE再分類 (truth identity単位・v2.3.3)**: keeper検索は
+  自然キーグループ内に限らず、対象閉包全体から「同一truth行に必須列すべてで一致し
+  整合性vetoに不一致のない検証済み行」をtruth identity単位で行う。
   - 第1段で `KEEP_CURRENT` となった行が同一truth行に対して複数あり、
     論理fingerprintも同一 (完全重複) の場合、決定的な規則で1行だけを
     `KEEP_CURRENT` に残し、残りを `DELETE_EXACT_DUPLICATE` へ再分類する。
-  - 第1段で非mutation分類となった行のうち、`DELETE_REDUNDANT_ERROR` の証明条件
-    (同一の正しいtruthを表す完全な検証済み行が別に存在し、削除対象自身の
-    normalized `date/place/馬名` がexactly oneのtruthへ対応し、保持行が一意) を
-    満たす行だけを `DELETE_REDUNDANT_ERROR` へ再分類する。
+  - 第1段で `MOVE_CANDIDATE` となった行のうち、**移動先に同一truthへ検証済みで
+    一致するkeeper行が既に存在する**場合、MOVEは実行せず、`DELETE_REDUNDANT_ERROR` の
+    証明条件 (keeperが一意・削除対象自身のnormalized `date/place/馬名` がexactly oneの
+    truthへ対応・冗長性を比較列で証明) を満たすときに限り削除へ再分類する
+    (v2の冗長DELETE対象)。証明条件を満たさない場合は従来どおり `UNRESOLVED`
+    (target衝突)。
+  - 第1段で非mutation分類となった行のうち、同じ証明条件を満たす行だけを
+    `DELETE_REDUNDANT_ERROR` へ再分類する。
   - 上記以外の再分類は行わない。
 - **第3段 — 最終衝突判定**: §6.3のシミュレーション後、非mutation行
   (`NON_RUNNER_KEEP`/`UNVERIFIED_KEEP`) のうち最終状態で自然キーが衝突する行を
   `UNRESOLVED` へ昇格する。
 
-**決定表 (第1段。各候補行に上から順に適用)**:
+**決定表 (第1段。各候補行に上から順に適用。v2.3.3)**:
+
+比較値の変換検査は2種に分離する。**identity列** = truth照会と最終状態
+シミュレーションに必要な `date`/`place`/`race_num`/`horse_number`/`馬名`。
+**payload列** = §5.4のその他の比較列 (rank/time/track_type/…)。
+非出走マーカー (rank NULL かつ time NULL/`"----"`) はraw値の検査であり、
+payload変換の失敗として扱ってはならない。
 
 | # | 条件 | 分類 |
 |---|---|---|
-| 1 | 行自身の比較値 (日付・place・整数列・time等) が§5.2で変換不能 | `UNVERIFIED_KEEP` (INVALID_VALUE) |
+| 1 | **identity列**の正規化・変換不能 (§5.2) | `UNVERIFIED_KEEP` (INVALID_VALUE) |
 | 2 | truth候補0件・rank NULLかつtime NULL/`"----"` | `NON_RUNNER_KEEP` |
 | 3 | truth候補0件・上記以外 | `UNVERIFIED_KEEP` (TRUTH_ZERO) |
 | 4 | truth候補≥2 | `UNVERIFIED_KEEP` (TRUTH_MULTI) |
-| 5 | truth候補1・必須列全一致 (horse_number↔umaban含む)・veto不一致なし・`r==race_num` | `KEEP_CURRENT` |
-| 6 | truth候補1・必須列全一致 (同上)・veto不一致なし・`r!=race_num` | `MOVE_CANDIDATE` |
-| 7 | truth候補1・horse_number以外の必須列全一致・veto不一致なし・`umaban!=horse_number` | `UNVERIFIED_KEEP` (UMABAN_MISMATCH) |
-| 8 | truth候補1・上記以外 (必須列不一致またはveto不一致) | `UNVERIFIED_KEEP` (PAYLOAD_MISMATCH) |
+| 5 | truth候補1・**payload列**に変換不能あり (§5.2) | `UNVERIFIED_KEEP` (INVALID_VALUE) |
+| 6 | truth候補1・必須列全一致 (horse_number↔umaban含む)・veto不一致なし・`r==race_num` | `KEEP_CURRENT` |
+| 7 | truth候補1・必須列全一致 (同上)・veto不一致なし・`r!=race_num` | `MOVE_CANDIDATE` |
+| 8 | truth候補1・horse_number以外の必須列全一致・veto不一致なし・`umaban!=horse_number` | `UNVERIFIED_KEEP` (UMABAN_MISMATCH) |
+| 9 | truth候補1・上記以外 (必須列の不一致・欠落またはveto不一致) | `UNVERIFIED_KEEP` (PAYLOAD_MISMATCH) |
 
 DELETE系2分類の証明条件はv2から不変。mutation (MOVE/DELETE) の実行条件は一切緩和しない。
 本仕様で `UNRESOLVED` は「最終状態で自然キー衝突する非mutation行」(第3段) と、
@@ -476,17 +515,26 @@ rank/jockey/race_name等が別レース由来となる混成行は、馬名だ�
   最終状態に置き、衝突が生じる行は `UNRESOLVED` へ昇格する (§6.2 第3段)。
 - 予定UPDATE件数、DELETE件数、KEEP件数、非mutation件数、最終総行数差を確定する。
 
-**plan statusは3値とする (v2.3.1)**:
+**plan statusは3値とし、上から順に排他的に判定する (v2.3.3: `NOT_APPLICABLE` 最優先)**:
 
-- `APPLICABLE`: `UNRESOLVED` 0件・target衝突なし・最終重複なし・mutationが1件以上。
-- `NO_MUTATIONS_NEEDED`: `UNRESOLVED` 0件かつmutation 0件 (候補が非mutation分類のみ)。
-  CLIはexit 0で成功終了し、`--apply` を指定してもmutationなしで正常終了する。
+- `NOT_APPLICABLE`: 1件でも `UNRESOLVED`、target衝突、最終重複、またはplan整合性違反
+  (シミュレーション不能・成果物検証失敗等) がある。
+- `APPLICABLE`: 上記に該当せず、mutationが1件以上。
+- `NO_MUTATIONS_NEEDED`: 上記いずれにも該当しない (mutation 0件・`UNRESOLVED` 0件・
+  target衝突なし・最終重複なし・plan整合性違反なし)。
+  mutation 0件でも最終重複が残る場合 (例: 同一truthに一致するが論理fingerprintが
+  異なるKEEP同士の重複) は `NOT_APPLICABLE` であり、本statusにしてはならない。
+
+CLI挙動:
+
+- `NO_MUTATIONS_NEEDED` はCLIがexit 0で成功終了し、`--apply` を指定しても
+  mutationなしで正常終了する。
   この経路では§6.5のインデックス不在検査を**行わない** (mutationが無いため不要。
   migration完了後の再実行もno-opとして成功する)。
   是正完了後の再実行はこの状態になる (非出走馬等の候補(c)は残り続けるため、
   「候補0件」をno-opの条件にしてはならない)。
-- `NOT_APPLICABLE`: 1件でも `UNRESOLVED`、target衝突、最終重複がある。
-  dry-runレポートは出力するが、CLIは非0で終了し、`--apply` はDB mutation前に終了する。
+- `NOT_APPLICABLE` はdry-runレポートを出力するが、CLIは非0で終了し、
+  `--apply` はDB mutation前に終了する。
 
 ### 6.4 dry-run成果物
 
@@ -515,6 +563,21 @@ dry-runごとにtimestamp付きディレクトリへ次を出力する。
   `reason_code` は `UNVERIFIED_KEEP` 以外の全行でJSON nullとする。
   `--apply` は `format_version != 3` のmanifestをJSON解析後直ちに拒否する
   (v2以前のbundleで適用してはならない)。
+- **format v3の具体構造 (v2.3.3)**:
+  - `manifest.json` (トップレベル追加キー):
+    `format_version: 3` (整数)、
+    `plan_status: "APPLICABLE" | "NO_MUTATIONS_NEEDED" | "NOT_APPLICABLE"`、
+    `classification_counts`: 7分類名をキーとする整数マップ (該当0件も0で必須)、
+    `unverified_reason_counts`: `reason_code` 5種をキーとする整数マップ (0埋め必須)、
+    `candidate_reason_counts`: `{"a": int, "b": int, "c": int}` (0埋め必須)、
+    `manual_fix_gate`: §9の既知6行照合の結果 (`ok: bool` と行ごとの照合結果)。
+  - `plan.json`: `version: 3` (整数。manifestの `format_version` と一致必須)。
+    各classification/operation行に `candidate_reasons`: `"a"`/`"b"`/`"c"` の配列
+    (閉包のみ由来は `[]`)、`reason_code`: 文字列またはnull。
+  - CSV表現: `candidate_reasons` 列は `a|b|c` を `|` 連結した文字列
+    (閉包のみ由来は空文字列)、`reason_code` 列はnullを空文字列で表す。
+    CSVの空文字列とJSON nullの対応はこの2列に限る (§6.4のlossless契約は
+    rows.jsonl側で担保するため不変)。
 - CLI出力の `manifest_sha256`: 上記manifest実ファイルのraw bytes SHA-256。自己参照を避けるため
   manifest内へ埋め込まず、plan SHA-256と組にして承認記録へ保存する。
 
@@ -704,14 +767,23 @@ postcheck失敗時はwriterを停止したまま、上位モデルが復旧方�
   - レース単位の完全スワップ (重複を生まない相互入替) が候補(b)経由で検出・適用できる。
   - `NON_RUNNER_KEEP`/`UNVERIFIED_KEEP` は衝突なしで非ブロック、衝突ありで
     `UNRESOLVED` に昇格しplanをブロックする。
-  - 決定表#1-8の各分岐と `reason_code` 5種の付与を網羅する (#1のINVALID_VALUEが
-    truth照会より先に評価されること、#7がhorse_number以外の全必須列一致で
+  - 決定表#1-9の各分岐と `reason_code` 5種の付与を網羅する (#1がidentity列のみを
+    対象としtruth照会より先に評価されること、**rank NULL・time `"----"` の非出走行が
+    INVALID_VALUEに吸収されず#2の `NON_RUNNER_KEEP` へ到達すること**、
+    payload変換不能が#5で扱われること、#8がhorse_number以外の全必須列一致で
     到達可能であることを含む)。
   - 3段構成の順序: 完全重複ペアが第2段で「1行KEEP+1行DELETE_EXACT_DUPLICATE」になり、
     両方KEEP_CURRENTのまま残らない。冗長誤行は第1段非mutation→第2段で証明条件を
     満たす場合のみDELETE_REDUNDANT_ERRORになる。
+  - **MOVE先に同一truthの検証済みkeeperが既存する行**が、証明条件成立時に
+    `DELETE_REDUNDANT_ERROR` へ再分類され、不成立時に `UNRESOLVED` になる。
+    keeper検索がtruth identity単位で行われ、対象閉包がexactly-one truth候補の
+    truth位置の行を含む (PAYLOAD_MISMATCH行のtruth位置keeperが取得できる)。
   - 検証不能行を含む連鎖・循環は適用不可。
-  - mutation 0件・UNRESOLVED 0件で `NO_MUTATIONS_NEEDED`・exit 0。
+  - **plan statusの排他性**: mutation 0件・UNRESOLVED 0件でも最終重複が残る構成
+    (非同一fingerprintのKEEP同士等) は `NOT_APPLICABLE` になる。
+  - mutation 0件・UNRESOLVED 0件・衝突/最終重複/整合性違反なしで
+    `NO_MUTATIONS_NEEDED`・exit 0。
     この状態の `--apply` がインデックス存在下でも正常終了する
     (mutationありのapplyはインデックス存在で中止する)。
   - 一般化抽出(a)(b)(c)が従来の重複起点候補を包含する。
@@ -770,10 +842,16 @@ SQLite成功だけでPostgreSQL固有動作を検証済みとはしない。
 - SQLiteと専用非本番PostgreSQLのテストパスが成功する。
 - updaterのエラー案内が実際のT34b適用手順を指す。
 - Codexによる本番Neon変更は0件、ability.dbは無変更。
-- **v2.3.1/v2.3.2追加**:
+- **v2.3.1/v2.3.2/v2.3.3追加**:
   - 候補抽出が(a)(b)(c)の3経路を実装し、READ-ONLY snapshot内で完結する。
-  - §6.2の3段構成 (一次分類→DELETE再分類→衝突昇格) と決定表#1-8・`reason_code` 列挙が
-    実装され、列挙外の事由が `UNVERIFIED_KEEP` に落ちない。
+    対象閉包がMOVE先とexactly-one truth候補のtruth位置の両方を含む。
+  - §6.2の3段構成 (一次分類→DELETE再分類→衝突昇格) と決定表#1-9・`reason_code` 列挙が
+    実装され、列挙外の事由が `UNVERIFIED_KEEP` に落ちない。非出走行が
+    `NON_RUNNER_KEEP` に到達し、MOVE先keeper既存の冗長行がDELETEへ再分類される。
+  - plan statusが排他的に判定され (`NOT_APPLICABLE` 最優先)、mutation 0件かつ
+    最終重複ありが `NO_MUTATIONS_NEEDED` にならない。
+  - format v3の具体構造 (§6.4のキー名・0埋めマップ・plan.json version・CSV表現) に
+    準拠する。
   - 検証済み連鎖・循環の一括最終状態適用と、mutationあり時に限る一意インデックス不在の
     catalog検査がある。
   - plan/manifestがformat v3 (`plan_status` 必須・`applicable`⇔`APPLICABLE` 対応・
@@ -787,7 +865,7 @@ SQLite成功だけでPostgreSQL固有動作を検証済みとはしない。
   (dry-runで最終キー衝突が再出現していない)。
 - READ-ONLY dry-runの全行分類とplanがレビュー済み (`UNVERIFIED_KEEP` は
   `reason_code` 別件数を確認)。
-- §6.1の観測基準値 (重複338組・(b)2,589行・(c)510行) との差異が説明され、
+- §6.1の観測基準値 (是正後: 重複334組・(b)2,584行・(c)514行) との差異が説明され、
   差異があれば再承認済み。
 - `UNRESOLVED == 0`、planが `APPLICABLE`。
 - apply直前backupとmanifest/hashが検証済み。
