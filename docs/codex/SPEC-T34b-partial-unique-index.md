@@ -237,6 +237,10 @@ v2.2のままである点、および以下の曖昧さの指摘を受けた。�
    rollbackをKEEP/MOVE後/DELETE保持行に限定。**共通predicate上の重複は2025年外も
    含め全テーブルでdry-run時に確認し、存在すれば `NOT_APPLICABLE`** (§6.3。
    部分UNIQUEインデックスは全期間に効くため)。
+4. **§5.4のveto文言を例外と整合させた (第5回レビュー・条件付き承認の解消)**:
+   veto不一致行はKEEP/MOVE/DELETE保持行として認めないが、削除対象行としては
+   §3.2の例外条件下で `DELETE_REDUNDANT_ERROR` を許可する。
+   本修正をもってv2.3.4は実装仕様として承認済み。
 
 ## 2. 実データの現実（2026-07-14 READ-ONLY preflight）
 
@@ -384,7 +388,10 @@ Neon `time` のdigit-only文字列は `MSSd` / `MMSSd` の圧縮形式として�
 Neon圧縮形式の秒部60以上、非正規桁数、書式不明、NULL、変換不能は必須証拠不足とする。
 
 `KEEP_CURRENT`、`MOVE_CANDIDATE`、DELETE時の保持行は、必須列がすべて存在・一致することを要求する。
-整合性veto列は、片方がNULLなら判定材料にしないが、両方が存在して不一致ならMOVE/DELETEを許可しない。
+整合性veto列は、片方がNULLなら判定材料にしない。両方が存在して不一致の場合、
+`KEEP_CURRENT`、`MOVE_CANDIDATE` およびDELETE時の**保持行**としては認めない。
+**削除対象行**は§3.2の例外条件 (exactly-one truth対応・一意の完全keeper・冗長性証明)
+を満たす場合に限り `DELETE_REDUNDANT_ERROR` を許可する。
 jockeyとrace_nameは表記差が大きいため、単独の許可条件にも拒否条件にもせず人手確認用とする。
 必須証拠が1項目でも欠ける行はMOVE/UPDATEの対象にできない。その行の分類は§6.2の決定表に
 従う (非mutation分類とし、最終状態で自然キー衝突する場合のみ `UNRESOLVED`)。
