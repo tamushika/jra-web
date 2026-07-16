@@ -36,6 +36,37 @@ MANDATORY_FIELDS = (
     "track_type", "distance", "total_horses",
 )
 VETO_FIELDS = ("agari_3f", "corner_4", "weight", "condition")
+CLASSIFICATION_NAMES = (
+    "KEEP_CURRENT", "MOVE_CANDIDATE", "DELETE_EXACT_DUPLICATE",
+    "DELETE_REDUNDANT_ERROR", "NON_RUNNER_KEEP", "UNVERIFIED_KEEP",
+    "UNRESOLVED",
+)
+UNVERIFIED_REASON_CODES = (
+    "TRUTH_ZERO", "TRUTH_MULTI", "PAYLOAD_MISMATCH",
+    "UMABAN_MISMATCH", "INVALID_VALUE",
+)
+CANDIDATE_REASON_CODES = ("a", "b", "c")
+PLAN_STATUSES = ("APPLICABLE", "NO_MUTATIONS_NEEDED", "NOT_APPLICABLE")
+TRUTH_ROW_LIMIT = 200_000
+CLOSURE_ROW_LIMIT = 100_000
+
+# §9 gate.  These rows were manually corrected outside this tool and must be
+# present, exactly once, both in the approved snapshot and again under the
+# apply transaction's table lock.
+MANUAL_FIX_EXPECTED_ROWS = (
+    {"date": "250208", "place": "小倉", "race_num": 5,
+     "horse_number": 3, "horse": "ミグラテール"},
+    {"date": "250208", "place": "小倉", "race_num": 5,
+     "horse_number": 5, "horse": "トーアマリシテン"},
+    {"date": "250208", "place": "小倉", "race_num": 5,
+     "horse_number": 7, "horse": "アルカンサス"},
+    {"date": "250412", "place": "中山", "race_num": 3,
+     "horse_number": 9, "horse": "スターコンパス"},
+    {"date": "250412", "place": "中山", "race_num": 1,
+     "horse_number": 9, "horse": "モーニングマジック"},
+    {"date": "251116", "place": "福島", "race_num": 5,
+     "horse_number": 9, "horse": "チンプンカンプン"},
+)
 
 
 class SafetyError(RuntimeError):
@@ -276,10 +307,16 @@ def load_ability_truth(path: str | os.PathLike[str]) -> list[dict[str, Any]]:
     try:
         connection.row_factory = sqlite3.Row
         rows = connection.execute(
-            "SELECT * FROM runs WHERE date BETWEEN '20250101' AND '20251231'"
+            "SELECT * FROM runs WHERE date BETWEEN '20250101' AND '20251231' "
+            "ORDER BY date, place, horse, r, umaban LIMIT ?",
+            (TRUTH_ROW_LIMIT + 1,),
         ).fetchall()
     finally:
         connection.close()
+    if len(rows) > TRUTH_ROW_LIMIT:
+        raise SafetyError(
+            f"ability truth exceeds the fail-closed limit ({TRUTH_ROW_LIMIT})"
+        )
     return [dict(row) for row in rows]
 
 
@@ -307,7 +344,38 @@ def build_truth_index(truth_rows: Iterable[Mapping[str, Any]]) -> dict[tuple[str
             raise SafetyError(f"ability truth natural key is duplicated: {slot!r}")
         seen_slot.add(slot)
         result[(day, place, horse)].append(row)
-    return dict(result)
+    return {
+        key: sorted(values, key=lambda item: canonical_json_bytes(item))
+        for key, values in result.items()
+    }
+
+
+def build_truth_slot_index(
+        truth_rows: Iterable[Mapping[str, Any]],
+) -> dict[tuple[str, str, int, int], dict[str, Any]]:
+    """Index frozen truth by its complete natural key, validating identities."""
+    result: dict[tuple[str, str, int, int], dict[str, Any]] = {}
+    for original in truth_rows:
+        row = dict(original)
+        day = normalize_text(row.get("date"))
+        place = normalize_text(row.get("place"))
+        horse = normalize_text(row.get("horse"))
+        race = strict_int(row.get("r"), 1, 12)
+        number = strict_int(row.get("umaban"), 1, 18)
+        try:
+            valid_day = (
+                bool(day) and bool(re.fullmatch(r"2025\d{4}", day))
+                and datetime.strptime(day, "%Y%m%d").year == 2025
+            )
+        except (TypeError, ValueError):
+            valid_day = False
+        if not valid_day or not place or not horse or race is None or number is None:
+            raise SafetyError("ability truth has an invalid 2025 identity field")
+        key = (day, place, race, number)
+        if key in result:
+            raise SafetyError(f"ability truth natural key is duplicated: {key!r}")
+        result[key] = row
+    return result
 
 
 def _normalized_pair(field: str, row: Mapping[str, Any], truth: Mapping[str, Any]) -> tuple[Any, Any]:
@@ -413,6 +481,51 @@ def _source_identity(row: Mapping[str, Any], occurrence: int) -> dict[str, Any]:
     return {"fingerprint": logical_row_fingerprint(row), "occurrence": occurrence}
 
 
+def evaluate_manual_fix_gate(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Evaluate the six-row §9 prerequisite without trusting physical row ids."""
+    results: list[dict[str, Any]] = []
+    for expected_raw in MANUAL_FIX_EXPECTED_ROWS:
+        expected = dict(expected_raw)
+        matching_key = [
+            row for row in rows
+            if normalize_text(row.get("date")) == expected["date"]
+            and normalize_text(row.get("place")) == normalize_text(expected["place"])
+            and strict_int(row.get("race_num"), 1, 12) == expected["race_num"]
+            and strict_int(row.get("horse_number"), 1, 18) == expected["horse_number"]
+        ]
+        matching_horse = [
+            row for row in matching_key
+            if normalize_text(row.get("馬名", row.get("horse")))
+            == normalize_text(expected["horse"])
+        ]
+        row_result = {
+            "expected": expected,
+            "observed_count": len(matching_key),
+            "matching_horse_count": len(matching_horse),
+            "observed_fingerprints": sorted(
+                logical_row_fingerprint(row) for row in matching_key
+            ),
+            # v2.3.5: the gate protects the manually fixed horse row itself.
+            # Other rows sharing the key are ordinary cleanup candidates; the
+            # final-collision simulation and postcheck prove they converge to
+            # one row, so their presence must not deadlock the gate.
+            "ok": len(matching_horse) == 1,
+        }
+        results.append(row_result)
+    return {"ok": all(item["ok"] for item in results), "rows": results}
+
+
+def _verify_manual_fix_gate(
+        rows: Sequence[Mapping[str, Any]], approved_gate: Mapping[str, Any],
+) -> dict[str, Any]:
+    current = evaluate_manual_fix_gate(rows)
+    if not current["ok"]:
+        raise SafetyError("manual fix gate is not satisfied under the apply lock")
+    if canonical_json_bytes(current) != canonical_json_bytes(approved_gate):
+        raise SafetyError("manual fix gate differs from approved manifest")
+    return current
+
+
 def _prepare_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     prepared = [dict(row) for row in rows]
     prepared.sort(key=lambda row: (logical_row_fingerprint(row), str(row.get(ROW_ID, ""))))
@@ -425,88 +538,260 @@ def _prepare_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return prepared
 
 
-def classify_rows(rows: Sequence[Mapping[str, Any]],
-                  truth_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Classify rows conservatively.  Every uncertain case is UNRESOLVED."""
+def _validated_candidate_reasons(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)) or any(not isinstance(item, str) for item in value):
+        raise SafetyError("candidate reasons must be a sequence of a/b/c codes")
+    if len(set(value)) != len(value) or any(item not in CANDIDATE_REASON_CODES for item in value):
+        raise SafetyError("candidate reason contains an unknown or duplicate code")
+    return [code for code in CANDIDATE_REASON_CODES if code in value]
+
+
+def _attach_candidate_reasons(
+        rows: Sequence[Mapping[str, Any]],
+        candidate_reasons: Mapping[int, Sequence[str]] | Sequence[Sequence[str]] | None,
+) -> list[dict[str, Any]]:
+    attached: list[dict[str, Any]] = []
+    if candidate_reasons is not None and not isinstance(candidate_reasons, (Mapping, list, tuple)):
+        raise SafetyError("candidate reasons must be indexed by input row")
+    for index, original in enumerate(rows):
+        row = dict(original)
+        provided: Any = row.get("__candidate_reasons__", [])
+        if isinstance(candidate_reasons, Mapping):
+            provided = candidate_reasons.get(index, provided)
+        elif candidate_reasons is not None:
+            provided = candidate_reasons[index] if index < len(candidate_reasons) else provided
+        row["__candidate_reasons__"] = _validated_candidate_reasons(provided)
+        attached.append(row)
+    if isinstance(candidate_reasons, Mapping):
+        extra = set(candidate_reasons) - set(range(len(rows)))
+        if extra:
+            raise SafetyError("candidate reason references an unknown input row")
+    return attached
+
+
+def _truth_key(identity: Mapping[str, Any] | None) -> tuple[Any, ...] | None:
+    if not identity:
+        return None
+    return (
+        identity.get("date"), identity.get("place"), identity.get("r"),
+        identity.get("umaban"), identity.get("horse"),
+    )
+
+
+def _is_non_runner_marker(row: Mapping[str, Any]) -> bool:
+    raw_time = row.get("time")
+    normalized_time = normalize_text(raw_time)
+    return row.get("rank") is None and (raw_time is None or normalized_time == "----")
+
+
+def _payload_has_invalid_value(comparison: Mapping[str, Any]) -> bool:
+    fields = comparison.get("fields") or {}
+    payload_fields = tuple(field for field in MANDATORY_FIELDS if field not in {
+        "date", "place", "horse", "horse_number",
+    }) + VETO_FIELDS
+    return any((fields.get(field) or {}).get("status") == "invalid" for field in payload_fields)
+
+
+def _redundancy_is_proven(result: Mapping[str, Any]) -> bool:
+    """Return true only for the narrowly-scoped §3.2 DELETE exception."""
+    if result.get("truth_candidate_count") != 1 or not result.get("identity_valid"):
+        return False
+    comparison = result.get("comparison") or {}
+    fields = comparison.get("fields") or {}
+    # date/place/horse establish that the bad row and the complete keeper refer
+    # to the same unique truth identity.  Require the classification-specific
+    # comparison evidence as well; merely sharing a horse name is insufficient.
+    if not all((fields.get(field) or {}).get("status") == "match"
+               for field in ("date", "place", "horse")):
+        return False
+    classification = result.get("classification")
+    if classification == "MOVE_CANDIDATE":
+        source = result.get("source_natural_key") or {}
+        truth = result.get("truth") or {}
+        return (
+            comparison.get("mandatory_ok") is True
+            and comparison.get("veto_ok") is True
+            and source.get("race_num") != truth.get("r")
+        )
+    if classification != "UNVERIFIED_KEEP":
+        return False
+    reason_code = result.get("reason_code")
+    if reason_code == "UMABAN_MISMATCH":
+        return (fields.get("horse_number") or {}).get("status") == "mismatch"
+    if reason_code == "INVALID_VALUE":
+        return result.get("invalid_scope") == "payload" and _payload_has_invalid_value(comparison)
+    if reason_code == "PAYLOAD_MISMATCH":
+        mandatory_difference = any(
+            (fields.get(field) or {}).get("status") in {"null", "mismatch"}
+            for field in MANDATORY_FIELDS
+        )
+        veto_difference = any(
+            (fields.get(field) or {}).get("status") in {"invalid", "mismatch"}
+            for field in VETO_FIELDS
+        )
+        return mandatory_difference or veto_difference
+    return False
+
+
+def classify_rows(
+        rows: Sequence[Mapping[str, Any]],
+        truth_rows: Sequence[Mapping[str, Any]],
+        candidate_reasons: Mapping[int, Sequence[str]] | Sequence[Sequence[str]] | None = None,
+) -> list[dict[str, Any]]:
+    """Apply §6.2 stages 1 and 2; final collision promotion is planned later."""
     truth_index = build_truth_index(truth_rows)
-    prepared = _prepare_rows(rows)
+    prepared = _prepare_rows(_attach_candidate_reasons(rows, candidate_reasons))
     results: list[dict[str, Any]] = []
-    strong_by_truth: dict[tuple[str, str, int, int, str], list[int]] = defaultdict(list)
 
     for row in prepared:
         source = _source_identity(row, row["__occurrence__"])
-        day, place = normalize_neon_date(row.get("date")), normalize_text(row.get("place"))
+        day = normalize_neon_date(row.get("date"))
+        place = normalize_text(row.get("place"))
         horse = normalize_text(row.get("馬名", row.get("horse")))
-        candidates = truth_index.get((day or "", place or "", horse or ""), [])
+        race_num = strict_int(row.get("race_num"), 1, 12)
+        horse_number = strict_int(row.get("horse_number"), 1, 18)
+        identity_valid = all(value is not None for value in (
+            day, place, horse, race_num, horse_number,
+        ))
+        candidates = (
+            truth_index.get((day, place, horse), []) if identity_valid else []
+        )
+        truth_identities = [_truth_identity(candidate) for candidate in candidates]
         base: dict[str, Any] = {
-            "classification": "UNRESOLVED", "reason": "truth candidate count is not one",
-            "source": source, "truth": None, "target": None, "comparison": None,
+            "classification": "UNVERIFIED_KEEP",
+            "reason": "identity value cannot be normalized",
+            "reason_code": "INVALID_VALUE",
+            "candidate_reasons": list(row.get("__candidate_reasons__", [])),
+            "source": source, "truth": None, "truth_candidates": truth_identities,
+            "truth_candidate_count": len(candidates), "target": None,
+            "keeper": None, "comparison": None,
+            "identity_valid": identity_valid, "invalid_scope": "identity",
             "source_natural_key": {
                 "date": row.get("date"), "place": row.get("place"),
-                "race_num": row.get("race_num"), "horse_number": row.get("horse_number"),
+                "race_num": row.get("race_num"),
+                "horse_number": row.get("horse_number"),
             },
             "raw_ctid": row.get(ROW_ID),
         }
-        if day is None:
-            base["reason"] = "invalid or non-2025 Neon date"
-        elif len(candidates) == 1:
-            truth = candidates[0]
-            comparison = compare_payload(row, truth)
-            truth_id = _truth_identity(truth)
-            base.update({"truth": truth_id, "comparison": comparison})
-            race_num = strict_int(row.get("race_num"), 1, 12)
-            if comparison["mandatory_ok"] and comparison["veto_ok"] and race_num is not None:
-                if race_num == truth_id["r"]:
-                    base.update(classification="KEEP_CURRENT", reason="complete payload matches current truth slot")
-                else:
-                    base.update(
-                        classification="MOVE_CANDIDATE", reason="complete payload matches a different truth race",
-                        target={"date": row.get("date"), "place": row.get("place"),
-                                "race_num": truth_id["r"], "horse_number": truth_id["umaban"]},
-                    )
-                key = (truth_id["date"], truth_id["place"], truth_id["r"], truth_id["umaban"], truth_id["horse"])
-                strong_by_truth[key].append(len(results))
+        # Decision table rows 1-4.  The non-runner marker is checked before any
+        # payload conversion, but only after a valid identity permits truth lookup.
+        if not identity_valid:
+            results.append(base)
+            continue
+        if len(candidates) == 0:
+            if _is_non_runner_marker(row):
+                base.update(
+                    classification="NON_RUNNER_KEEP",
+                    reason="truth has no row and source is a non-runner marker",
+                    reason_code=None, invalid_scope=None,
+                )
             else:
-                base["reason"] = "mandatory payload missing/mismatch or veto mismatch"
+                base.update(
+                    reason="truth has no matching horse identity",
+                    reason_code="TRUTH_ZERO", invalid_scope=None,
+                )
+            results.append(base)
+            continue
+        if len(candidates) >= 2:
+            base.update(
+                reason="truth has multiple horse identities",
+                reason_code="TRUTH_MULTI", invalid_scope=None,
+            )
+            results.append(base)
+            continue
+
+        truth = candidates[0]
+        truth_id = truth_identities[0]
+        comparison = compare_payload(row, truth)
+        base.update(truth=truth_id, comparison=comparison, invalid_scope=None)
+        # Decision table row 5.
+        if _payload_has_invalid_value(comparison):
+            base.update(
+                reason="payload value cannot be normalized",
+                reason_code="INVALID_VALUE", invalid_scope="payload",
+            )
+            results.append(base)
+            continue
+        # Decision table rows 6-7.
+        if comparison["mandatory_ok"] and comparison["veto_ok"]:
+            if race_num == truth_id["r"]:
+                base.update(
+                    classification="KEEP_CURRENT",
+                    reason="complete payload matches current truth slot",
+                    reason_code=None,
+                )
+            else:
+                base.update(
+                    classification="MOVE_CANDIDATE",
+                    reason="complete payload matches a different truth race",
+                    reason_code=None,
+                    target={
+                        "date": row.get("date"), "place": row.get("place"),
+                        "race_num": truth_id["r"],
+                        "horse_number": truth_id["umaban"],
+                    },
+                )
+            results.append(base)
+            continue
+        # Decision table row 8: every mandatory field except umaban matches.
+        fields = comparison["fields"]
+        except_umaban_ok = all(
+            fields[field]["status"] == "match"
+            for field in MANDATORY_FIELDS if field != "horse_number"
+        )
+        umaban_mismatch = fields["horse_number"]["status"] == "mismatch"
+        if except_umaban_ok and umaban_mismatch and comparison["veto_ok"]:
+            base.update(
+                reason="truth umaban differs while all other required payload matches",
+                reason_code="UMABAN_MISMATCH",
+            )
+        else:
+            base.update(
+                reason="mandatory payload is missing/mismatched or veto mismatches",
+                reason_code="PAYLOAD_MISMATCH",
+            )
         results.append(base)
 
-    # Resolve only demonstrably redundant rows.  A strong keeper in its correct
-    # slot is required; MOVE rows cannot act as deletion evidence.
-    for key, indexes in strong_by_truth.items():
-        keepers = [index for index in indexes if results[index]["classification"] == "KEEP_CURRENT"]
-        if len(keepers) > 1:
-            grouped: dict[str, list[int]] = defaultdict(list)
-            for index in keepers:
-                grouped[results[index]["source"]["fingerprint"]].append(index)
-            if len(grouped) == 1:
-                ordered = sorted(keepers, key=lambda i: results[i]["source"]["occurrence"])
-                for index in ordered[1:]:
-                    results[index].update(
-                        classification="DELETE_EXACT_DUPLICATE", reason="identical complete duplicate",
-                        keeper=results[ordered[0]]["source"],
-                    )
-            else:
-                for index in keepers:
-                    results[index].update(classification="UNRESOLVED", reason="multiple non-identical complete keepers")
+    # Stage 2a: deterministically retain one of each fully identical truth row.
+    current_by_truth: dict[tuple[Any, ...], list[int]] = defaultdict(list)
+    for index, result in enumerate(results):
+        if result["classification"] == "KEEP_CURRENT":
+            current_by_truth[_truth_key(result.get("truth"))].append(index)
+    for indexes in current_by_truth.values():
+        by_fingerprint: dict[str, list[int]] = defaultdict(list)
+        for index in indexes:
+            by_fingerprint[results[index]["source"]["fingerprint"]].append(index)
+        for identical in by_fingerprint.values():
+            ordered = sorted(identical, key=lambda i: results[i]["source"]["occurrence"])
+            for index in ordered[1:]:
+                results[index].update(
+                    classification="DELETE_EXACT_DUPLICATE",
+                    reason="identical complete duplicate",
+                    reason_code=None, target=None,
+                    keeper=results[ordered[0]]["source"],
+                )
 
+    # Stage 2b: a keeper is evidence only when exactly one complete current row
+    # remains for that truth identity.  Truth-zero/multi and identity-invalid
+    # rows can never enter the DELETE exception.
     keeper_by_truth: dict[tuple[Any, ...], list[int]] = defaultdict(list)
     for index, result in enumerate(results):
-        truth = result.get("truth") or {}
         if result["classification"] == "KEEP_CURRENT":
-            keeper_by_truth[(truth.get("date"), truth.get("place"), truth.get("r"), truth.get("umaban"), truth.get("horse"))].append(index)
-    for index, result in enumerate(results):
-        if (result["classification"] not in {"UNRESOLVED", "MOVE_CANDIDATE"}
-                or not result.get("truth")):
+            keeper_by_truth[_truth_key(result.get("truth"))].append(index)
+    for result in results:
+        if result["classification"] not in {"MOVE_CANDIDATE", "UNVERIFIED_KEEP"}:
             continue
-        truth = result["truth"]
-        key = (truth.get("date"), truth.get("place"), truth.get("r"), truth.get("umaban"), truth.get("horse"))
-        keepers = keeper_by_truth.get(key, [])
-        # Invalid identity/coverage never gets converted to DELETE.
-        if len(keepers) == 1 and result.get("comparison") is not None:
+        if result["classification"] == "UNVERIFIED_KEEP" and result.get("reason_code") in {
+                "TRUTH_ZERO", "TRUTH_MULTI"}:
+            continue
+        keepers = keeper_by_truth.get(_truth_key(result.get("truth")), [])
+        if len(keepers) == 1 and _redundancy_is_proven(result):
             result.update(
                 classification="DELETE_REDUNDANT_ERROR",
-                reason="a unique complete keeper proves this mixed/wrong-slot row redundant",
-                target=None,
+                reason="a unique complete keeper proves this erroneous row redundant",
+                reason_code=None, target=None,
                 keeper=results[keepers[0]]["source"],
             )
     return results
@@ -515,79 +800,150 @@ def classify_rows(rows: Sequence[Mapping[str, Any]],
 def _natural_key(row: Mapping[str, Any], race_override: int | None = None) -> tuple[Any, ...]:
     return (
         row.get("date"), row.get("place"),
-        race_override if race_override is not None else strict_int(row.get("race_num"), 1, 12),
-        strict_int(row.get("horse_number"), 1, 18),
+        race_override if race_override is not None else row.get("race_num"),
+        row.get("horse_number"),
     )
 
 
-def build_operation_plan(rows: Sequence[Mapping[str, Any]],
-                         truth_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    prepared = _prepare_rows(rows)
+def build_operation_plan(
+        rows: Sequence[Mapping[str, Any]],
+        truth_rows: Sequence[Mapping[str, Any]],
+        candidate_reasons: Mapping[int, Sequence[str]] | Sequence[Sequence[str]] | None = None,
+        *, manual_fix_gate: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    attached = _attach_candidate_reasons(rows, candidate_reasons)
+    prepared = _prepare_rows(attached)
     classifications = classify_rows(prepared, truth_rows)
     row_by_source = {
         (row["__fingerprint__"], row["__occurrence__"]): row for row in prepared
     }
+    blocking_reasons: list[str] = []
+
+    # Stage 3.  A verified chain/cycle is permitted.  Only actual final-state
+    # collisions promote MOVE or non-mutation rows to UNRESOLVED.  Iterate
+    # because cancelling one MOVE can expose a collision at its source slot.
+    while True:
+        occupants: dict[tuple[Any, ...], list[int]] = defaultdict(list)
+        for index, result in enumerate(classifications):
+            if result["classification"].startswith("DELETE_"):
+                continue
+            source_key = (result["source"]["fingerprint"], result["source"]["occurrence"])
+            row = row_by_source[source_key]
+            if result["classification"] == "MOVE_CANDIDATE":
+                key = _natural_key(row, strict_int((result.get("target") or {}).get("race_num"), 1, 12))
+            else:
+                key = _natural_key(row)
+            occupants[key].append(index)
+        promoted = False
+        for indexes in occupants.values():
+            if len(indexes) < 2:
+                continue
+            for index in indexes:
+                result = classifications[index]
+                if result["classification"] in {
+                    "MOVE_CANDIDATE", "NON_RUNNER_KEEP", "UNVERIFIED_KEEP",
+                }:
+                    result.update(
+                        classification="UNRESOLVED",
+                        reason="simulated final natural-key collision",
+                        reason_code=None,
+                    )
+                    promoted = True
+        if not promoted:
+            final_collisions = [key for key, indexes in occupants.items() if len(indexes) > 1]
+            break
+
+    if final_collisions:
+        blocking_reasons.append(
+            f"simulated final natural-key collisions: {len(final_collisions)}"
+        )
+    if any(result["classification"] == "UNRESOLVED" for result in classifications):
+        blocking_reasons.extend(
+            result["reason"] for result in classifications
+            if result["classification"] == "UNRESOLVED"
+        )
+
     operations: list[dict[str, Any]] = []
-    reasons: list[str] = []
-    unresolved = 0
     for result in classifications:
-        action = result["classification"]
-        if action == "UNRESOLVED":
-            unresolved += 1
-            reasons.append(result["reason"])
-        if action == "MOVE_CANDIDATE":
-            operations.append({"action": "UPDATE_RACE_NUM", "source": result["source"],
-                               "source_natural_key": result["source_natural_key"],
-                               "target": result["target"], "truth": result["truth"]})
-        elif action.startswith("DELETE_"):
-            operations.append({"action": action, "source": result["source"],
-                               "source_natural_key": result["source_natural_key"],
-                               "keeper": result.get("keeper"), "truth": result["truth"]})
-
-    deleted = {
-        (op["source"]["fingerprint"], op["source"]["occurrence"])
-        for op in operations if op["action"].startswith("DELETE_")
-    }
-    final_keys: list[tuple[Any, ...]] = []
-    move_targets: Counter[tuple[Any, ...]] = Counter()
-    move_sources: set[tuple[Any, ...]] = set()
-    for result in classifications:
-        source_key = (result["source"]["fingerprint"], result["source"]["occurrence"])
-        if source_key in deleted:
-            continue
-        row = row_by_source[source_key]
+        common = {
+            "source": result["source"],
+            "source_natural_key": result["source_natural_key"],
+            "truth": result.get("truth"),
+            "candidate_reasons": result["candidate_reasons"],
+            "reason_code": result.get("reason_code"),
+        }
         if result["classification"] == "MOVE_CANDIDATE":
-            move_sources.add(_natural_key(row))
-            key = _natural_key(row, strict_int(result["target"]["race_num"], 1, 12))
-            move_targets[key] += 1
-        else:
-            key = _natural_key(row)
-        final_keys.append(key)
-    collisions = [key for key, count in Counter(final_keys).items() if count > 1]
-    if collisions:
-        reasons.append(f"simulated final natural-key collisions: {len(collisions)}")
-    if any(count > 1 for count in move_targets.values()):
-        reasons.append("multiple MOVE operations share a target")
-    if move_sources.intersection(move_targets):
-        reasons.append("MOVE chain/cycle is unsupported")
+            operations.append({"action": "UPDATE_RACE_NUM", **common,
+                               "target": result["target"]})
+        elif result["classification"].startswith("DELETE_"):
+            operations.append({"action": result["classification"], **common,
+                               "keeper": result.get("keeper")})
 
-    status = "APPLICABLE" if unresolved == 0 and not reasons else "NOT_APPLICABLE"
-    logical_rows = Counter(logical_row_fingerprint(row) for row in rows)
+    gate = dict(manual_fix_gate or {"ok": True, "rows": []})
+    if not isinstance(gate.get("ok"), bool) or not isinstance(gate.get("rows"), list):
+        raise SafetyError("manual fix gate has an invalid structure")
+    if not gate["ok"]:
+        blocking_reasons.append("manual fix gate is not satisfied")
+
+    classification_counts = {
+        name: sum(item["classification"] == name for item in classifications)
+        for name in CLASSIFICATION_NAMES
+    }
+    unverified_reason_counts = {
+        code: sum(
+            item["classification"] == "UNVERIFIED_KEEP"
+            and item.get("reason_code") == code
+            for item in classifications
+        ) for code in UNVERIFIED_REASON_CODES
+    }
+    candidate_reason_counts = {
+        code: sum(code in item["candidate_reasons"] for item in classifications)
+        for code in CANDIDATE_REASON_CODES
+    }
+    mutation_count = sum(
+        item["classification"] == "MOVE_CANDIDATE"
+        or item["classification"].startswith("DELETE_")
+        for item in classifications
+    )
+    if blocking_reasons:
+        status = "NOT_APPLICABLE"
+    elif mutation_count:
+        status = "APPLICABLE"
+    else:
+        status = "NO_MUTATIONS_NEEDED"
+
+    logical_rows = Counter(logical_row_fingerprint(row) for row in attached)
+    logical_rows_list = sorted(
+        ({"fingerprint": key, "occurrences": value}
+         for key, value in logical_rows.items()),
+        key=lambda item: item["fingerprint"],
+    )
     plan: dict[str, Any] = {
-        "version": 2, "status": status,
-        "logical_rows": sorted(
-            ({"fingerprint": key, "occurrences": value} for key, value in logical_rows.items()),
-            key=lambda item: item["fingerprint"],
-        ),
-        "logical_rows_sha256": hashlib.sha256(canonical_json_bytes(logical_rows)).hexdigest(),
+        "version": 3, "status": status,
+        "logical_rows": logical_rows_list,
+        "logical_rows_sha256": hashlib.sha256(
+            canonical_json_bytes(logical_rows_list)
+        ).hexdigest(),
         "classifications": classifications, "operations": operations,
+        "classification_counts": classification_counts,
+        "unverified_reason_counts": unverified_reason_counts,
+        "candidate_reason_counts": candidate_reason_counts,
+        "manual_fix_gate": gate,
         "counts": {
-            "rows": len(rows), "keep": sum(c["classification"] == "KEEP_CURRENT" for c in classifications),
+            "rows": len(rows),
+            "keep": classification_counts["KEEP_CURRENT"],
             "update": sum(o["action"] == "UPDATE_RACE_NUM" for o in operations),
             "delete": sum(o["action"].startswith("DELETE_") for o in operations),
-            "unresolved": unresolved, "final_row_delta": -sum(o["action"].startswith("DELETE_") for o in operations),
+            "non_mutation": (
+                classification_counts["NON_RUNNER_KEEP"]
+                + classification_counts["UNVERIFIED_KEEP"]
+            ),
+            "unresolved": classification_counts["UNRESOLVED"],
+            "final_row_delta": -sum(
+                o["action"].startswith("DELETE_") for o in operations
+            ),
         },
-        "reasons": sorted(set(reasons)),
+        "reasons": sorted(set(blocking_reasons)),
     }
     plan["plan_sha256"] = canonical_plan_sha256(plan)
     return plan
@@ -665,7 +1021,8 @@ def _verified_csv_count(path: Path) -> int:
 _MANIFEST_KEYS = {
     "format_version", "mode", "created_at_utc", "database", "snapshot",
     "ability", "counts", "comparison_counts", "applicable", "plan_sha256",
-    "artifacts",
+    "plan_status", "classification_counts", "unverified_reason_counts",
+    "candidate_reason_counts", "manual_fix_gate", "artifacts",
 }
 _ARTIFACT_NAMES = {
     "classification.csv", "candidate_rows.csv", "destination_rows.csv",
@@ -673,7 +1030,7 @@ _ARTIFACT_NAMES = {
 }
 _COUNT_KEYS = {
     "candidate_rows", "destination_rows", "rows", "keep", "update",
-    "delete", "unresolved", "final_row_delta",
+    "delete", "non_mutation", "unresolved", "final_row_delta",
 }
 _DATABASE_KEYS = {
     "database_name", "schema_name", "url_backend", "url_host", "url_port",
@@ -708,10 +1065,41 @@ def _require_utc_timestamp(value: Any, label: str) -> None:
         raise SafetyError(f"{label} must include an explicit UTC offset")
 
 
+def _validate_manual_gate_schema(value: Any) -> dict[str, Any]:
+    gate = _require_exact_keys(value, {"ok", "rows"}, "manual_fix_gate")
+    if not isinstance(gate["ok"], bool) or not isinstance(gate["rows"], list):
+        raise SafetyError("manual_fix_gate has invalid field types")
+    if len(gate["rows"]) != len(MANUAL_FIX_EXPECTED_ROWS):
+        raise SafetyError("manual_fix_gate must contain all six expected rows")
+    for index, row in enumerate(gate["rows"]):
+        row = _require_exact_keys(row, {
+            "expected", "observed_count", "matching_horse_count",
+            "observed_fingerprints", "ok",
+        }, f"manual_fix_gate.rows[{index}]")
+        expected = _require_exact_keys(row["expected"], {
+            "date", "place", "race_num", "horse_number", "horse",
+        }, f"manual_fix_gate.rows[{index}].expected")
+        if expected != dict(MANUAL_FIX_EXPECTED_ROWS[index]):
+            raise SafetyError("manual_fix_gate expected row set is invalid")
+        for key in ("observed_count", "matching_horse_count"):
+            if not _is_plain_int(row[key]) or row[key] < 0:
+                raise SafetyError(f"manual_fix_gate {key} is invalid")
+        if not isinstance(row["ok"], bool) or not isinstance(row["observed_fingerprints"], list):
+            raise SafetyError("manual_fix_gate row has invalid field types")
+        for fingerprint in row["observed_fingerprints"]:
+            _validated_sha256(fingerprint, "manual_fix_gate observed fingerprint")
+        calculated_ok = row["matching_horse_count"] == 1
+        if row["ok"] != calculated_ok:
+            raise SafetyError("manual_fix_gate row ok flag is inconsistent")
+    if gate["ok"] != all(row["ok"] for row in gate["rows"]):
+        raise SafetyError("manual_fix_gate ok flag is inconsistent")
+    return gate
+
+
 def _validate_manifest_schema(manifest: Any) -> dict[str, Any]:
     """Reject unknown, missing, or mistyped approval-critical metadata."""
     manifest = _require_exact_keys(manifest, _MANIFEST_KEYS, "manifest")
-    if not _is_plain_int(manifest["format_version"]) or manifest["format_version"] != 2:
+    if not _is_plain_int(manifest["format_version"]) or manifest["format_version"] != 3:
         raise SafetyError("unsupported manifest format_version")
     mode = manifest["mode"]
     if mode not in {"dry-run", "apply-backup", "apply-noop"}:
@@ -719,6 +1107,10 @@ def _validate_manifest_schema(manifest: Any) -> dict[str, Any]:
     _require_utc_timestamp(manifest["created_at_utc"], "manifest created_at_utc")
     if not isinstance(manifest["applicable"], bool):
         raise SafetyError("manifest applicable must be boolean")
+    if manifest["plan_status"] not in PLAN_STATUSES:
+        raise SafetyError("manifest plan_status is invalid")
+    if manifest["applicable"] != (manifest["plan_status"] == "APPLICABLE"):
+        raise SafetyError("manifest applicable flag disagrees with plan_status")
     _validated_sha256(manifest["plan_sha256"], "manifest plan_sha256")
 
     database = _require_exact_keys(manifest["database"], _DATABASE_KEYS, "manifest database")
@@ -745,10 +1137,58 @@ def _validate_manifest_schema(manifest: Any) -> dict[str, Any]:
         raise SafetyError("manifest counts.final_row_delta must be an integer")
     if counts["candidate_rows"] + counts["destination_rows"] != counts["rows"]:
         raise SafetyError("manifest row counts are internally inconsistent")
-    if counts["keep"] + counts["update"] + counts["delete"] + counts["unresolved"] != counts["rows"]:
+    if (counts["keep"] + counts["update"] + counts["delete"]
+            + counts["non_mutation"] + counts["unresolved"] != counts["rows"]):
         raise SafetyError("manifest classification counts are internally inconsistent")
     if counts["final_row_delta"] != -counts["delete"]:
         raise SafetyError("manifest final_row_delta is internally inconsistent")
+
+    classification_counts = _require_exact_keys(
+        manifest["classification_counts"], set(CLASSIFICATION_NAMES),
+        "manifest classification_counts",
+    )
+    unverified_reason_counts = _require_exact_keys(
+        manifest["unverified_reason_counts"], set(UNVERIFIED_REASON_CODES),
+        "manifest unverified_reason_counts",
+    )
+    candidate_reason_counts = _require_exact_keys(
+        manifest["candidate_reason_counts"], set(CANDIDATE_REASON_CODES),
+        "manifest candidate_reason_counts",
+    )
+    for label, values in (
+        ("classification_counts", classification_counts),
+        ("unverified_reason_counts", unverified_reason_counts),
+        ("candidate_reason_counts", candidate_reason_counts),
+    ):
+        for count in values.values():
+            if not _is_plain_int(count) or count < 0:
+                raise SafetyError(f"manifest {label} values must be non-negative integers")
+    if sum(classification_counts.values()) != counts["rows"]:
+        raise SafetyError("classification_counts do not cover every row")
+    if classification_counts["KEEP_CURRENT"] != counts["keep"]:
+        raise SafetyError("classification_counts KEEP_CURRENT disagrees with counts")
+    if classification_counts["MOVE_CANDIDATE"] != counts["update"]:
+        raise SafetyError("classification_counts MOVE_CANDIDATE disagrees with counts")
+    if (classification_counts["DELETE_EXACT_DUPLICATE"]
+            + classification_counts["DELETE_REDUNDANT_ERROR"] != counts["delete"]):
+        raise SafetyError("classification_counts DELETE disagrees with counts")
+    if (classification_counts["NON_RUNNER_KEEP"]
+            + classification_counts["UNVERIFIED_KEEP"] != counts["non_mutation"]):
+        raise SafetyError("classification_counts non-mutation disagrees with counts")
+    if classification_counts["UNRESOLVED"] != counts["unresolved"]:
+        raise SafetyError("classification_counts UNRESOLVED disagrees with counts")
+    if sum(unverified_reason_counts.values()) != classification_counts["UNVERIFIED_KEEP"]:
+        raise SafetyError("unverified reason counts are internally inconsistent")
+    if any(count > counts["candidate_rows"] for count in candidate_reason_counts.values()):
+        raise SafetyError("candidate reason count exceeds candidate row count")
+    mutations = counts["update"] + counts["delete"]
+    if manifest["plan_status"] == "APPLICABLE" and (
+            mutations < 1 or counts["unresolved"] != 0):
+        raise SafetyError("APPLICABLE status is inconsistent with mutation counts")
+    if manifest["plan_status"] == "NO_MUTATIONS_NEEDED" and (
+            mutations != 0 or counts["unresolved"] != 0):
+        raise SafetyError("NO_MUTATIONS_NEEDED status is inconsistent with counts")
+    _validate_manual_gate_schema(manifest["manual_fix_gate"])
 
     comparison_counts = manifest["comparison_counts"]
     if not isinstance(comparison_counts, dict):
@@ -795,7 +1235,7 @@ def _validate_manifest_schema(manifest: Any) -> dict[str, Any]:
             "approved_plan_sha256",
         }, "apply-noop snapshot")
         _require_utc_timestamp(snapshot["locked_at_utc"], "apply-noop locked_at_utc")
-        if snapshot["result"] != "already_clean_noop":
+        if snapshot["result"] != "no_mutations_needed":
             raise SafetyError("apply-noop result is invalid")
         _require_nonempty_string(snapshot["reason"], "apply-noop reason")
         _validated_sha256(snapshot["approved_manifest_sha256"], "approved manifest sha256")
@@ -813,12 +1253,31 @@ def write_bundle(output_dir: str | os.PathLike[str], *,
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=False)
     classifications = list(plan.get("classifications", []))
-    candidate = [dict(row) for row in candidate_rows]
-    destination = [dict(row) for row in destination_rows]
+    if plan.get("version") != 3 or plan.get("status") not in PLAN_STATUSES:
+        raise SafetyError("only a format v3 plan can be written")
+
+    def raw_database_row(row: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            str(key): value for key, value in row.items()
+            if str(key) == ROW_ID or not str(key).startswith("__")
+        }
+
+    candidate = [raw_database_row(row) for row in candidate_rows]
+    destination = [raw_database_row(row) for row in destination_rows]
     all_rows = candidate + destination
 
-    _write_csv(root / "classification.csv", classifications,
-               ("classification", "reason", "source", "truth", "target", "keeper", "comparison", "raw_ctid"))
+    csv_classifications = []
+    for item in classifications:
+        rendered = dict(item)
+        rendered["candidate_reasons"] = "|".join(
+            _validated_candidate_reasons(item.get("candidate_reasons", []))
+        )
+        rendered["reason_code"] = item.get("reason_code")
+        csv_classifications.append(rendered)
+    _write_csv(root / "classification.csv", csv_classifications,
+               ("classification", "reason", "candidate_reasons", "reason_code",
+                "source", "source_natural_key", "truth", "truth_candidates",
+                "target", "keeper", "comparison", "raw_ctid"))
     all_columns = [ROW_ID] + sorted({key for row in all_rows for key in row if key != ROW_ID})
     _write_csv(root / "candidate_rows.csv", candidate, all_columns)
     _write_csv(root / "destination_rows.csv", destination, all_columns)
@@ -853,7 +1312,7 @@ def write_bundle(output_dir: str | os.PathLike[str], *,
         for name in artifact_names
     }
     manifest: dict[str, Any] = {
-        "format_version": 2, "mode": mode,
+        "format_version": 3, "mode": mode,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "database": dict(database), "snapshot": dict(snapshot), "ability": dict(ability),
         "counts": {
@@ -861,7 +1320,12 @@ def write_bundle(output_dir: str | os.PathLike[str], *,
             **dict(plan.get("counts", {})),
         },
         "comparison_counts": _comparison_counts(classifications),
+        "plan_status": plan.get("status"),
         "applicable": plan.get("status") == "APPLICABLE",
+        "classification_counts": dict(plan.get("classification_counts", {})),
+        "unverified_reason_counts": dict(plan.get("unverified_reason_counts", {})),
+        "candidate_reason_counts": dict(plan.get("candidate_reason_counts", {})),
+        "manual_fix_gate": dict(plan.get("manual_fix_gate", {})),
         "plan_sha256": expected_plan_hash, "artifacts": artifacts,
     }
     _write_json(root / "manifest.json", manifest)
@@ -905,11 +1369,40 @@ def validate_bundle(
     plan = _load_strict_json(plan_path.read_bytes(), "plan.json")
     if not isinstance(plan, dict):
         raise SafetyError("plan.json root must be an object")
+    if plan.get("version") != 3:
+        raise SafetyError("plan.json version must be 3")
+    if plan.get("status") not in PLAN_STATUSES:
+        raise SafetyError("plan.json status is invalid")
     actual_hash = canonical_plan_sha256(plan)
     if actual_hash != plan.get("plan_sha256") or actual_hash != manifest.get("plan_sha256"):
         raise SafetyError("approved plan hash verification failed")
+    if manifest.get("plan_status") != plan.get("status"):
+        raise SafetyError("manifest plan_status disagrees with plan")
     if bool(manifest.get("applicable")) != (plan.get("status") == "APPLICABLE"):
         raise SafetyError("manifest applicable flag disagrees with plan status")
+    for key in (
+        "classification_counts", "unverified_reason_counts",
+        "candidate_reason_counts", "manual_fix_gate",
+    ):
+        if manifest.get(key) != plan.get(key):
+            raise SafetyError(f"manifest {key} disagrees with plan")
+    for item in plan.get("classifications", []):
+        classification = item.get("classification")
+        if classification not in CLASSIFICATION_NAMES:
+            raise SafetyError("plan has an unknown classification")
+        reasons = _validated_candidate_reasons(item.get("candidate_reasons"))
+        if reasons != item.get("candidate_reasons"):
+            raise SafetyError("plan candidate reasons are not canonical")
+        reason_code = item.get("reason_code")
+        if classification == "UNVERIFIED_KEEP":
+            if reason_code not in UNVERIFIED_REASON_CODES:
+                raise SafetyError("UNVERIFIED_KEEP requires an enumerated reason_code")
+        elif reason_code is not None:
+            raise SafetyError("reason_code must be null outside UNVERIFIED_KEEP")
+    for operation in plan.get("operations", []):
+        _validated_candidate_reasons(operation.get("candidate_reasons"))
+        if operation.get("reason_code") is not None:
+            raise SafetyError("mutation operation reason_code must be null")
     manifest_counts = manifest.get("counts") or {}
     for key, value in (plan.get("counts") or {}).items():
         if manifest_counts.get(key) != value:
@@ -958,25 +1451,56 @@ def _fetch_race_columns(connection: Any) -> list[str]:
     return list(rows)
 
 
-def _fetch_duplicate_candidates(connection: Any) -> list[dict[str, Any]]:
+def _fetch_2025_complete_rows(connection: Any) -> list[dict[str, Any]]:
+    """Read the generalized-candidate scan in the caller's single snapshot."""
     from sqlalchemy import text
 
     result = connection.execute(text(f"""
-        WITH duplicate_keys AS (
-            SELECT date, place, race_num, horse_number
-            FROM public.races
-            WHERE {PREDICATE_SQL} AND date BETWEEN '250101' AND '251231'
-            GROUP BY date, place, race_num, horse_number
-            HAVING COUNT(*) > 1
-        )
         SELECT r.ctid::text AS "{ROW_ID}", r.*
         FROM public.races AS r
-        JOIN duplicate_keys AS d
-          ON r.date = d.date AND r.place = d.place
-         AND r.race_num = d.race_num AND r.horse_number = d.horse_number
+        WHERE {PREDICATE_SQL}
+          AND r.date BETWEEN '250101' AND '251231'
         ORDER BY r.date, r.place, r.race_num, r.horse_number, r.ctid
-    """))
-    return [dict(row) for row in result.mappings().all()]
+        LIMIT :row_limit
+    """), {"row_limit": CLOSURE_ROW_LIMIT + 1})
+    rows = [dict(row) for row in result.mappings().all()]
+    if len(rows) > CLOSURE_ROW_LIMIT:
+        raise SafetyError(
+            f"2025 complete-key snapshot exceeds the fail-closed limit ({CLOSURE_ROW_LIMIT})"
+        )
+    return rows
+
+
+def _select_generalized_candidates(
+        scoped_rows: Sequence[Mapping[str, Any]],
+        truth_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Select §6.1 candidates (a)/(b)/(c) from one in-memory snapshot."""
+    truth_slots = build_truth_slot_index(truth_rows)
+    raw_key_counts = Counter(
+        tuple(row.get(column) for column in NATURAL_KEY) for row in scoped_rows
+    )
+    candidates: list[dict[str, Any]] = []
+    for original in scoped_rows:
+        row = dict(original)
+        raw_key = tuple(row.get(column) for column in NATURAL_KEY)
+        reasons: list[str] = []
+        if raw_key_counts[raw_key] > 1:
+            reasons.append("a")
+        slot = (
+            normalize_neon_date(row.get("date")), normalize_text(row.get("place")),
+            strict_int(row.get("race_num"), 1, 12),
+            strict_int(row.get("horse_number"), 1, 18),
+        )
+        truth = truth_slots.get(slot) if all(value is not None for value in slot) else None
+        if truth is None:
+            reasons.append("c")
+        elif normalize_text(row.get("馬名", row.get("horse"))) != normalize_text(truth.get("horse")):
+            reasons.append("b")
+        if reasons:
+            row["__candidate_reasons__"] = _validated_candidate_reasons(reasons)
+            candidates.append(row)
+    return candidates
 
 
 def _expected_truth_targets(rows: Sequence[Mapping[str, Any]],
@@ -1002,27 +1526,41 @@ def _fetch_target_rows(connection: Any, targets: Sequence[tuple[str, str, int, i
     if not targets:
         return []
     from sqlalchemy import text
+    fetched: list[dict[str, Any]] = []
+    # Stay below PostgreSQL's bind-parameter ceiling even if the safety bound
+    # is approached by a synthetic or non-production fixture.
+    for start in range(0, len(targets), 5_000):
+        batch = targets[start:start + 5_000]
+        values, params = [], {}
+        for index, (day, place, race, number) in enumerate(batch):
+            values.append(f"(:d{index}, :p{index}, :r{index}, :h{index})")
+            params.update({f"d{index}": day, f"p{index}": place,
+                           f"r{index}": race, f"h{index}": number})
+        result = connection.execute(text(f"""
+            WITH wanted(date, place, race_num, horse_number) AS
+                 (VALUES {', '.join(values)})
+            SELECT r.ctid::text AS "{ROW_ID}", r.*
+            FROM public.races AS r
+            JOIN wanted AS w
+              ON r.date = w.date AND r.place = w.place
+             AND r.race_num = w.race_num AND r.horse_number = w.horse_number
+            ORDER BY r.date, r.place, r.race_num, r.horse_number, r.ctid
+        """), params)
+        fetched.extend(dict(row) for row in result.mappings().all())
+    return fetched
 
-    values, params = [], {}
-    for index, (day, place, race, number) in enumerate(targets):
-        values.append(f"(:d{index}, :p{index}, :r{index}, :h{index})")
-        params.update({f"d{index}": day, f"p{index}": place,
-                       f"r{index}": race, f"h{index}": number})
-    result = connection.execute(text(f"""
-        WITH wanted(date, place, race_num, horse_number) AS
-             (VALUES {', '.join(values)})
-        SELECT r.ctid::text AS "{ROW_ID}", r.*
-        FROM public.races AS r
-        JOIN wanted AS w
-          ON r.date = w.date AND r.place = w.place
-         AND r.race_num = w.race_num AND r.horse_number = w.horse_number
-        ORDER BY r.date, r.place, r.race_num, r.horse_number, r.ctid
-    """), params)
-    return [dict(row) for row in result.mappings().all()]
+
+def _fetch_manual_fix_gate_rows(connection: Any) -> list[dict[str, Any]]:
+    targets = [
+        (row["date"], row["place"], row["race_num"], row["horse_number"])
+        for row in MANUAL_FIX_EXPECTED_ROWS
+    ]
+    return _fetch_target_rows(connection, targets)
 
 
 def fetch_target_closure(connection: Any, truth_rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    candidates = _fetch_duplicate_candidates(connection)
+    scoped_rows = _fetch_2025_complete_rows(connection)
+    candidates = _select_generalized_candidates(scoped_rows, truth_rows)
     if not candidates:
         return [], []
     truth_index = build_truth_index(truth_rows)
@@ -1039,9 +1577,19 @@ def fetch_target_closure(connection: Any, truth_rows: Sequence[Mapping[str, Any]
         if not new_rows:
             continue
         all_rows.extend(new_rows)
+        if len(all_rows) > CLOSURE_ROW_LIMIT:
+            raise SafetyError(
+                f"candidate closure exceeds the fail-closed limit ({CLOSURE_ROW_LIMIT})"
+            )
         seen_ctids.update(str(row[ROW_ID]) for row in new_rows)
     candidate_ctids = {str(row[ROW_ID]) for row in candidates}
-    destinations = [row for row in all_rows if str(row[ROW_ID]) not in candidate_ctids]
+    destinations = []
+    for original in all_rows:
+        if str(original[ROW_ID]) in candidate_ctids:
+            continue
+        row = dict(original)
+        row["__candidate_reasons__"] = []
+        destinations.append(row)
     return candidates, destinations
 
 
@@ -1060,36 +1608,94 @@ def _count_scoped_duplicate_groups(connection: Any) -> int:
     """)).scalar_one())
 
 
+def _assert_no_covering_natural_key_unique(connection: Any) -> None:
+    """Fail before mutation if an existing unique object can constrain swaps."""
+    from sqlalchemy import text
+
+    rows = connection.execute(text("""
+        SELECT idx.relname AS index_name, i.indisunique,
+               array_agg(att.attname ORDER BY key.ordinality)
+                   FILTER (WHERE key.ordinality <= i.indnkeyatts) AS key_columns
+          FROM pg_catalog.pg_index AS i
+          JOIN pg_catalog.pg_class AS tbl ON tbl.oid = i.indrelid
+          JOIN pg_catalog.pg_namespace AS ns ON ns.oid = tbl.relnamespace
+          JOIN pg_catalog.pg_class AS idx ON idx.oid = i.indexrelid
+          LEFT JOIN LATERAL unnest(i.indkey::smallint[]) WITH ORDINALITY
+               AS key(attnum, ordinality) ON TRUE
+          LEFT JOIN pg_catalog.pg_attribute AS att
+                 ON att.attrelid = tbl.oid AND att.attnum = key.attnum
+         WHERE ns.nspname = 'public' AND tbl.relname = 'races'
+         GROUP BY idx.relname, i.indisunique, i.indnkeyatts
+    """)).mappings().all()
+    required = set(NATURAL_KEY)
+    for row in rows:
+        name = str(row.get("index_name") or "")
+        columns = {str(column) for column in (row.get("key_columns") or []) if column}
+        if name == "uq_races_natural_key" or (
+                bool(row.get("indisunique")) and required.issubset(columns)):
+            raise SafetyError(
+                "a races natural-key unique index/constraint already exists; "
+                "cleanup mutation must run before migration"
+            )
+
+
 def _verify_truth_poststate(connection: Any, plan: Mapping[str, Any],
                             truth_rows: Sequence[Mapping[str, Any]]) -> None:
-    expected: dict[tuple[str, str, int, int, str], Mapping[str, Any]] = {}
     truth_lookup: dict[tuple[str, str, int, int, str], Mapping[str, Any]] = {}
     for truth in truth_rows:
         identity = _truth_identity(truth)
         key = (identity["date"], identity["place"], identity["r"],
                identity["umaban"], identity["horse"])
         truth_lookup[key] = truth
-    for item in plan.get("classifications", []):
+    classifications = list(plan.get("classifications", []))
+    by_source = {
+        (item["source"]["fingerprint"], item["source"]["occurrence"]): item
+        for item in classifications
+    }
+    expected: dict[tuple[Any, Any, Any, Any], Mapping[str, Any]] = {}
+    expected_truth_keys: dict[tuple[Any, Any, Any, Any], tuple[Any, ...]] = {}
+    for item in classifications:
+        classification = item.get("classification")
+        if classification not in {
+            "KEEP_CURRENT", "MOVE_CANDIDATE", "DELETE_EXACT_DUPLICATE",
+            "DELETE_REDUNDANT_ERROR",
+        }:
+            # NON_RUNNER/UNVERIFIED are intentionally not truth-checked.  A
+            # DELETE target may itself be wrong; only its referenced keeper is.
+            continue
+        if classification.startswith("DELETE_") and not item.get("keeper"):
+            raise SafetyError("postcheck DELETE classification has no keeper")
+        retained = item
+        if classification.startswith("DELETE_"):
+            keeper = item["keeper"]
+            retained = by_source.get((keeper.get("fingerprint"), keeper.get("occurrence")))
+            if not retained or retained.get("classification") != "KEEP_CURRENT":
+                raise SafetyError("postcheck DELETE keeper is not the unique KEEP_CURRENT row")
         identity = item.get("truth")
         if not identity:
-            continue
+            raise SafetyError("postcheck verified classification has no truth identity")
         key = (identity.get("date"), identity.get("place"), identity.get("r"),
                identity.get("umaban"), identity.get("horse"))
         if key not in truth_lookup:
             raise SafetyError("postcheck truth identity disappeared")
-        expected[key] = truth_lookup[key]
-    targets = sorted({(key[0][2:], key[1], key[2], key[3]) for key in expected})
+        if retained.get("classification") == "MOVE_CANDIDATE":
+            raw_target = retained.get("target") or {}
+        else:
+            raw_target = retained.get("source_natural_key") or {}
+        target = tuple(raw_target.get(column) for column in NATURAL_KEY)
+        if any(value is None for value in target):
+            raise SafetyError("postcheck retained row has an incomplete raw natural key")
+        if target in expected_truth_keys and expected_truth_keys[target] != key:
+            raise SafetyError("postcheck target maps to multiple truth identities")
+        expected_truth_keys[target] = key
+        expected[target] = truth_lookup[key]
+    targets = sorted(expected)
     actual_rows = _fetch_target_rows(connection, targets)
-    grouped: dict[tuple[str, str, int, int, str], list[Mapping[str, Any]]] = defaultdict(list)
+    grouped: dict[tuple[Any, Any, Any, Any], list[Mapping[str, Any]]] = defaultdict(list)
     for row in actual_rows:
-        key = (
-            normalize_neon_date(row.get("date")), normalize_text(row.get("place")),
-            strict_int(row.get("race_num"), 1, 12), strict_int(row.get("horse_number"), 1, 18),
-            normalize_text(row.get("馬名", row.get("horse"))),
-        )
-        grouped[key].append(row)
-    for key, truth in expected.items():
-        matching = grouped.get(key, [])
+        grouped[tuple(row.get(column) for column in NATURAL_KEY)].append(row)
+    for target, truth in expected.items():
+        matching = grouped.get(target, [])
         if len(matching) != 1:
             raise SafetyError("postcheck did not find exactly one retained truth row")
         comparison = compare_payload(matching[0], truth)
@@ -1097,33 +1703,34 @@ def _verify_truth_poststate(connection: Any, plan: Mapping[str, Any],
             raise SafetyError("postcheck retained row no longer matches truth")
 
 
-def _verify_noop_source_multiset(connection: Any, plan: Mapping[str, Any]) -> None:
-    """Prove an already-clean database reflects the approved final source state."""
+def _verify_nonmutation_poststate(connection: Any, plan: Mapping[str, Any]) -> None:
+    """Prove non-mutation rows kept their key, fingerprint, and multiplicity."""
     expected: dict[tuple[str, str, int, int], Counter[str]] = defaultdict(Counter)
     for item in plan.get("classifications", []):
-        raw_key = item.get("source_natural_key") or {}
-        day = normalize_text(raw_key.get("date"))
-        place = raw_key.get("place")
-        race = strict_int(raw_key.get("race_num"), 1, 12)
-        number = strict_int(raw_key.get("horse_number"), 1, 18)
+        if item.get("classification") not in {"NON_RUNNER_KEEP", "UNVERIFIED_KEEP"}:
+            continue
+        raw = item.get("source_natural_key") or {}
+        day = normalize_text(raw.get("date"))
+        place = raw.get("place")
+        race = raw.get("race_num")
+        number = raw.get("horse_number")
         if day is None or place is None or race is None or number is None:
-            raise SafetyError("approved plan has an invalid source natural key")
-        key = (day, str(place), race, number)
-        expected[key]  # Preserve keys whose expected final count is zero.
-        if item.get("classification") == "KEEP_CURRENT":
-            expected[key][item["source"]["fingerprint"]] += 1
+            raise SafetyError("non-mutation plan row has an invalid natural key")
+        expected[(day, str(place), race, number)][item["source"]["fingerprint"]] += 1
+    if not expected:
+        return
     actual_rows = _fetch_target_rows(connection, sorted(expected))
     actual: dict[tuple[str, str, int, int], Counter[str]] = defaultdict(Counter)
     for row in actual_rows:
         key = (
             normalize_text(row.get("date")) or "", str(row.get("place")),
-            strict_int(row.get("race_num"), 1, 12) or -1,
-            strict_int(row.get("horse_number"), 1, 18) or -1,
+            row.get("race_num"), row.get("horse_number"),
         )
         actual[key][logical_row_fingerprint(row)] += 1
-    for key, expected_counter in expected.items():
-        if actual.get(key, Counter()) != expected_counter:
-            raise SafetyError("already-clean source rows differ from approved final multiset")
+    if actual != expected:
+        raise SafetyError(
+            "non-mutation row key/fingerprint/occurrence changed during apply"
+        )
 
 
 def _timestamped_dir(base: str | os.PathLike[str], label: str) -> Path:
@@ -1148,10 +1755,19 @@ def run_dry_run(engine: Any, ability_path: str | os.PathLike[str],
                 "txid_current_snapshot()::text AS transaction_snapshot"
             )).mappings().one()
             candidates, destinations = fetch_target_closure(connection, truth_rows)
-            plan = build_operation_plan(candidates + destinations, truth_rows)
+            manual_fix_gate = evaluate_manual_fix_gate(
+                _fetch_manual_fix_gate_rows(connection)
+            )
+            plan = build_operation_plan(
+                candidates + destinations, truth_rows,
+                manual_fix_gate=manual_fix_gate,
+            )
             snapshot = dict(snapshot_row)
             global_duplicate_groups = _count_scoped_duplicate_groups(connection)
-            candidate_groups = {_natural_key(row) for row in candidates}
+            candidate_groups = {
+                _natural_key(row) for row in candidates
+                if "a" in row.get("__candidate_reasons__", [])
+            }
             snapshot["scoped_duplicate_groups"] = global_duplicate_groups
             snapshot["candidate_2025_duplicate_groups"] = len(candidate_groups)
             if global_duplicate_groups != len(candidate_groups):
@@ -1246,14 +1862,16 @@ def run_apply(engine: Any, ability_path: str | os.PathLike[str],
     )
     if approved_plan_sha256 != approved_manifest.get("plan_sha256"):
         raise SafetyError("explicit approved plan hash does not match manifest")
-    if not approved_manifest.get("applicable") or approved_plan.get("status") != "APPLICABLE":
-        raise SafetyError("approved plan is not APPLICABLE")
+    approved_status = approved_plan.get("status")
+    if approved_status not in {"APPLICABLE", "NO_MUTATIONS_NEEDED"}:
+        raise SafetyError("approved plan is not APPLICABLE or NO_MUTATIONS_NEEDED")
+    if approved_manifest.get("plan_status") != approved_status:
+        raise SafetyError("approved plan status differs from manifest")
     if approved_manifest.get("mode") != "dry-run":
         raise SafetyError("--apply accepts only an approved dry-run manifest")
     ability_before = ability_identity(ability_path)
     if ability_before.get("sha256") != (approved_manifest.get("ability") or {}).get("sha256"):
         raise SafetyError("ability.db hash differs from approved manifest")
-    truth_rows = load_ability_truth(ability_path)
 
     from sqlalchemy import text
     with engine.connect() as connection:
@@ -1268,37 +1886,64 @@ def run_apply(engine: Any, ability_path: str | os.PathLike[str],
             if database != approved_manifest.get("database"):
                 raise SafetyError("database identity differs from approved dry-run")
             columns = _fetch_race_columns(connection)
+            approved_mutations = (
+                int((approved_plan.get("counts") or {}).get("update", 0))
+                + int((approved_plan.get("counts") or {}).get("delete", 0))
+            )
+            if approved_mutations:
+                _assert_no_covering_natural_key_unique(connection)
+
+            # Reopen and reload frozen truth only after the races lock has been
+            # acquired, then recreate the complete snapshot/plan under it.
+            if ability_identity(ability_path).get("sha256") != ability_before["sha256"]:
+                raise SafetyError("ability.db hash changed before locked reclassification")
+            truth_rows = load_ability_truth(ability_path)
             total_before = _count_table_rows(connection)
             candidates, destinations = fetch_target_closure(connection, truth_rows)
+            current_gate = _verify_manual_fix_gate(
+                _fetch_manual_fix_gate_rows(connection),
+                approved_manifest.get("manual_fix_gate") or {},
+            )
             global_duplicate_groups = _count_scoped_duplicate_groups(connection)
             candidate_groups = {
                 _natural_key(row) for row in candidates
+                if "a" in row.get("__candidate_reasons__", [])
             }
             if global_duplicate_groups != len(candidate_groups):
                 raise SafetyError("duplicate groups outside the approved 2025 cleanup scope exist")
-            if not candidates and global_duplicate_groups == 0:
-                _verify_truth_poststate(connection, approved_plan, truth_rows)
-                _verify_noop_source_multiset(connection, approved_plan)
-                no_op_plan = build_operation_plan([], truth_rows)
-                apply_bundle = _timestamped_dir(output_base, "apply_noop")
-                apply_manifest = write_bundle(
-                    apply_bundle, candidate_rows=[], destination_rows=[], plan=no_op_plan,
-                    ability=ability_before, database=database,
-                    snapshot={"locked_at_utc": datetime.now(timezone.utc).isoformat(),
-                              "result": "already_clean_noop",
-                              "reason": "common-predicate duplicate count is already zero",
-                              "approved_manifest_sha256": approved_manifest_sha256,
-                              "approved_plan_sha256": approved_plan_sha256}, mode="apply-noop",
-                )
-                if ability_identity(ability_path) != ability_before:
-                    raise SafetyError("ability.db changed during no-op apply")
-                transaction.commit()
-                return apply_bundle, apply_manifest
-            fresh_plan = build_operation_plan(candidates + destinations, truth_rows)
+            fresh_plan = build_operation_plan(
+                candidates + destinations, truth_rows,
+                manual_fix_gate=current_gate,
+            )
             if fresh_plan.get("plan_sha256") != approved_plan_sha256:
                 raise SafetyError("fresh plan differs from approved plan (data drift)")
-            if fresh_plan.get("status") != "APPLICABLE":
-                raise SafetyError("fresh plan is not APPLICABLE")
+            if fresh_plan.get("status") != approved_status:
+                raise SafetyError("fresh plan status differs from approved plan")
+
+            if approved_status == "NO_MUTATIONS_NEEDED":
+                if fresh_plan["counts"]["update"] or fresh_plan["counts"]["delete"]:
+                    raise SafetyError("NO_MUTATIONS_NEEDED plan unexpectedly contains mutations")
+                _verify_nonmutation_poststate(connection, fresh_plan)
+                if ability_identity(ability_path) != ability_before:
+                    raise SafetyError("ability.db changed during no-op apply")
+                apply_bundle = _timestamped_dir(output_base, "apply_noop")
+                apply_manifest = write_bundle(
+                    apply_bundle, candidate_rows=candidates,
+                    destination_rows=destinations, plan=fresh_plan,
+                    ability=ability_before, database=database,
+                    snapshot={
+                        "locked_at_utc": datetime.now(timezone.utc).isoformat(),
+                        "result": "no_mutations_needed",
+                        "reason": "approved fresh plan has no mutations",
+                        "approved_manifest_sha256": approved_manifest_sha256,
+                        "approved_plan_sha256": approved_plan_sha256,
+                    }, mode="apply-noop",
+                )
+                if ability_identity(ability_path) != ability_before:
+                    raise SafetyError("ability.db changed while writing no-op bundle")
+                transaction.commit()
+                return apply_bundle, apply_manifest
+
             apply_bundle = _timestamped_dir(output_base, "apply_backup")
             apply_manifest = write_bundle(
                 apply_bundle, candidate_rows=candidates, destination_rows=destinations,
@@ -1320,6 +1965,7 @@ def run_apply(engine: Any, ability_path: str | os.PathLike[str],
             if _count_scoped_duplicate_groups(connection) != 0:
                 raise SafetyError("scoped duplicate groups remain after mutation")
             _verify_truth_poststate(connection, fresh_plan, truth_rows)
+            _verify_nonmutation_poststate(connection, fresh_plan)
             if ability_identity(ability_path) != ability_before:
                 raise SafetyError("ability.db changed during apply")
             transaction.commit()
@@ -1386,10 +2032,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"bundle: {bundle}")
         print(f"manifest_sha256: {manifest['manifest_sha256']}")
         print(f"plan_sha256: {manifest['plan_sha256']}")
+        print(f"plan_status: {manifest['plan_status']}")
         print(f"applicable: {manifest['applicable']}")
         # A generated report is still useful when it is NOT_APPLICABLE, but a
         # non-zero status prevents automation from chaining into migration.
-        return 0 if manifest["applicable"] else 3
+        return 0 if manifest["plan_status"] in {
+            "APPLICABLE", "NO_MUTATIONS_NEEDED",
+        } else 3
     except (SafetyError, OSError, ValueError) as exc:
         print(f"[SAFE STOP] {exc}", file=sys.stderr)
         return 3

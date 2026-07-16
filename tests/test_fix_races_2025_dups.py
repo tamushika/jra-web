@@ -1,9 +1,11 @@
 import copy
+import csv
 import inspect
 import json
 import os
 import sqlite3
 import uuid
+from collections import Counter
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -91,6 +93,30 @@ def _bundle_snapshot():
     }
 
 
+def _manual_fix_rows():
+    return [
+        {"date": "250208", "place": "小倉", "race_num": 5,
+         "horse_number": 3, "馬名": "ミグラテール"},
+        {"date": "250208", "place": "小倉", "race_num": 5,
+         "horse_number": 5, "馬名": "トーアマリシテン"},
+        {"date": "250208", "place": "小倉", "race_num": 5,
+         "horse_number": 7, "馬名": "アルカンサス"},
+        {"date": "250412", "place": "中山", "race_num": 3,
+         "horse_number": 9, "馬名": "スターコンパス"},
+        {"date": "250412", "place": "中山", "race_num": 1,
+         "horse_number": 9, "馬名": "モーニングマジック"},
+        {"date": "251116", "place": "福島", "race_num": 5,
+         "horse_number": 9, "馬名": "チンプンカンプン"},
+    ]
+
+
+def _with_manual_fix_gate(plan):
+    plan = copy.deepcopy(plan)
+    plan["manual_fix_gate"] = fixer.evaluate_manual_fix_gate(_manual_fix_rows())
+    plan["plan_sha256"] = fixer.canonical_plan_sha256(plan)
+    return plan
+
+
 def test_normalizers_are_strict_and_canonical():
     assert fixer.normalize_text(" Ａ  馬\t") == "A馬"
     assert fixer.normalize_neon_date("２５０１０５") == "20250105"
@@ -107,6 +133,29 @@ def test_normalizers_are_strict_and_canonical():
     assert fixer.to_deciseconds("1:60.0") is None
     assert fixer.canonical_track_type(" ダ ") == "ダート"
     assert fixer.canonical_condition("稍重") == "稍"
+
+
+def test_manual_fix_gate_requires_each_approved_key_exactly_once():
+    rows = _manual_fix_rows()
+    accepted = fixer.evaluate_manual_fix_gate(rows)
+    assert accepted["ok"] is True
+    assert len(accepted["rows"]) == 6
+
+    missing = fixer.evaluate_manual_fix_gate(rows[:-1])
+    assert missing["ok"] is False
+
+    duplicated = fixer.evaluate_manual_fix_gate(rows + [dict(rows[0])])
+    assert duplicated["ok"] is False
+
+    # v2.3.5: a different horse sharing an expected key is a normal cleanup
+    # candidate (e.g. the known duplicate co-resident at 中山250412 R1 u9);
+    # the gate records it but must not fail on it.
+    co_resident = dict(rows[4])
+    co_resident["馬名"] = "タイセイアダマス"
+    shared = fixer.evaluate_manual_fix_gate(rows + [co_resident])
+    assert shared["ok"] is True
+    assert shared["rows"][4]["observed_count"] == 2
+    assert shared["rows"][4]["matching_horse_count"] == 1
 
 
 @pytest.mark.parametrize(
@@ -151,7 +200,7 @@ def test_compact_neon_time_matches_truth_without_changing_agari_semantics():
     assert fixer.to_deciseconds("3137") == 31370
 
 
-def test_compact_neon_time_enables_keep_and_move_but_invalid_time_is_unresolved():
+def test_compact_neon_time_enables_keep_and_move_but_invalid_time_is_nonmutation():
     plan = fixer.build_operation_plan(
         [
             _row(horse="A", race_num=1, ctid="(1,1)", time="1134"),
@@ -169,8 +218,9 @@ def test_compact_neon_time_enables_keep_and_move_but_invalid_time_is_unresolved(
         [_row(time="1600")],
         [_truth(time_sec=100.0)],
     )
-    assert invalid["status"] == "NOT_APPLICABLE"
-    assert _classifications(invalid) == ["UNRESOLVED"]
+    assert invalid["status"] == "NO_MUTATIONS_NEEDED"
+    assert _classifications(invalid) == ["UNVERIFIED_KEEP"]
+    assert invalid["classifications"][0]["reason_code"] == "INVALID_VALUE"
     assert invalid["classifications"][0]["comparison"]["fields"]["time"]["status"] == "invalid"
 
 
@@ -242,29 +292,33 @@ def test_build_plan_keep_and_move_same_slot_is_applicable_without_prepare_keyerr
         "keep": 1,
         "update": 1,
         "delete": 0,
+        "non_mutation": 0,
         "unresolved": 0,
         "final_row_delta": 0,
     }
 
 
 @pytest.mark.parametrize(
-    ("rows", "truth"),
+    ("rows", "truth", "reason_code"),
     [
-        ([_row(horse="NO_TRUTH")], [_truth()]),
+        ([_row(horse="NO_TRUTH")], [_truth()], "TRUTH_ZERO"),
         (
             [_row()],
             [_truth(race=1), _truth(race=2)],
+            "TRUTH_MULTI",
         ),
-        ([_row(rank=2)], [_truth()]),
-        ([_row(time="1:35.1")], [_truth()]),
-        ([_row(rank=2, jockey="Aとは別")], [_truth()]),
+        ([_row(rank=2)], [_truth()], "PAYLOAD_MISMATCH"),
+        ([_row(time="1:35.1")], [_truth()], "PAYLOAD_MISMATCH"),
+        ([_row(rank=2, jockey="Aとは別")], [_truth()], "PAYLOAD_MISMATCH"),
     ],
 )
-def test_unproven_rows_are_unresolved_and_plan_is_not_applicable(rows, truth):
+def test_unproven_rows_are_nonmutation_when_their_keys_do_not_collide(
+        rows, truth, reason_code):
     plan = fixer.build_operation_plan(rows, truth)
-    assert plan["status"] == "NOT_APPLICABLE"
-    assert _classifications(plan) == ["UNRESOLVED"]
-    assert plan["counts"]["unresolved"] == 1
+    assert plan["status"] == "NO_MUTATIONS_NEEDED"
+    assert _classifications(plan) == ["UNVERIFIED_KEEP"]
+    assert plan["classifications"][0]["reason_code"] == reason_code
+    assert plan["counts"]["unresolved"] == 0
     assert plan["operations"] == []
 
 
@@ -273,7 +327,8 @@ def test_horse_name_alone_never_authorizes_move():
         [_row(race_num=1, rank=2, time="1:36.0")],
         [_truth(race=2)],
     )
-    assert _classifications(plan) == ["UNRESOLVED"]
+    assert _classifications(plan) == ["UNVERIFIED_KEEP"]
+    assert plan["classifications"][0]["reason_code"] == "PAYLOAD_MISMATCH"
     assert plan["counts"]["update"] == 0
 
 
@@ -302,9 +357,165 @@ def test_redundant_error_requires_a_unique_complete_keeper():
     ]
 
     without_keeper = fixer.build_operation_plan([mixed], [_truth()])
-    assert without_keeper["status"] == "NOT_APPLICABLE"
-    assert _classifications(without_keeper) == ["UNRESOLVED"]
+    assert without_keeper["status"] == "NO_MUTATIONS_NEEDED"
+    assert _classifications(without_keeper) == ["UNVERIFIED_KEEP"]
+    assert without_keeper["classifications"][0]["reason_code"] == "PAYLOAD_MISMATCH"
     assert without_keeper["operations"] == []
+
+
+def test_veto_mismatch_is_deletable_only_with_one_verified_truth_keeper():
+    keeper = _row(ctid="(2,1)")
+    veto_mismatch = _row(weight=501, ctid="(2,2)")
+
+    with_keeper = fixer.build_operation_plan(
+        [veto_mismatch, keeper], [_truth()]
+    )
+    assert with_keeper["status"] == "APPLICABLE"
+    assert sorted(_classifications(with_keeper)) == [
+        "DELETE_REDUNDANT_ERROR", "KEEP_CURRENT",
+    ]
+    deletion = next(
+        item for item in with_keeper["classifications"]
+        if item["classification"] == "DELETE_REDUNDANT_ERROR"
+    )
+    assert deletion["comparison"]["veto_ok"] is False
+    assert deletion["keeper"] is not None
+
+    without_keeper = fixer.build_operation_plan([veto_mismatch], [_truth()])
+    assert without_keeper["status"] == "NO_MUTATIONS_NEEDED"
+    assert _classifications(without_keeper) == ["UNVERIFIED_KEEP"]
+    assert without_keeper["classifications"][0]["reason_code"] == "PAYLOAD_MISMATCH"
+
+
+def test_redundant_delete_is_blocked_when_complete_keeper_is_not_unique():
+    rows = [
+        _row(ctid="(2,3)", jockey="表記A"),
+        _row(ctid="(2,4)", jockey="表記B"),
+        _row(ctid="(2,5)", weight=501),
+    ]
+    plan = fixer.build_operation_plan(rows, [_truth()])
+
+    assert "DELETE_REDUNDANT_ERROR" not in _classifications(plan)
+    assert plan["status"] == "NOT_APPLICABLE"
+    assert plan["counts"]["delete"] == 0
+
+
+def test_truth_zero_and_truth_multi_rows_are_never_reclassified_to_delete():
+    zero_rows = [
+        _row(horse="NO_TRUTH", ctid="(3,1)"),
+        _row(horse="A", ctid="(3,2)"),
+    ]
+    zero_plan = fixer.build_operation_plan(zero_rows, [_truth()])
+    assert "DELETE_REDUNDANT_ERROR" not in _classifications(zero_plan)
+    assert zero_plan["status"] == "NOT_APPLICABLE"
+    assert sorted(_classifications(zero_plan)) == ["KEEP_CURRENT", "UNRESOLVED"]
+
+    multi_plan = fixer.build_operation_plan(
+        [_row(race_num=1, ctid="(4,1)"), _row(race_num=2, ctid="(4,2)")],
+        [_truth(race=1), _truth(race=2)],
+    )
+    assert "DELETE_REDUNDANT_ERROR" not in _classifications(multi_plan)
+    assert multi_plan["status"] == "NO_MUTATIONS_NEEDED"
+    assert _classifications(multi_plan) == ["UNVERIFIED_KEEP", "UNVERIFIED_KEEP"]
+    assert all(
+        item["reason_code"] == "TRUTH_MULTI"
+        for item in multi_plan["classifications"]
+    )
+
+
+def test_non_runner_and_all_unverified_reason_codes_follow_decision_table():
+    cases = [
+        (_row(date="not-a-date"), [_truth()], "UNVERIFIED_KEEP", "INVALID_VALUE"),
+        (_row(horse="NO_TRUTH"), [_truth()], "UNVERIFIED_KEEP", "TRUTH_ZERO"),
+        (_row(), [_truth(race=1), _truth(race=2)], "UNVERIFIED_KEEP", "TRUTH_MULTI"),
+        (_row(rank="bad"), [_truth()], "UNVERIFIED_KEEP", "INVALID_VALUE"),
+        (_row(), [_truth(horse_number=4)], "UNVERIFIED_KEEP", "UMABAN_MISMATCH"),
+        (_row(rank=2), [_truth()], "UNVERIFIED_KEEP", "PAYLOAD_MISMATCH"),
+        (_row(horse="NO_TRUTH", rank=None, time="----"), [_truth()], "NON_RUNNER_KEEP", None),
+    ]
+
+    for row, truth, classification, reason_code in cases:
+        plan = fixer.build_operation_plan([row], truth)
+        item = plan["classifications"][0]
+        assert plan["status"] == "NO_MUTATIONS_NEEDED"
+        assert item["classification"] == classification
+        assert item["reason_code"] == reason_code
+        assert plan["operations"] == []
+
+
+def test_nonmutation_rows_are_promoted_to_unresolved_only_on_final_collision():
+    rows = [
+        _row(horse="NO_TRUTH_A", ctid="(5,1)"),
+        _row(horse="NO_TRUTH_B", ctid="(5,2)"),
+    ]
+    plan = fixer.build_operation_plan(rows, [_truth()])
+
+    assert plan["status"] == "NOT_APPLICABLE"
+    assert _classifications(plan) == ["UNRESOLVED", "UNRESOLVED"]
+    assert all(item["reason_code"] is None for item in plan["classifications"])
+    assert plan["counts"]["unresolved"] == 2
+    assert plan["operations"] == []
+
+
+def test_invalid_identity_rows_use_raw_db_natural_keys_for_final_collisions():
+    distinct = fixer.build_operation_plan(
+        [
+            _row(horse="INVALID_A", race_num=99, ctid="(5,3)"),
+            _row(horse="INVALID_B", race_num=100, ctid="(5,4)"),
+        ],
+        [_truth()],
+    )
+    assert distinct["status"] == "NO_MUTATIONS_NEEDED"
+    assert _classifications(distinct) == ["UNVERIFIED_KEEP", "UNVERIFIED_KEEP"]
+    assert all(
+        item["reason_code"] == "INVALID_VALUE"
+        for item in distinct["classifications"]
+    )
+
+    same_raw_key = fixer.build_operation_plan(
+        [
+            _row(horse="INVALID_A", race_num=99, ctid="(5,5)"),
+            _row(horse="INVALID_B", race_num=99, ctid="(5,6)"),
+        ],
+        [_truth()],
+    )
+    assert same_raw_key["status"] == "NOT_APPLICABLE"
+    assert _classifications(same_raw_key) == ["UNRESOLVED", "UNRESOLVED"]
+
+
+def test_nonmutation_postcheck_preserves_invalid_raw_key_and_fingerprint(
+        monkeypatch):
+    row = _row(horse="INVALID", race_num=99, ctid="(5,7)")
+    plan = fixer.build_operation_plan([row], [_truth()])
+    assert plan["status"] == "NO_MUTATIONS_NEEDED"
+    fetched_targets = []
+
+    def unchanged(connection, targets):
+        fetched_targets.extend(targets)
+        return [row]
+
+    monkeypatch.setattr(fixer, "_fetch_target_rows", unchanged)
+    fixer._verify_nonmutation_poststate(object(), plan)
+    assert fetched_targets == [("250105", "東京", 99, 3)]
+
+    monkeypatch.setattr(
+        fixer, "_fetch_target_rows",
+        lambda connection, targets: [{**row, "rank": 2}],
+    )
+    with pytest.raises(fixer.SafetyError, match="fingerprint"):
+        fixer._verify_nonmutation_poststate(object(), plan)
+
+
+def test_mutation_free_plan_with_nonidentical_duplicate_keepers_is_not_noop():
+    rows = [
+        _row(ctid="(6,1)", jockey="騎手A"),
+        _row(ctid="(6,2)", jockey="表記違い"),
+    ]
+    plan = fixer.build_operation_plan(rows, [_truth()])
+
+    assert plan["status"] == "NOT_APPLICABLE"
+    assert plan["status"] != "NO_MUTATIONS_NEEDED"
+    assert plan["operations"] == []
 
 
 def test_wrong_slot_complete_row_is_deleted_when_truth_keeper_already_exists():
@@ -348,25 +559,42 @@ def test_existing_destination_and_multiple_moves_are_not_applicable():
         [_truth(horse="B", race=2)],
     )
     assert duplicate_movers["status"] == "NOT_APPLICABLE"
-    assert any("multiple MOVE" in reason for reason in duplicate_movers["reasons"])
+    assert any("collision" in reason for reason in duplicate_movers["reasons"])
 
 
-def test_move_chain_and_cycle_are_fail_closed():
+def test_verified_move_chain_and_cycle_are_planned_as_one_final_state():
     chain = fixer.build_operation_plan(
         [_row(horse="A", race_num=1, ctid="(0,1)"),
          _row(horse="B", race_num=2, ctid="(0,2)")],
         [_truth(horse="A", race=2), _truth(horse="B", race=3)],
     )
-    assert chain["status"] == "NOT_APPLICABLE"
-    assert any("chain" in reason.casefold() for reason in chain["reasons"])
+    assert chain["status"] == "APPLICABLE"
+    assert chain["counts"]["update"] == 2
+    assert chain["reasons"] == []
 
     cycle = fixer.build_operation_plan(
         [_row(horse="A", race_num=1, ctid="(0,1)"),
          _row(horse="B", race_num=2, ctid="(0,2)")],
         [_truth(horse="A", race=2), _truth(horse="B", race=1)],
     )
-    assert cycle["status"] == "NOT_APPLICABLE"
-    assert any("cycle" in reason.casefold() for reason in cycle["reasons"])
+    assert cycle["status"] == "APPLICABLE"
+    assert cycle["counts"]["update"] == 2
+    assert cycle["reasons"] == []
+
+    three_cycle = fixer.build_operation_plan(
+        [
+            _row(horse="A", race_num=1, ctid="(0,1)"),
+            _row(horse="B", race_num=2, ctid="(0,2)"),
+            _row(horse="C", race_num=3, ctid="(0,3)"),
+        ],
+        [
+            _truth(horse="A", race=2),
+            _truth(horse="B", race=3),
+            _truth(horse="C", race=1),
+        ],
+    )
+    assert three_cycle["status"] == "APPLICABLE"
+    assert three_cycle["counts"]["update"] == 3
 
 
 def test_logical_fingerprint_and_plan_hash_ignore_physical_row_ids():
@@ -442,9 +670,15 @@ def test_bundle_is_lossless_hashed_and_revalidatable(tmp_path):
             exact_datetime=datetime(2025, 1, 5, 12, 34, tzinfo=timezone.utc),
             exact_bytes=b"\x00\xff",
         ),
-        _row(ctid="(1,2)", nullable_note=None, empty_note=""),
+        _row(
+            ctid="(1,2)", nullable_note=None, empty_note="",
+            exact_float=-0.0, exact_decimal=Decimal("1.2300"),
+            exact_date=date(2025, 1, 5),
+            exact_datetime=datetime(2025, 1, 5, 12, 34, tzinfo=timezone.utc),
+            exact_bytes=b"\x00\xff",
+        ),
     ]
-    plan = fixer.build_operation_plan(rows, [_truth()])
+    plan = _with_manual_fix_gate(fixer.build_operation_plan(rows, [_truth()]))
     bundle = tmp_path / "bundle"
     manifest = fixer.write_bundle(
         bundle,
@@ -461,6 +695,20 @@ def test_bundle_is_lossless_hashed_and_revalidatable(tmp_path):
         "rows.jsonl", "plan.json", "manifest.json",
     }
     assert {path.name for path in bundle.iterdir()} == expected_names
+    assert manifest["format_version"] == 3
+    assert manifest["plan_status"] == plan["status"] == "APPLICABLE"
+    assert manifest["applicable"] is True
+    assert set(manifest["classification_counts"]) == {
+        "KEEP_CURRENT", "MOVE_CANDIDATE", "DELETE_EXACT_DUPLICATE",
+        "DELETE_REDUNDANT_ERROR", "NON_RUNNER_KEEP", "UNVERIFIED_KEEP",
+        "UNRESOLVED",
+    }
+    assert set(manifest["unverified_reason_counts"]) == {
+        "TRUTH_ZERO", "TRUTH_MULTI", "PAYLOAD_MISMATCH",
+        "UMABAN_MISMATCH", "INVALID_VALUE",
+    }
+    assert manifest["candidate_reason_counts"] == {"a": 0, "b": 0, "c": 0}
+    assert manifest["manual_fix_gate"]["ok"] is True
     assert manifest["plan_sha256"] == plan["plan_sha256"]
     assert manifest["manifest_sha256"] == fixer.file_sha256(bundle / "manifest.json")
     assert manifest["counts"]["candidate_rows"] == 2
@@ -494,6 +742,11 @@ def test_bundle_is_lossless_hashed_and_revalidatable(tmp_path):
         json.loads((bundle / "manifest.json").read_text(encoding="utf-8")),
         json.loads((bundle / "plan.json").read_text(encoding="utf-8")),
     )
+    assert expected_validation[1]["version"] == 3
+    assert all(
+        item["reason_code"] is None
+        for item in expected_validation[1]["classifications"]
+    )
     assert fixer.validate_bundle(bundle / "manifest.json") == expected_validation
     assert fixer.validate_bundle(
         bundle / "manifest.json",
@@ -501,9 +754,251 @@ def test_bundle_is_lossless_hashed_and_revalidatable(tmp_path):
     ) == expected_validation
 
 
+def test_closure_only_keeper_is_classified_and_saved_in_all_audit_artifacts(
+        tmp_path):
+    candidate = _row(race_num=2, ctid="(8,1)")
+    keeper = _row(race_num=1, ctid="(8,2)")
+    plan = fixer.build_operation_plan(
+        [candidate, keeper], [_truth()],
+        candidate_reasons={0: ["c"], 1: []},
+    )
+    plan = _with_manual_fix_gate(plan)
+
+    by_fingerprint = {
+        item["source"]["fingerprint"]: item
+        for item in plan["classifications"]
+    }
+    assert by_fingerprint[fixer.logical_row_fingerprint(candidate)]["candidate_reasons"] == ["c"]
+    closure_item = by_fingerprint[fixer.logical_row_fingerprint(keeper)]
+    assert closure_item["classification"] == "KEEP_CURRENT"
+    assert closure_item["candidate_reasons"] == []
+    assert closure_item["reason_code"] is None
+    assert plan["operations"][0]["candidate_reasons"] == ["c"]
+    assert plan["operations"][0]["reason_code"] is None
+
+    bundle = tmp_path / "closure-bundle"
+    manifest = fixer.write_bundle(
+        bundle,
+        candidate_rows=[candidate],
+        destination_rows=[keeper],
+        plan=plan,
+        ability=_bundle_ability(),
+        database=_bundle_database(),
+        snapshot=_bundle_snapshot(),
+    )
+
+    with (bundle / "classification.csv").open(
+            encoding="utf-8-sig", newline="") as handle:
+        classifications = list(csv.DictReader(handle))
+    with (bundle / "destination_rows.csv").open(
+            encoding="utf-8-sig", newline="") as handle:
+        destinations = list(csv.DictReader(handle))
+    records = [
+        json.loads(line)
+        for line in (bundle / "rows.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    persisted_plan = json.loads((bundle / "plan.json").read_text(encoding="utf-8"))
+
+    assert len(classifications) == 2
+    assert sorted(row["candidate_reasons"] for row in classifications) == ["", "c"]
+    assert all(row["reason_code"] == "" for row in classifications)
+    assert len(destinations) == 1
+    assert Counter(record["kind"] for record in records) == {
+        "candidate": 1, "destination": 1,
+    }
+    persisted_closure = next(
+        item for item in persisted_plan["classifications"]
+        if item["source"]["fingerprint"] == fixer.logical_row_fingerprint(keeper)
+    )
+    assert persisted_closure["candidate_reasons"] == []
+    assert persisted_closure["reason_code"] is None
+    assert manifest["counts"]["candidate_rows"] == 1
+    assert manifest["counts"]["destination_rows"] == 1
+    assert manifest["candidate_reason_counts"] == {"a": 0, "b": 0, "c": 1}
+
+
+def test_candidate_reason_schema_rejects_unknown_or_duplicate_codes():
+    with pytest.raises(fixer.SafetyError, match="candidate reason"):
+        fixer.build_operation_plan(
+            [_row()], [_truth()], candidate_reasons={0: ["not-a-code"]}
+        )
+    with pytest.raises(fixer.SafetyError, match="candidate reason"):
+        fixer.build_operation_plan(
+            [_row()], [_truth()], candidate_reasons={0: ["a", "a"]}
+        )
+
+
+def test_generalized_candidate_selection_covers_a_b_and_c_without_duplicate_seed():
+    correct = _row(horse="A", race_num=1, ctid="(10,1)")
+    wrong_horse = _row(horse="WRONG", race_num=1, ctid="(10,2)")
+    truth_absent = _row(horse="NO_SLOT", race_num=3, ctid="(10,3)")
+
+    candidates = fixer._select_generalized_candidates(
+        [correct, wrong_horse, truth_absent], [_truth()]
+    )
+    reasons = {
+        row["馬名"]: row["__candidate_reasons__"] for row in candidates
+    }
+
+    assert reasons == {
+        "A": ["a"],
+        "WRONG": ["a", "b"],
+        "NO_SLOT": ["c"],
+    }
+
+
+def test_generalized_closure_fetches_truth_position_keeper_for_c_candidate(
+        monkeypatch):
+    candidate = _row(race_num=2, ctid="(11,1)")
+    keeper = _row(race_num=1, ctid="(11,2)")
+    fetched_targets = []
+
+    monkeypatch.setattr(
+        fixer, "_fetch_2025_complete_rows",
+        lambda connection: [candidate, keeper],
+    )
+
+    def fake_fetch_targets(connection, targets):
+        fetched_targets.extend(targets)
+        return [keeper]
+
+    monkeypatch.setattr(fixer, "_fetch_target_rows", fake_fetch_targets)
+    candidates, destinations = fixer.fetch_target_closure(object(), [_truth()])
+
+    assert fetched_targets == [("250105", "東京", 1, 3)]
+    assert len(candidates) == 1
+    assert candidates[0]["__candidate_reasons__"] == ["c"]
+    assert len(destinations) == 1
+    assert destinations[0][fixer.ROW_ID] == keeper[fixer.ROW_ID]
+    assert destinations[0]["__candidate_reasons__"] == []
+
+
+def test_truth_and_candidate_snapshot_limits_fail_closed(monkeypatch):
+    class FakeAbilityResult:
+        def fetchall(self):
+            return [{}, {}, {}]
+
+    class FakeAbilityConnection:
+        row_factory = None
+
+        def execute(self, statement, params):
+            assert params == (3,)
+            return FakeAbilityResult()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(fixer, "TRUTH_ROW_LIMIT", 2)
+    monkeypatch.setattr(
+        fixer, "open_ability_read_only", lambda path: FakeAbilityConnection()
+    )
+    with pytest.raises(fixer.SafetyError, match="truth exceeds"):
+        fixer.load_ability_truth("unused.db")
+
+    class FakeRaceResult:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [_row(ctid="(12,1)"), _row(ctid="(12,2)"), _row(ctid="(12,3)")]
+
+    class FakeRaceConnection:
+        def execute(self, statement, params):
+            assert params == {"row_limit": 3}
+            return FakeRaceResult()
+
+    monkeypatch.setattr(fixer, "CLOSURE_ROW_LIMIT", 2)
+    with pytest.raises(fixer.SafetyError, match="snapshot exceeds"):
+        fixer._fetch_2025_complete_rows(FakeRaceConnection())
+
+
+def test_global_duplicate_count_sql_has_no_2025_date_filter():
+    captured = {}
+
+    class FakeResult:
+        def scalar_one(self):
+            return 0
+
+    class FakeConnection:
+        def execute(self, statement):
+            captured["sql"] = str(statement)
+            return FakeResult()
+
+    assert fixer._count_scoped_duplicate_groups(FakeConnection()) == 0
+    normalized_sql = " ".join(captured["sql"].split()).casefold()
+    assert "date between" not in normalized_sql
+    assert "group by date, place, race_num, horse_number" in normalized_sql
+    assert all(fragment in normalized_sql for fragment in (
+        "date is not null", "place is not null", "race_num is not null",
+        "horse_number is not null",
+    ))
+
+
+@pytest.mark.parametrize(
+    "catalog_rows",
+    [
+        [{
+            "index_name": "uq_races_natural_key",
+            "indisunique": False,
+            "key_columns": ["date"],
+        }],
+        [{
+            "index_name": "other_covering_unique",
+            "indisunique": True,
+            "key_columns": [
+                "horse_number", "date", "race_num", "place", "extra",
+            ],
+        }],
+    ],
+)
+def test_catalog_guard_rejects_named_or_covering_natural_key_unique(
+        catalog_rows):
+    class FakeResult:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return catalog_rows
+
+    class FakeConnection:
+        def execute(self, statement):
+            return FakeResult()
+
+    with pytest.raises(fixer.SafetyError, match="unique index/constraint"):
+        fixer._assert_no_covering_natural_key_unique(FakeConnection())
+
+
+def test_catalog_guard_ignores_irrelevant_or_nonunique_indexes():
+    catalog_rows = [
+        {
+            "index_name": "unique_date_place_only",
+            "indisunique": True,
+            "key_columns": ["date", "place"],
+        },
+        {
+            "index_name": "nonunique_covering_index",
+            "indisunique": False,
+            "key_columns": ["date", "place", "race_num", "horse_number"],
+        },
+    ]
+
+    class FakeResult:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return catalog_rows
+
+    class FakeConnection:
+        def execute(self, statement):
+            return FakeResult()
+
+    fixer._assert_no_covering_natural_key_unique(FakeConnection())
+
+
 def test_bundle_validation_rejects_tampering(tmp_path):
     row = _row()
-    plan = fixer.build_operation_plan([row], [_truth()])
+    plan = _with_manual_fix_gate(fixer.build_operation_plan([row], [_truth()]))
     bundle = tmp_path / "bundle"
     fixer.write_bundle(
         bundle,
@@ -519,7 +1014,7 @@ def test_bundle_validation_rejects_tampering(tmp_path):
 
 def test_apply_rejects_manifest_metadata_tamper_before_validation_or_connect(tmp_path):
     row = _row()
-    plan = fixer.build_operation_plan([row], [_truth()])
+    plan = _with_manual_fix_gate(fixer.build_operation_plan([row], [_truth()]))
     bundle = tmp_path / "bundle"
     result = fixer.write_bundle(
         bundle,
@@ -549,7 +1044,7 @@ def test_apply_rejects_manifest_metadata_tamper_before_validation_or_connect(tmp
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda manifest: manifest.__setitem__("format_version", 3), "format_version"),
+        (lambda manifest: manifest.__setitem__("format_version", 2), "format_version"),
         (lambda manifest: manifest.__setitem__("mode", "reviewed"), "mode"),
         (lambda manifest: manifest["database"].pop("url_host"), "database"),
         (lambda manifest: manifest.__setitem__("unreviewed", True), "required schema"),
@@ -558,7 +1053,7 @@ def test_apply_rejects_manifest_metadata_tamper_before_validation_or_connect(tmp
 def test_manifest_schema_is_fail_closed_even_for_matching_raw_hash(
         tmp_path, mutation, message):
     row = _row()
-    plan = fixer.build_operation_plan([row], [_truth()])
+    plan = _with_manual_fix_gate(fixer.build_operation_plan([row], [_truth()]))
     bundle = tmp_path / "bundle"
     fixer.write_bundle(
         bundle,
@@ -580,9 +1075,64 @@ def test_manifest_schema_is_fail_closed_even_for_matching_raw_hash(
         )
 
 
+def test_manifest_status_must_agree_with_mutation_counts(tmp_path):
+    gate = fixer.evaluate_manual_fix_gate(_manual_fix_rows())
+
+    duplicate_rows = [_row(ctid="(14,1)"), _row(ctid="(14,2)")]
+    applicable_plan = fixer.build_operation_plan(
+        duplicate_rows, [_truth()], manual_fix_gate=gate,
+    )
+    assert applicable_plan["status"] == "APPLICABLE"
+    applicable_bundle = tmp_path / "applicable"
+    fixer.write_bundle(
+        applicable_bundle,
+        candidate_rows=duplicate_rows,
+        destination_rows=[],
+        plan=applicable_plan,
+        ability=_bundle_ability(),
+        database=_bundle_database(),
+        snapshot=_bundle_snapshot(),
+    )
+    mutation_as_noop = json.loads(
+        (applicable_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    mutation_as_noop["plan_status"] = "NO_MUTATIONS_NEEDED"
+    mutation_as_noop["applicable"] = False
+    with pytest.raises(
+            fixer.SafetyError,
+            match="NO_MUTATIONS_NEEDED status is inconsistent"):
+        fixer._validate_manifest_schema(mutation_as_noop)
+
+    nonmutation = _row(horse="NO_TRUTH", ctid="(14,3)")
+    noop_plan = fixer.build_operation_plan(
+        [nonmutation], [], candidate_reasons={0: ["c"]},
+        manual_fix_gate=gate,
+    )
+    assert noop_plan["status"] == "NO_MUTATIONS_NEEDED"
+    noop_bundle = tmp_path / "noop"
+    fixer.write_bundle(
+        noop_bundle,
+        candidate_rows=[nonmutation],
+        destination_rows=[],
+        plan=noop_plan,
+        ability=_bundle_ability(),
+        database=_bundle_database(),
+        snapshot=_bundle_snapshot(),
+    )
+    noop_as_mutation = json.loads(
+        (noop_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    noop_as_mutation["plan_status"] = "APPLICABLE"
+    noop_as_mutation["applicable"] = True
+    with pytest.raises(
+            fixer.SafetyError,
+            match="APPLICABLE status is inconsistent"):
+        fixer._validate_manifest_schema(noop_as_mutation)
+
+
 def test_bundle_writer_reloads_and_counts_each_csv(monkeypatch, tmp_path):
     row = _row()
-    plan = fixer.build_operation_plan([row], [_truth()])
+    plan = _with_manual_fix_gate(fixer.build_operation_plan([row], [_truth()]))
     original = fixer._write_csv
 
     def corrupt_candidate_csv(path, rows, columns=None):
@@ -602,7 +1152,7 @@ def test_bundle_writer_reloads_and_counts_each_csv(monkeypatch, tmp_path):
 
 def test_bundle_validation_requires_every_mandatory_artifact(tmp_path):
     row = _row()
-    plan = fixer.build_operation_plan([row], [_truth()])
+    plan = _with_manual_fix_gate(fixer.build_operation_plan([row], [_truth()]))
     bundle = tmp_path / "bundle"
     fixer.write_bundle(
         bundle,
@@ -623,7 +1173,7 @@ def test_bundle_validation_requires_every_mandatory_artifact(tmp_path):
 
 def test_bundle_validation_rejects_plan_symlink_outside_bundle(tmp_path):
     row = _row()
-    plan = fixer.build_operation_plan([row], [_truth()])
+    plan = _with_manual_fix_gate(fixer.build_operation_plan([row], [_truth()]))
     bundle = tmp_path / "bundle"
     fixer.write_bundle(
         bundle,
@@ -645,12 +1195,17 @@ def test_bundle_validation_rejects_plan_symlink_outside_bundle(tmp_path):
 
 
 def test_unresolved_approved_bundle_stops_before_engine_connection(tmp_path):
-    row = _row(rank=2)
-    plan = fixer.build_operation_plan([row], [_truth()])
+    rows = [
+        _row(horse="NO_TRUTH_A", ctid="(1,1)"),
+        _row(horse="NO_TRUTH_B", ctid="(1,2)"),
+    ]
+    plan = _with_manual_fix_gate(fixer.build_operation_plan(rows, [_truth()]))
+    assert plan["status"] == "NOT_APPLICABLE"
+    assert _classifications(plan) == ["UNRESOLVED", "UNRESOLVED"]
     bundle = tmp_path / "unresolved"
     fixer.write_bundle(
         bundle,
-        candidate_rows=[row], destination_rows=[], plan=plan,
+        candidate_rows=rows, destination_rows=[], plan=plan,
         ability=_bundle_ability(), database=_bundle_database(),
         snapshot=_bundle_snapshot(),
     )
@@ -681,7 +1236,7 @@ def test_cli_defaults_to_dry_run_never_calls_apply_and_fails_closed(monkeypatch,
         lambda engine, ability, output: (
             tmp_path / "dry-run", {
                 "manifest_sha256": "manifest-hash", "plan_sha256": "plan-hash",
-                "applicable": False,
+                "plan_status": "NOT_APPLICABLE", "applicable": False,
             }
         ),
     )
@@ -697,6 +1252,40 @@ def test_cli_defaults_to_dry_run_never_calls_apply_and_fails_closed(monkeypatch,
         "--ability-db", str(tmp_path / "ability.db"),
         "--output-dir", str(tmp_path),
     ]) == 3
+    assert calls == ["dispose"]
+
+
+def test_cli_no_mutations_needed_is_success_without_calling_apply(
+        monkeypatch, tmp_path):
+    calls = []
+
+    class FakeEngine:
+        def dispose(self):
+            calls.append("dispose")
+
+    monkeypatch.setenv("T34B_TEST_URL", "postgresql://fixture.invalid/test")
+    monkeypatch.setattr("sqlalchemy.create_engine", lambda *args, **kwargs: FakeEngine())
+    monkeypatch.setattr(
+        fixer, "run_dry_run",
+        lambda engine, ability, output: (
+            tmp_path / "dry-run", {
+                "manifest_sha256": "manifest-hash", "plan_sha256": "plan-hash",
+                "plan_status": "NO_MUTATIONS_NEEDED", "applicable": False,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        fixer, "run_apply",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("default CLI called apply")
+        ),
+    )
+
+    assert fixer.main([
+        "--database-url-env", "T34B_TEST_URL",
+        "--ability-db", str(tmp_path / "ability.db"),
+        "--output-dir", str(tmp_path),
+    ]) == 0
     assert calls == ["dispose"]
 
 
@@ -808,6 +1397,38 @@ def test_truth_postcheck_requires_one_complete_matching_retained_row(
         fixer._verify_truth_poststate(object(), plan, [_truth()])
 
 
+def test_truth_postcheck_validates_delete_keeper_not_mismatching_delete_target(
+        monkeypatch):
+    keeper = _row(ctid="(7,1)")
+    delete_target = _row(weight=501, ctid="(7,2)")
+    plan = fixer.build_operation_plan([delete_target, keeper], [_truth()])
+    assert sorted(_classifications(plan)) == [
+        "DELETE_REDUNDANT_ERROR", "KEEP_CURRENT",
+    ]
+
+    fetched_targets = []
+    compared_rows = []
+    original_compare = fixer.compare_payload
+
+    def fake_fetch(connection, targets):
+        fetched_targets.extend(targets)
+        return [keeper]
+
+    def recording_compare(row, truth):
+        compared_rows.append(row)
+        return original_compare(row, truth)
+
+    monkeypatch.setattr(fixer, "_fetch_target_rows", fake_fetch)
+    monkeypatch.setattr(fixer, "compare_payload", recording_compare)
+    # The DELETE target is deliberately veto-inconsistent.  Only its verified
+    # keeper is a truth-postcheck subject under v2.3.4.
+    fixer._verify_truth_poststate(object(), plan, [_truth()])
+    assert fetched_targets == [("250105", "東京", 1, 3)]
+    assert [fixer.logical_row_fingerprint(row) for row in compared_rows] == [
+        fixer.logical_row_fingerprint(keeper)
+    ]
+
+
 def test_runtime_database_identity_is_sanitized_and_normalizes_neon_pooler():
     class FakeResult:
         def mappings(self):
@@ -888,6 +1509,10 @@ def test_dry_run_marks_global_duplicates_outside_2025_scope_not_applicable(
     monkeypatch.setattr(fixer, "_database_identity", lambda connection: {"database_name": "fixture"})
     monkeypatch.setattr(fixer, "_fetch_race_columns", lambda connection: [])
     monkeypatch.setattr(fixer, "fetch_target_closure", lambda connection, truth: ([], []))
+    monkeypatch.setattr(
+        fixer, "_fetch_manual_fix_gate_rows",
+        lambda connection: _manual_fix_rows(),
+    )
     # One global duplicate group exists, but the 2025 candidate query found none.
     monkeypatch.setattr(fixer, "_count_scoped_duplicate_groups", lambda connection: 1)
     monkeypatch.setattr(fixer, "_timestamped_dir", lambda base, label: tmp_path / label)
@@ -912,14 +1537,18 @@ def test_dry_run_marks_global_duplicates_outside_2025_scope_not_applicable(
 def test_apply_noop_rechecks_ability_hash_before_commit(monkeypatch, tmp_path):
     approved_manifest_hash = "b" * 64
     approved_plan_hash = "c" * 64
+    approved_gate = fixer.evaluate_manual_fix_gate(_manual_fix_rows())
     approved_plan = {
-        "status": "APPLICABLE", "plan_sha256": approved_plan_hash,
+        "version": 3, "status": "NO_MUTATIONS_NEEDED",
+        "plan_sha256": approved_plan_hash, "operations": [],
     }
     approved_manifest = {
-        "applicable": True, "plan_sha256": approved_plan_hash,
+        "format_version": 3, "plan_status": "NO_MUTATIONS_NEEDED",
+        "applicable": False, "plan_sha256": approved_plan_hash,
         "mode": "dry-run",
         "ability": {"sha256": "stable"},
         "database": {"database_name": "fixture"},
+        "manual_fix_gate": approved_gate,
     }
     identities = iter([
         {"sha256": "stable"},
@@ -975,7 +1604,7 @@ def test_apply_noop_rechecks_ability_hash_before_commit(monkeypatch, tmp_path):
         lambda *args, **kwargs: {"applicable": True, "plan_sha256": "noop"},
     )
 
-    with pytest.raises(fixer.SafetyError, match="ability.db changed"):
+    with pytest.raises(fixer.SafetyError, match=r"ability\.db (?:hash )?changed"):
         fixer.run_apply(
             FakeEngine(), tmp_path / "ability.db", tmp_path,
             tmp_path / "manifest.json", approved_manifest_hash,
@@ -985,23 +1614,123 @@ def test_apply_noop_rechecks_ability_hash_before_commit(monkeypatch, tmp_path):
     assert transaction.rolled_back is True
 
 
-def test_apply_noop_verifies_approved_truth_poststate_before_commit(
+@pytest.mark.parametrize(
+    ("current_rows", "message"),
+    [
+        (lambda rows: rows[:-1], "not satisfied"),
+        (lambda rows: [{**rows[0], "rank": 1}, *rows[1:]], "differs"),
+    ],
+)
+def test_apply_rechecks_manual_gate_under_lock_before_backup_or_mutation(
+        monkeypatch, tmp_path, current_rows, message):
+    approved_manifest_hash = "b" * 64
+    candidate = _row(horse="NO_TRUTH", ctid="(13,0)")
+    candidate["__candidate_reasons__"] = ["c"]
+    approved_gate = fixer.evaluate_manual_fix_gate(_manual_fix_rows())
+    approved_plan = fixer.build_operation_plan(
+        [candidate], [], manual_fix_gate=approved_gate,
+    )
+    approved_plan_hash = approved_plan["plan_sha256"]
+    approved_manifest = {
+        "format_version": 3, "plan_status": "NO_MUTATIONS_NEEDED",
+        "applicable": False, "plan_sha256": approved_plan_hash,
+        "mode": "dry-run", "ability": {"sha256": "stable"},
+        "database": {"database_name": "fixture"},
+        "manual_fix_gate": approved_gate,
+    }
+    sql_calls = []
+
+    class FakeTransaction:
+        committed = False
+        rolled_back = False
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            self.rolled_back = True
+
+    transaction = FakeTransaction()
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def begin(self):
+            return transaction
+
+        def execute(self, statement, params=None):
+            sql_calls.append(str(statement))
+            return object()
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+    monkeypatch.setattr(
+        fixer, "validate_bundle",
+        lambda path, *, approved_manifest_sha256: (approved_manifest, approved_plan),
+    )
+    monkeypatch.setattr(fixer, "ability_identity", lambda path: {"sha256": "stable"})
+    monkeypatch.setattr(fixer, "load_ability_truth", lambda path: [])
+    monkeypatch.setattr(fixer, "_database_identity", lambda connection: {"database_name": "fixture"})
+    monkeypatch.setattr(fixer, "_fetch_race_columns", lambda connection: [])
+    monkeypatch.setattr(fixer, "_count_table_rows", lambda connection: 1)
+    monkeypatch.setattr(
+        fixer, "fetch_target_closure",
+        lambda connection, truth: ([dict(candidate)], []),
+    )
+    monkeypatch.setattr(
+        fixer, "_fetch_manual_fix_gate_rows",
+        lambda connection: current_rows(_manual_fix_rows()),
+    )
+    monkeypatch.setattr(
+        fixer, "write_bundle",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("manual gate failure reached backup")
+        ),
+    )
+    monkeypatch.setattr(
+        fixer, "_apply_operations",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("manual gate failure reached mutation")
+        ),
+    )
+
+    with pytest.raises(fixer.SafetyError, match=message):
+        fixer.run_apply(
+            FakeEngine(), tmp_path / "ability.db", tmp_path,
+            tmp_path / "manifest.json", approved_manifest_hash,
+            approved_plan_hash, writer_stopped=True,
+        )
+
+    assert any("LOCK TABLE public.races" in statement for statement in sql_calls)
+    assert transaction.committed is False
+    assert transaction.rolled_back is True
+
+
+def test_apply_no_mutations_commits_without_catalog_guard_or_mutation(
         monkeypatch, tmp_path):
     approved_manifest_hash = "b" * 64
-    approved_plan_hash = "c" * 64
-    approved_plan = {
-        "status": "APPLICABLE", "plan_sha256": approved_plan_hash,
-        "classifications": [{"classification": "KEEP_CURRENT", "truth": {
-            "date": "20250105", "place": "東京", "r": 1,
-            "umaban": 3, "horse": "A",
-        }}],
-    }
+    candidate = _row(horse="NO_TRUTH", ctid="(13,1)")
+    candidate["__candidate_reasons__"] = ["c"]
+    gate = fixer.evaluate_manual_fix_gate(_manual_fix_rows())
+    approved_plan = fixer.build_operation_plan(
+        [candidate], [], manual_fix_gate=gate,
+    )
+    assert approved_plan["status"] == "NO_MUTATIONS_NEEDED"
+    approved_plan_hash = approved_plan["plan_sha256"]
     approved_manifest = {
-        "applicable": True, "plan_sha256": approved_plan_hash,
-        "mode": "dry-run",
-        "ability": {"sha256": "stable"},
+        "format_version": 3, "plan_status": "NO_MUTATIONS_NEEDED",
+        "applicable": False, "plan_sha256": approved_plan_hash,
+        "mode": "dry-run", "ability": {"sha256": "stable"},
         "database": {"database_name": "fixture"},
+        "manual_fix_gate": gate,
     }
+    calls = []
 
     class FakeResult:
         pass
@@ -1029,6 +1758,7 @@ def test_apply_noop_verifies_approved_truth_poststate_before_commit(
             return transaction
 
         def execute(self, statement, params=None):
+            calls.append(str(statement))
             return FakeResult()
 
     class FakeEngine:
@@ -1039,34 +1769,55 @@ def test_apply_noop_verifies_approved_truth_poststate_before_commit(
         fixer, "validate_bundle",
         lambda path, *, approved_manifest_sha256: (approved_manifest, approved_plan),
     )
-    monkeypatch.setattr(
-        fixer, "ability_identity", lambda path: {"sha256": "stable"}
-    )
-    monkeypatch.setattr(fixer, "load_ability_truth", lambda path: [_truth()])
+    monkeypatch.setattr(fixer, "ability_identity", lambda path: {"sha256": "stable"})
+    monkeypatch.setattr(fixer, "load_ability_truth", lambda path: [])
     monkeypatch.setattr(fixer, "_database_identity", lambda connection: {"database_name": "fixture"})
     monkeypatch.setattr(fixer, "_fetch_race_columns", lambda connection: [])
-    monkeypatch.setattr(fixer, "_count_table_rows", lambda connection: 0)
-    monkeypatch.setattr(fixer, "fetch_target_closure", lambda connection, truth: ([], []))
+    monkeypatch.setattr(fixer, "_count_table_rows", lambda connection: 1)
+    monkeypatch.setattr(
+        fixer, "fetch_target_closure",
+        lambda connection, truth: ([dict(candidate)], []),
+    )
+    monkeypatch.setattr(
+        fixer, "_fetch_manual_fix_gate_rows",
+        lambda connection: _manual_fix_rows(),
+    )
     monkeypatch.setattr(fixer, "_count_scoped_duplicate_groups", lambda connection: 0)
     monkeypatch.setattr(
-        fixer, "_verify_truth_poststate",
-        lambda connection, plan, truth: (_ for _ in ()).throw(
-            fixer.SafetyError("approved truth poststate is absent")
+        fixer, "_assert_no_covering_natural_key_unique",
+        lambda connection: (_ for _ in ()).throw(
+            AssertionError("NO_MUTATIONS_NEEDED performed the catalog guard")
         ),
     )
     monkeypatch.setattr(
+        fixer, "_apply_operations",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("NO_MUTATIONS_NEEDED attempted a mutation")
+        ),
+    )
+    monkeypatch.setattr(
+        fixer, "_verify_nonmutation_poststate",
+        lambda connection, plan: calls.append("verified-nonmutation"),
+    )
+    monkeypatch.setattr(fixer, "_timestamped_dir", lambda base, label: tmp_path / label)
+    monkeypatch.setattr(
         fixer, "write_bundle",
-        lambda *args, **kwargs: {"applicable": True, "plan_sha256": "noop"},
+        lambda *args, **kwargs: {
+            "applicable": False, "plan_status": "NO_MUTATIONS_NEEDED",
+            "plan_sha256": approved_plan_hash,
+        },
     )
 
-    with pytest.raises(fixer.SafetyError, match="truth poststate is absent"):
-        fixer.run_apply(
-            FakeEngine(), tmp_path / "ability.db", tmp_path,
-            tmp_path / "manifest.json", approved_manifest_hash,
-            approved_plan_hash, writer_stopped=True,
-        )
-    assert transaction.committed is False
-    assert transaction.rolled_back is True
+    fixer.run_apply(
+        FakeEngine(), tmp_path / "ability.db", tmp_path,
+        tmp_path / "manifest.json", approved_manifest_hash,
+        approved_plan_hash, writer_stopped=True,
+    )
+
+    assert transaction.committed is True
+    assert transaction.rolled_back is False
+    assert "verified-nonmutation" in calls
+    assert any("LOCK TABLE public.races" in statement for statement in calls)
 
 
 def test_cli_catches_sqlalchemy_error_without_printing_secret_url(

@@ -1,7 +1,14 @@
--- SPEC-T34b read-only postcheck.  Run only after the index creation command
--- returns successfully (or preflight reports POSTCHECK_ONLY).
+-- SPEC-T34b rollback-only postcheck.  Run only after the index creation
+-- command returns successfully (or preflight reports POSTCHECK_ONLY).
+--
+-- This transaction deliberately executes the real ON CONFLICT path against
+-- one existing complete-key row, verifies that two upserts still converge to
+-- one unchanged logical row, and always rolls the smoke operation back.
+-- Keep every public.races writer stopped for the whole migration sequence.
 
-BEGIN TRANSACTION READ ONLY;
+BEGIN;
+
+LOCK TABLE public.races IN SHARE ROW EXCLUSIVE MODE;
 
 DO $t34b_postcheck$
 DECLARE
@@ -103,17 +110,95 @@ BEGIN
 END
 $t34b_postcheck$;
 
--- Planning this statement is a non-mutating smoke check of PostgreSQL's
--- partial-index inference.  EXPLAIN without ANALYZE never executes the INSERT.
-EXPLAIN (COSTS OFF)
-INSERT INTO public.races (date, place, race_num, horse_number)
-VALUES (NULL, NULL, NULL, NULL)
-ON CONFLICT (date, place, race_num, horse_number)
-WHERE date IS NOT NULL
-  AND place IS NOT NULL
-  AND race_num IS NOT NULL
-  AND horse_number IS NOT NULL
-DO UPDATE SET date = EXCLUDED.date;
+DO $t34b_upsert_smoke$
+DECLARE
+    sample_date public.races.date%TYPE;
+    sample_place public.races.place%TYPE;
+    sample_race_num public.races.race_num%TYPE;
+    sample_horse_number public.races.horse_number%TYPE;
+    before_count BIGINT;
+    after_count BIGINT;
+    before_row JSONB;
+    after_row JSONB;
+    smoke_iteration INTEGER;
+BEGIN
+    SELECT r.date,
+           r.place,
+           r.race_num,
+           r.horse_number,
+           to_jsonb(r)
+      INTO sample_date,
+           sample_place,
+           sample_race_num,
+           sample_horse_number,
+           before_row
+      FROM public.races AS r
+     WHERE r.date IS NOT NULL
+       AND r.place IS NOT NULL
+       AND r.race_num IS NOT NULL
+       AND r.horse_number IS NOT NULL
+     ORDER BY r.date, r.place, r.race_num, r.horse_number
+     LIMIT 1;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION USING
+            MESSAGE = 'T34b postcheck failed: no complete-key row is available for the rollback smoke test',
+            HINT = 'Verify the target table and run an explicitly approved synthetic smoke test before enabling writers.';
+    END IF;
+
+    SELECT COUNT(*)
+      INTO before_count
+      FROM public.races AS r
+     WHERE r.date = sample_date
+       AND r.place = sample_place
+       AND r.race_num = sample_race_num
+       AND r.horse_number = sample_horse_number;
+
+    IF before_count IS DISTINCT FROM 1 THEN
+        RAISE EXCEPTION 'T34b postcheck failed: smoke key has % rows before upsert',
+            before_count;
+    END IF;
+
+    -- Clone the complete existing row so table-level NOT NULL constraints are
+    -- preserved.  The natural-key conflict must route both attempts to the
+    -- same existing row; no INSERT may survive this transaction.
+    FOR smoke_iteration IN 1..2 LOOP
+        INSERT INTO public.races
+        SELECT r.*
+          FROM public.races AS r
+         WHERE r.date = sample_date
+           AND r.place = sample_place
+           AND r.race_num = sample_race_num
+           AND r.horse_number = sample_horse_number
+         LIMIT 1
+        ON CONFLICT (date, place, race_num, horse_number)
+        WHERE date IS NOT NULL
+          AND place IS NOT NULL
+          AND race_num IS NOT NULL
+          AND horse_number IS NOT NULL
+        DO UPDATE SET date = EXCLUDED.date;
+    END LOOP;
+
+    SELECT COUNT(*), MIN(to_jsonb(r)::TEXT)::JSONB
+      INTO after_count, after_row
+      FROM public.races AS r
+     WHERE r.date = sample_date
+       AND r.place = sample_place
+       AND r.race_num = sample_race_num
+       AND r.horse_number = sample_horse_number;
+
+    IF after_count IS DISTINCT FROM 1 THEN
+        RAISE EXCEPTION 'T34b postcheck failed: repeated upsert converged to % rows',
+            after_count;
+    END IF;
+
+    IF after_row IS DISTINCT FROM before_row THEN
+        RAISE EXCEPTION USING
+            MESSAGE = 'T34b postcheck failed: rollback smoke test changed logical row values',
+            HINT = 'Keep writers stopped and inspect public.races triggers and the conflict action.';
+    END IF;
+END
+$t34b_upsert_smoke$;
 
 SELECT i.indisunique,
        i.indisvalid,
@@ -123,4 +208,6 @@ SELECT i.indisunique,
   FROM pg_catalog.pg_index AS i
  WHERE i.indexrelid = 'public.uq_races_natural_key'::regclass;
 
-COMMIT;
+-- The smoke test is intentionally non-persistent, including any trigger side
+-- effects and row-version change caused by DO UPDATE.
+ROLLBACK;

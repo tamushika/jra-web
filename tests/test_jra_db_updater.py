@@ -273,6 +273,7 @@ def test_partial_index_migrations_are_split_and_do_not_restore_global_not_null()
 
     normalized_preflight = " ".join(preflight.split()).lower()
     normalized_postcheck = " ".join(postcheck.split()).lower()
+    assert "begin transaction read only" in normalized_preflight
     assert "having count(*) > 1" in normalized_preflight
     assert "indisunique" in normalized_preflight
     assert "indisvalid" in normalized_preflight
@@ -281,6 +282,19 @@ def test_partial_index_migrations_are_split_and_do_not_restore_global_not_null()
     assert "indisunique" in normalized_postcheck
     assert "indisvalid" in normalized_postcheck
     assert "indisready" in normalized_postcheck
+    assert "lock table public.races in share row exclusive mode" in normalized_postcheck
+    assert "for smoke_iteration in 1..2 loop" in normalized_postcheck
+    assert "insert into public.races select r.*" in normalized_postcheck
+    assert (
+        "on conflict (date, place, race_num, horse_number) "
+        "where date is not null and place is not null "
+        "and race_num is not null and horse_number is not null"
+    ) in normalized_postcheck
+    assert "after_count is distinct from 1" in normalized_postcheck
+    assert "after_row is distinct from before_row" in normalized_postcheck
+    assert "rollback" in normalized_postcheck
+    assert "commit" not in normalized_postcheck
+    assert "explain" not in normalized_postcheck
 
     updater_source = inspect.getsource(updater.insert_into_db)
     for filename in (
