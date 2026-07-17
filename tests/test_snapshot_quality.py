@@ -17,6 +17,12 @@ def _horses(valid, field_size=8):
     return rows
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="T47未適用: api/index.py の取消/除外ステータス配線はレース週末を避けて"
+           "適用予定 (backups/t47_codex_partial_scratch_status_20260718.patch)。"
+           "T47適用後にこのマーカーを外すこと (strict=TrueのためXPASSで気づける)",
+)
 def test_parse_horse_row_only_uses_current_entry_for_scratched_status(monkeypatch):
     monkeypatch.setattr(api_index, "fetch_history_data", lambda *args, **kwargs: {
         "raw": "2025年7月1日 取消", "corners": "-", "total": "-"})

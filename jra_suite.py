@@ -49,6 +49,12 @@ _SECTIONS = (
      "loop": None},
 )
 
+# タブバー用ラベル (SPEC-T38 §5b: ループ生存バッジをタブバー内に統合)
+_LOOP_BADGE_LABELS = {
+    "ev-scheduler-loop": "オッズ監視ループ",
+    "win5-watch-loop": "WIN5監視ループ",
+}
+
 _EV_LOOP_THREAD_NAME = "jra-suite-ev-scheduler-loop"
 _WIN5_LOOP_THREAD_NAME = "jra-suite-win5-watch-loop"
 _LOOP_THREAD_NAMES = {"ev-scheduler-loop": _EV_LOOP_THREAD_NAME,
@@ -122,51 +128,126 @@ def _loop_alive(thread_name):
     return any(t.name == thread_name and t.is_alive() for t in threading.enumerate())
 
 
-# ─── ポータル ────────────────────────────────────────────────────────────────
+# ─── ポータル (SPEC-T38 §5b: iframeタブシェル) ──────────────────────────────
+# 「リンク集」から「タブシェル」へ変更 (2026-07-18 追補)。
+#   - 上部固定タブバー (3タブ + ループ生存バッジ)
+#   - 下部に same-origin iframe を3枚。切替は display (CSSクラス) のみで
+#     行い、iframeはアンマウントしない → 各アプリのクライアント側状態
+#     (WIN5解析結果グリッド等) が切替後も保持される
+#   - iframeは初回アクティブ化時に data-src → src へ差し替えて遅延ロードする
+#   - アクティブタブは URLハッシュ (#ev/#win5/#perf) + localStorage に永続化
+#   - 各アプリのHTML/JS/Pythonロジックは変更しない (シェルのみで実現)
 _PORTAL_TEMPLATE = """<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
 <title>JRA予想スイート</title>
 <style>
-  body { font-family: -apple-system, "Segoe UI", "Hiragino Sans", sans-serif;
-         max-width: 720px; margin: 40px auto; padding: 0 16px; color: #222; }
-  h1 { font-size: 1.4em; }
-  .card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 12px 0; }
-  .card a { font-size: 1.15em; font-weight: bold; text-decoration: none; color: #0a5; }
-  .card p { margin: 6px 0 0; color: #555; }
-  .loop { display: inline-block; margin-top: 8px; font-size: 0.85em; padding: 2px 8px;
-          border-radius: 10px; }
-  .loop.alive { background: #e6f7ea; color: #1a7a34; }
-  .loop.dead { background: #f7e6e6; color: #a31a1a; }
-  footer { margin-top: 24px; font-size: 0.85em; color: #888; }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
+               font-family: -apple-system, "Segoe UI", "Hiragino Sans", sans-serif; }
+  #tabbar { box-sizing: border-box; height: 48px; flex: 0 0 48px; display: flex;
+            align-items: center; background: #222; color: #eee; padding: 0 8px; }
+  #tabbar .tab { cursor: pointer; user-select: none; padding: 0 18px; height: 48px;
+                 line-height: 48px; color: #bbb; font-size: 0.95em; white-space: nowrap; }
+  #tabbar .tab.active { color: #fff; background: #0a5; font-weight: bold; }
+  #tabbar .spacer { flex: 1 1 auto; }
+  #tabbar .loop-badge { display: inline-block; margin-left: 8px; font-size: 0.8em;
+                         padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+  #tabbar .loop-badge.alive { background: #e6f7ea; color: #1a7a34; }
+  #tabbar .loop-badge.dead { background: #f7e6e6; color: #a31a1a; }
+  #shell { display: flex; flex-direction: column; height: 100%; }
+  #frames { position: relative; flex: 1 1 auto; min-height: 0; }
+  #frames iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+                    border: none; display: none; }
+  #frames iframe.active { display: block; }
 </style>
 </head>
 <body>
-<h1>JRA予想スイート (統合版, port {{ port }})</h1>
-<p>3アプリを単一プロセスで動かしています。旧ポート (5002/5003/5004) は使用しません。</p>
-{% for s in sections %}
-<div class="card">
-  <a href="/{{ s.prefix }}/">{{ s.title }}</a>
-  <p>{{ s.desc }}</p>
-  {% if s.loop %}
-  <span class="loop {{ 'alive' if s.alive else 'dead' }}">
-    バックグラウンドループ: {{ '稼働中' if s.alive else '未起動 (該当機能を使うと自動起動)' }}
-  </span>
-  {% endif %}
+<div id="shell">
+  <div id="tabbar">
+    {% for t in tabs %}
+    <div class="tab" data-tab="{{ t.prefix }}" role="tab">{{ t.title }}</div>
+    {% endfor %}
+    <div class="spacer"></div>
+    {% for b in loop_badges %}
+    <span class="loop-badge {{ 'alive' if b.alive else 'dead' }}" data-loop="{{ b.loop }}">
+      {{ b.label }}: {{ '稼働中' if b.alive else '未起動' }}
+    </span>
+    {% endfor %}
+  </div>
+  <div id="frames">
+    {% for t in tabs %}
+    <iframe id="frame-{{ t.prefix }}" data-tab="{{ t.prefix }}" data-src="/{{ t.prefix }}/" title="{{ t.title }}"></iframe>
+    {% endfor %}
+  </div>
 </div>
-{% endfor %}
-<footer>SPEC-T38 (jra-web/docs/codex/SPEC-T38-app-consolidation.md)</footer>
+<script>
+(function () {
+  "use strict";
+  var TABS = [{% for t in tabs %}"{{ t.prefix }}"{{ ", " if not loop.last else "" }}{% endfor %}];
+  var DEFAULT_TAB = "ev";
+  var STORAGE_KEY = "jra_suite_active_tab";
+
+  function readInitialTab() {
+    var hashTab = (window.location.hash || "").replace(/^#/, "");
+    if (TABS.indexOf(hashTab) !== -1) { return hashTab; }
+    var stored = null;
+    try { stored = window.localStorage.getItem(STORAGE_KEY); } catch (e) { stored = null; }
+    if (TABS.indexOf(stored) !== -1) { return stored; }
+    return DEFAULT_TAB;
+  }
+
+  function activateTab(name) {
+    if (TABS.indexOf(name) === -1) { name = DEFAULT_TAB; }
+    TABS.forEach(function (prefix) {
+      var iframe = document.getElementById("frame-" + prefix);
+      var tabEl = document.querySelector('.tab[data-tab="' + prefix + '"]');
+      var isActive = (prefix === name);
+      if (iframe) {
+        // 遅延ロード: 初めてアクティブになった時だけ data-src を src に反映する。
+        if (isActive && !iframe.getAttribute("src")) {
+          iframe.setAttribute("src", iframe.getAttribute("data-src"));
+        }
+        // アンマウントせず display 切替のみ (クライアント状態を保持するため)。
+        iframe.classList.toggle("active", isActive);
+      }
+      if (tabEl) { tabEl.classList.toggle("active", isActive); }
+    });
+    try { window.localStorage.setItem(STORAGE_KEY, name); } catch (e) { /* noop */ }
+    if ((window.location.hash || "").replace(/^#/, "") !== name) {
+      window.location.hash = name;
+    }
+  }
+
+  document.querySelectorAll("#tabbar .tab").forEach(function (tabEl) {
+    tabEl.addEventListener("click", function () {
+      activateTab(tabEl.getAttribute("data-tab"));
+    });
+  });
+
+  window.addEventListener("hashchange", function () {
+    activateTab((window.location.hash || "").replace(/^#/, ""));
+  });
+
+  activateTab(readInitialTab());
+})();
+</script>
 </body>
 </html>
 """
 
 
-def _portal_sections():
+def _portal_tabs():
+    return [{"prefix": s["prefix"], "title": s["title"]} for s in _SECTIONS]
+
+
+def _portal_loop_badges():
     out = []
     for s in _SECTIONS:
-        alive = _loop_alive(_LOOP_THREAD_NAMES[s["loop"]]) if s["loop"] else None
-        out.append({**s, "alive": alive})
+        if not s["loop"]:
+            continue
+        alive = _loop_alive(_LOOP_THREAD_NAMES[s["loop"]])
+        out.append({"loop": s["loop"], "label": _LOOP_BADGE_LABELS[s["loop"]], "alive": alive})
     return out
 
 
@@ -189,7 +270,8 @@ def create_app():
     @app.route("/")
     def portal():
         return render_template_string(_PORTAL_TEMPLATE, port=PORT,
-                                      sections=_portal_sections())
+                                      tabs=_portal_tabs(),
+                                      loop_badges=_portal_loop_badges())
 
     return app
 

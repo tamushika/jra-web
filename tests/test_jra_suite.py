@@ -186,3 +186,73 @@ def test_ev_blueprint_registered_under_ev_name():
     assert jra_ev.bp.name == "ev"
     assert jra_win5.bp.name == "win5"
     assert jra_perf.bp.name == "perf"
+
+
+# ─── §5b追補: iframeタブシェル ─────────────────────────────────────────────
+# 対応する仕様: docs/codex/SPEC-T38-app-consolidation.md §5b
+#   - 上部固定タブバー (3タブ + ループ生存バッジ)
+#   - 3つのsame-origin iframe。切替はdisplay切替のみ (アンマウントしない)
+#   - iframeは初回アクティブ化時に遅延ロード (data-src → src)
+#   - アクティブタブはURLハッシュ + localStorageに永続化、既定は#ev
+
+@pytest.fixture()
+def portal_html(suite_client):
+    resp = suite_client.get("/")
+    assert resp.status_code == 200
+    return resp.data.decode("utf-8")
+
+
+def test_portal_has_fixed_tab_bar_with_three_tabs(portal_html):
+    assert 'id="tabbar"' in portal_html
+    for prefix in ("ev", "win5", "perf"):
+        assert f'data-tab="{prefix}"' in portal_html
+    assert "オッズ監視" in portal_html
+    assert "WIN5予想" in portal_html
+    assert "実績ダッシュボード" in portal_html
+
+
+def test_portal_has_three_lazy_load_iframes(portal_html):
+    # src属性は初回アクティブ化までセットしない (遅延ロード)。data-srcに
+    # 正しいsame-origin prefixを持たせる。
+    for prefix in ("ev", "win5", "perf"):
+        assert f'id="frame-{prefix}"' in portal_html
+        assert f'data-src="/{prefix}/"' in portal_html
+    # 起動直後は3アプリ同時ポーリングを避けるため、data-srcとは別にsrc=を
+    # 直接埋め込んでいないことを確認する (data-src="..." のsrc="..."部分の
+    # 前方一致は除く)。
+    import re
+    assert re.search(r'(?<!data-)src="/(ev|win5|perf)/"', portal_html) is None
+
+
+def test_portal_has_hash_and_localstorage_persistence_js(portal_html):
+    assert "location.hash" in portal_html
+    assert "localStorage" in portal_html
+    assert "getItem" in portal_html
+    assert "setItem" in portal_html
+    assert "jra_suite_active_tab" in portal_html
+    assert 'DEFAULT_TAB = "ev"' in portal_html
+
+
+def test_portal_switch_is_display_toggle_not_unmount(portal_html):
+    # クライアント側状態保持のため、切替はCSSクラス (display) 切替のみで
+    # あることをJSソースから確認する (iframeの削除/再生成が無い)。
+    assert "classList.toggle" in portal_html
+    assert "removeChild" not in portal_html
+    assert ".remove()" not in portal_html
+    assert "iframe.active" in portal_html or "#frames iframe.active" in portal_html
+
+
+def test_portal_retains_loop_alive_badges(portal_html):
+    assert 'data-loop="ev-scheduler-loop"' in portal_html
+    assert 'data-loop="win5-watch-loop"' in portal_html
+    assert "loop-badge" in portal_html
+
+
+def test_standalone_blueprint_access_still_works_outside_shell(suite_client):
+    # SPEC §5b: /ev/ 等への直接アクセスは従来どおり動作する (シェル外表示)。
+    resp = suite_client.get("/ev/")
+    assert resp.status_code == 200
+    resp = suite_client.get("/win5/")
+    assert resp.status_code == 200
+    resp = suite_client.get("/perf/")
+    assert resp.status_code == 200
