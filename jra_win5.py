@@ -16,9 +16,8 @@ import os
 import re
 import sys
 import threading
-import webbrowser
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Blueprint, Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -29,16 +28,20 @@ import scoring  # noqa: E402
 from scoring import VENUE_SLUG_MAP  # noqa: E402
 from index import analyze_race_url, _scrape_win5_target, _find_win5_urls  # noqa: E402
 from logging_store import LoggingStore, config_hash  # noqa: E402
-from port_guard import ensure_port_free  # noqa: E402
+from api.port_guard import ensure_port_free  # noqa: E402
 from prediction_logging import log_race_prediction  # noqa: E402
 
 PORT = 5002
 
 app = Flask(__name__, static_folder=BASE_DIR, static_url_path="/")
 CORS(app)
+# T38: ルートはBlueprint (bp) に定義し、末尾で app.register_blueprint(bp) して
+# standalone実行では従来どおりprefix無しで動く。統合エントリ (jra_suite.py) は
+# 同じbpを "/win5" prefixでマウントする (SPEC-T38 §3.1)。
+bp = Blueprint("win5", __name__)
 
 
-@app.route("/")
+@bp.route("/")
 def serve_index():
     return send_from_directory(BASE_DIR, "index_win5.html")
 
@@ -135,7 +138,7 @@ def _fill_missing_from_siblings(races, url_map, date8):
     return url_map
 
 
-@app.route("/api/win5_races", methods=["GET"])
+@bp.route("/api/win5_races", methods=["GET"])
 def win5_races():
     """WIN5対象5レースの取得 + カードURL解決 (web版と同形状 + 兄弟レース補完)"""
     try:
@@ -159,7 +162,7 @@ def analyze_one_core(idx, url):
     return _analyze_one_body(idx, url, result)
 
 
-@app.route("/api/win5_analyze_one", methods=["POST"])
+@bp.route("/api/win5_analyze_one", methods=["POST"])
 def win5_analyze_one():
     """1レースを解析し WIN5用スコアを付与して返す (フロントが5回呼ぶ)"""
     data = request.json or {}
@@ -226,7 +229,7 @@ def _analyze_one_body(idx, url, result):
         return output
 
 
-@app.route("/api/win5_kaime", methods=["POST"])
+@bp.route("/api/win5_kaime", methods=["POST"])
 def win5_kaime():
     """5レースのスコア + 荒れランク + 点数上限 → 買い目配分。
     MLモデルが conditional logit の場合は「レース固有のsoftmax勝率」で配分
@@ -409,7 +412,7 @@ def _watch_loop():
                 WATCH["error"] = str(e)
 
 
-@app.route("/api/win5_watch", methods=["POST"])
+@bp.route("/api/win5_watch", methods=["POST"])
 def win5_watch_arm():
     """締切15分前の自動再計算を予約。body: {urls[5], first_time "HH:MM", points, single_axis}"""
     data = request.json or {}
@@ -432,7 +435,7 @@ def win5_watch_arm():
     return jsonify({"success": True, "first_time": first_time})
 
 
-@app.route("/api/win5_watch")
+@bp.route("/api/win5_watch")
 def win5_watch_state():
     with _WATCH_LOCK:
         return jsonify({k: WATCH[k] for k in
@@ -441,14 +444,20 @@ def win5_watch_state():
 
 # ─── 起動 ────────────────────────────────────────────────────────────────────
 
+# standalone実行時 (このモジュールを直接importしてapp.run()する場合や、テストで
+# app.test_client()を使う場合) に従来どおりprefix無しでルートが解決できるよう、
+# bpをこのモジュール自身のappにも登録しておく (SPEC-T38 §3.1)。
+app.register_blueprint(bp)
+
+
 if __name__ == "__main__":
-    ensure_port_free(PORT, "WIN5予想サーバー")
-    url = f"http://localhost:{PORT}"
-    print("=" * 55)
-    print("  WIN5予想 (スコアリング + 荒れ度配分)")
-    print("=" * 55)
-    print(f"  URL: {url}")
-    print("  終了: Ctrl+C")
-    print("-" * 55)
-    threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    app.run(port=PORT, debug=False)
+    # T38: 統合版 jra_suite.py (port 5005) に統合されたため、直接起動は案内のみ表示して
+    # 終了する (締切前自動再スコアの二重実行を防ぐため)。関数群はjra_suite.pyから
+    # importして使われる。
+    print(
+        "[案内] jra_win5.py は統合版 jra_suite.py (port 5005) に統合されました。\n"
+        "  python jra_suite.py で起動してください (または start_suite.bat)。\n"
+        "  このファイルを直接起動すると監視の二重実行が起きる可能性があるため停止しました。",
+        file=sys.stderr,
+    )
+    sys.exit(1)

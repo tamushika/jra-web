@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -21,7 +21,7 @@ def scalar(store, sql):
 
 
 def test_initialize_is_one_command_and_enables_wal(store):
-    assert scalar(store, "SELECT count(*) FROM schema_migrations") == 7
+    assert scalar(store, "SELECT count(*) FROM schema_migrations") == 8
     with sqlite3.connect(store.db_path) as conn:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 
@@ -83,6 +83,70 @@ def test_odds_idempotency_and_missing_odds_remain_null(store):
         odds, flags = conn.execute("SELECT win_odds,data_quality_flags_json FROM odds_snapshots").fetchone()
     assert odds is None
     assert json.loads(flags) == ["win_odds_unavailable"]
+
+
+def test_snapshot_quality_columns_are_written_in_new_database(store):
+    jst = timezone(timedelta(hours=9))
+    store.save_odds([{
+        "idempotency_key": "snapshot:r1:h1:30",
+        "race_id": "r1",
+        "horse_id": "h1",
+        "observed_at": datetime(2026, 7, 17, 11, 30, tzinfo=jst),
+        "scheduled_post_at": datetime(2026, 7, 17, 12, 0, tzinfo=jst),
+        "seconds_to_post": 1800.0,
+        "fetch_duration_ms": 321,
+        "valid_odds_count": 12,
+        "field_size": 14,
+        "stage": 30,
+    }])
+    with sqlite3.connect(store.db_path) as conn:
+        row = conn.execute("""SELECT scheduled_post_at,seconds_to_post,fetch_duration_ms,
+            valid_odds_count,field_size,stage FROM odds_snapshots""").fetchone()
+    assert row == (
+        "2026-07-17T12:00:00.000000+09:00", 1800.0, 321, 12, 14, "30")
+
+
+def test_snapshot_quality_columns_are_migrated_into_old_database(tmp_path):
+    db_path = tmp_path / "old-odds.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""CREATE TABLE odds_snapshots (
+            odds_snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            race_id TEXT NOT NULL,
+            horse_id TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            source_updated_at TEXT,
+            win_odds REAL,
+            place_odds_low REAL,
+            place_odds_high REAL,
+            popularity INTEGER,
+            source TEXT NOT NULL,
+            fetch_id TEXT,
+            is_stale INTEGER NOT NULL DEFAULT 0,
+            data_quality_flags_json TEXT
+        )""")
+
+    migrated = LoggingStore(db_path)
+    migrated.initialize()
+    with sqlite3.connect(db_path) as conn:
+        columns = {
+            row[1]: row[2] for row in conn.execute("PRAGMA table_info(odds_snapshots)")
+        }
+    assert columns["stage"] == "TEXT"
+    assert columns["scheduled_post_at"] == "TEXT"
+    assert columns["seconds_to_post"] == "REAL"
+    assert columns["fetch_duration_ms"] == "INTEGER"
+    assert columns["valid_odds_count"] == "INTEGER"
+    assert columns["field_size"] == "INTEGER"
+
+    assert migrated.save_odds([{
+        "idempotency_key": "migrated:r1:h1",
+        "race_id": "r1",
+        "horse_id": "h1",
+        "stage": "10",
+        "seconds_to_post": 600,
+    }]) == 1
+    assert scalar(migrated, "SELECT seconds_to_post FROM odds_snapshots") == 600
 
 
 def test_json_is_stable_finite_and_redacts_secrets():

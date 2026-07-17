@@ -114,7 +114,7 @@ async function loadRaces() {
     st.textContent = '取得中...';
     document.getElementById('loadBtn').disabled = true;
     try {
-        const res = await fetch('/api/win5_races');
+        const res = await fetch('api/win5_races');
         const data = await res.json();
         const grid = document.getElementById('raceGrid');
         grid.innerHTML = '';
@@ -161,7 +161,7 @@ async function analyzeAll() {
         }
         st.textContent = `解析中... ${i + 1}/5 (${raceList[i]?.venue || ''})`;
         try {
-            const res = await fetch('/api/win5_analyze_one', {
+            const res = await fetch('api/win5_analyze_one', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({idx: i, url})
             });
@@ -217,7 +217,7 @@ async function generateKaime() {
     area.innerHTML = '生成中...';
     try {
         const singleAxis = document.getElementById('singleAxis').checked;
-        const res = await fetch('/api/win5_kaime', {
+        const res = await fetch('api/win5_kaime', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({points: Number(pts), races: analyzed, single_axis: singleAxis})
         });
@@ -298,7 +298,7 @@ async function armWatch() {
     }
     const pts = document.querySelector('input[name="pts"]:checked').value;
     const singleAxis = document.getElementById('singleAxis').checked;
-    const res = await fetch('/api/win5_watch', {
+    const res = await fetch('api/win5_watch', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({urls, first_time: firstTime, points: Number(pts), single_axis: singleAxis})
     });
@@ -311,7 +311,7 @@ async function armWatch() {
 
 async function pollWatch() {
     try {
-        const d = await (await fetch('/api/win5_watch')).json();
+        const d = await (await fetch('api/win5_watch')).json();
         const st = document.getElementById('watchStatus');
         if (d.status === 'running') st.textContent = '再計算中... (オッズ再取得)';
         if (d.status === 'error') { st.textContent = 'エラー: ' + d.error; clearInterval(watchTimer); }

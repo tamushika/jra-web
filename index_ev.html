@@ -143,7 +143,7 @@ function notify(alert) {
 async function startAnalyze() {
     document.getElementById('startBtn').disabled = true;
     try {
-        const res = await fetch('/api/analyze_start', {
+        const res = await fetch('api/analyze_start', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ ev_threshold: parseFloat(document.getElementById('evTh').value) })
         });
@@ -165,7 +165,7 @@ function schedulePoll(ms) {
 
 async function poll() {
     try {
-        const st = await (await fetch('/api/state')).json();
+        const st = await (await fetch('api/state')).json();
         stateCache = st;
         const p = document.getElementById('progress');
         if (st.status === 'analyzing') {
@@ -186,7 +186,7 @@ async function poll() {
         else { wb.style.display = 'none'; }
         render();
 
-        const al = await (await fetch('/api/alerts?after=' + lastAlertId)).json();
+        const al = await (await fetch('api/alerts?after=' + lastAlertId)).json();
         for (const a of al.alerts) {
             lastAlertId = Math.max(lastAlertId, a.id);
             appendAlertLog(a);

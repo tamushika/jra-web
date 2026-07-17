@@ -209,7 +209,7 @@ async function load() {
     document.getElementById('status').textContent = '読み込み中...';
     try {
         const date = selectedDate();
-        const response = await fetch(date ? `/api/perf?date=${encodeURIComponent(date)}` : '/api/perf');
+        const response = await fetch(date ? `api/perf?date=${encodeURIComponent(date)}` : 'api/perf');
         const d = await response.json();
         if (d.error) throw new Error(d.error);
         document.getElementById('availableDates').innerHTML = (d.available_dates || [])
@@ -297,7 +297,7 @@ async function syncResults() {
     button.textContent = '取得中...';
     document.getElementById('status').textContent = `${date} の公式結果を取得しています...`;
     try {
-        const response = await fetch('/api/results/sync', {
+        const response = await fetch('api/results/sync', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({date})
         });

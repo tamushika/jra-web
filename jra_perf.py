@@ -19,12 +19,10 @@ import json
 import os
 import sqlite3
 import sys
-import threading
-import webbrowser
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Blueprint, Flask, jsonify, request, send_from_directory
 
 from api.logging_store import LoggingStore
 from api.port_guard import ensure_port_free
@@ -35,9 +33,14 @@ DB_PATH = os.path.join(BASE_DIR, "data", "jra_logging.db")
 PORT = 5004
 
 app = Flask(__name__, static_folder=BASE_DIR, static_url_path="/")
+# T38: ルートはBlueprint (bp) に定義し、末尾で app.register_blueprint(bp) して
+# standalone実行では従来どおりprefix無しで動く (jra_perf.app.test_client()を使う
+# 既存テストも無修正で動作する)。統合エントリ (jra_suite.py) は同じbpを "/perf"
+# prefixでマウントする (SPEC-T38 §3.1)。
+bp = Blueprint("perf", __name__)
 
 
-@app.after_request
+@bp.after_request
 def _no_cache_html(resp):
     # UI更新のたびにブラウザキャッシュで旧画面が出る事故の防止 (HTMLのみ。APIは元々動的)
     if resp.mimetype == "text/html":
@@ -45,7 +48,7 @@ def _no_cache_html(resp):
     return resp
 
 
-@app.route("/")
+@bp.route("/")
 def serve_index():
     return send_from_directory(BASE_DIR, "index_perf.html")
 
@@ -378,7 +381,7 @@ def collect(race_date=None):
             "days": days[:90]}
 
 
-@app.route("/api/perf")
+@bp.route("/api/perf")
 def api_perf():
     try:
         return jsonify(collect(request.args.get("date")))
@@ -389,7 +392,7 @@ def api_perf():
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 
-@app.route("/api/results/sync", methods=["POST"])
+@bp.route("/api/results/sync", methods=["POST"])
 def api_sync_results():
     data = request.get_json(silent=True) or {}
     race_date = data.get("date")
@@ -405,14 +408,19 @@ def api_sync_results():
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 
+# standalone実行時 (このモジュールを直接importしてapp.run()する場合や、テストで
+# app.test_client()を使う場合) に従来どおりprefix無しでルートが解決できるよう、
+# bpをこのモジュール自身のappにも登録しておく (SPEC-T38 §3.1)。
+app.register_blueprint(bp)
+
+
 if __name__ == "__main__":
-    ensure_port_free(PORT, "予測実績ダッシュボード")
-    url = f"http://localhost:{PORT}"
-    print("=" * 55)
-    print("  予測実績ダッシュボード")
-    print("=" * 55)
-    print(f"  URL: {url}")
-    print(f"  DB : {DB_PATH}")
-    print("-" * 55)
-    threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    app.run(host="127.0.0.1", port=PORT, debug=False)
+    # T38: 統合版 jra_suite.py (port 5005) に統合されたため、直接起動は案内のみ表示して
+    # 終了する (二重起動によるポート競合を防ぐため)。関数群はjra_suite.pyから
+    # importして使われる。
+    print(
+        "[案内] jra_perf.py は統合版 jra_suite.py (port 5005) に統合されました。\n"
+        "  python jra_suite.py で起動してください (または start_suite.bat)。",
+        file=sys.stderr,
+    )
+    sys.exit(1)

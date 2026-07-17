@@ -12,13 +12,14 @@ import sqlite3
 import subprocess
 import time
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 DEFAULT_DB_PATH = Path(os.environ.get("JRA_LOG_DB", Path(__file__).parents[1] / "data" / "jra_logging.db"))
 _SECRET_KEY = re.compile(r"(token|secret|password|webhook|database_url|authorization)", re.I)
+JST = timezone(timedelta(hours=9))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -72,7 +73,12 @@ CREATE TABLE IF NOT EXISTS odds_snapshots (
     fetch_id TEXT,
     is_stale INTEGER NOT NULL DEFAULT 0,
     data_quality_flags_json TEXT,
-    stage TEXT
+    stage TEXT,
+    scheduled_post_at TEXT,
+    seconds_to_post REAL,
+    fetch_duration_ms INTEGER,
+    valid_odds_count INTEGER,
+    field_size INTEGER
 );
 CREATE INDEX IF NOT EXISTS ix_predictions_race ON predictions(race_id, horse_id, predicted_at);
 CREATE INDEX IF NOT EXISTS ix_odds_race ON odds_snapshots(race_id, horse_id, observed_at);
@@ -194,6 +200,21 @@ def _utc(value: datetime | str | None) -> str | None:
     return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
+def _jst(value: datetime | str | None) -> str | None:
+    """Return an ISO timestamp with an explicit JST offset.
+
+    Race post times are published in JST.  Treating a naive post time as the
+    host's local timezone would make archived snapshots machine-dependent.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=JST)
+    return value.astimezone(JST).isoformat(timespec="microseconds")
+
+
 def _clean(value: Any, key: str = "") -> Any:
     if _SECRET_KEY.search(str(key)):
         return "[REDACTED]"
@@ -260,11 +281,21 @@ class LoggingStore:
     def initialize(self) -> None:
         def op(conn):
             conn.executescript(SCHEMA)
-            # odds_snapshots.stage: 既存DB (SCHEMA適用前に作られたテーブル) には
-            # CREATE TABLE IF NOT EXISTS が効かないため、無ければALTERで追加する。
+            # 既存DBには CREATE TABLE IF NOT EXISTS の列定義が反映されない。
+            # INSERTは列名明示のまま、nullable列だけを後方互換で追加する。
             cols = {row[1] for row in conn.execute("PRAGMA table_info(odds_snapshots)")}
-            if "stage" not in cols:
-                conn.execute("ALTER TABLE odds_snapshots ADD COLUMN stage TEXT")
+            odds_columns = {
+                "stage": "TEXT",
+                "scheduled_post_at": "TEXT",
+                "seconds_to_post": "REAL",
+                "fetch_duration_ms": "INTEGER",
+                "valid_odds_count": "INTEGER",
+                "field_size": "INTEGER",
+            }
+            for name, sql_type in odds_columns.items():
+                if name not in cols:
+                    conn.execute(
+                        f"ALTER TABLE odds_snapshots ADD COLUMN {name} {sql_type}")
             prediction_cols = {
                 row[1] for row in conn.execute("PRAGMA table_info(predictions)")
             }
@@ -278,6 +309,7 @@ class LoggingStore:
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(5, ?)", (utc_now(),))
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(6, ?)", (utc_now(),))
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(7, ?)", (utc_now(),))
+            conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(8, ?)", (utc_now(),))
         self._write(op)
 
     def start_run(self, *, app_name: str, trigger_type: str = "manual", model_name: str | None = None,
@@ -332,13 +364,17 @@ class LoggingStore:
                 row.get("win_odds"), row.get("place_odds_low"), row.get("place_odds_high"), row.get("popularity"),
                 row.get("source", "jra"), row.get("fetch_id"), int(bool(row.get("is_stale"))),
                 stable_json(row.get("data_quality_flags", [])),
-                str(row["stage"]) if row.get("stage") is not None else None))
+                str(row["stage"]) if row.get("stage") is not None else None,
+                _jst(row.get("scheduled_post_at")), row.get("seconds_to_post"),
+                row.get("fetch_duration_ms"), row.get("valid_odds_count"),
+                row.get("field_size")))
         def op(conn):
             before = conn.total_changes
             conn.executemany("""INSERT OR IGNORE INTO odds_snapshots
                 (idempotency_key,race_id,horse_id,observed_at,source_updated_at,win_odds,place_odds_low,
-                 place_odds_high,popularity,source,fetch_id,is_stale,data_quality_flags_json,stage)
-                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
+                 place_odds_high,popularity,source,fetch_id,is_stale,data_quality_flags_json,stage,
+                 scheduled_post_at,seconds_to_post,fetch_duration_ms,valid_odds_count,field_size)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
             return conn.total_changes - before
         return self._write(op)
 

@@ -23,18 +23,18 @@
 【URL】  http://localhost:5003
 """
 import itertools
+import math
 import os
 import re
 import sys
 import threading
 import time
-import webbrowser
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 from bs4 import BeautifulSoup
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Blueprint, Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -50,7 +50,7 @@ except ImportError:
 import scoring  # noqa: E402
 from index import analyze_race_url, build_matrix_data  # noqa: E402
 from combo_probs import wide_candidates  # noqa: E402
-from port_guard import ensure_port_free  # noqa: E402
+from api.port_guard import ensure_port_free  # noqa: E402
 from result_service import ResultNotReady, fetch_and_save_result  # noqa: E402
 try:
     from logging_store import LoggingStore, config_hash  # noqa: E402
@@ -60,11 +60,17 @@ except Exception as exc:
 
 PORT = 5003
 RESULT_SYNC_VERSION = 2
+JST = timezone(timedelta(hours=9))
 HDRS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Referer": "https://www.jra.go.jp/"}
 
 app = Flask(__name__, static_folder=BASE_DIR, static_url_path="/")
 CORS(app)
+# T38: ルートはBlueprint (bp) に定義し、末尾で app.register_blueprint(bp) して
+# standalone実行 (このapp) では従来どおりprefix無しで動く。統合エントリ
+# (jra_suite.py) は同じbpを "/ev" prefixでマウントする。処理関数・STATE等の
+# モジュールレベル状態はこのモジュールに残したまま (SPEC-T38 §3.1)。
+bp = Blueprint("ev", __name__)
 
 _LOCK = threading.RLock()
 _ALERT_SEQ = itertools.count(1)
@@ -85,7 +91,7 @@ STATE = {
 _SCHEDULER_STARTED = [False]
 
 
-@app.route("/")
+@bp.route("/")
 def serve_index():
     return send_from_directory(BASE_DIR, "index_ev.html")
 
@@ -136,6 +142,100 @@ def _to_float(v):
         return float(str(v).replace(",", ""))
     except (ValueError, TypeError):
         return None
+
+
+def _valid_win_odds(value):
+    """JRAカード上で発売済みと判断できる単勝オッズならfloatを返す。"""
+    odds = _to_float(value)
+    if odds is None or not math.isfinite(odds) or not 1.0 < odds < 999.0:
+        return None
+    return odds
+
+
+def _aware_local(value):
+    """datetimeをJSTのaware値へ正規化する。naive値はJSTとして扱う。"""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=JST)
+    return value.astimezone(JST)
+
+
+def _same_instant(left, right):
+    left_dt = _aware_local(left)
+    right_dt = _aware_local(right)
+    return bool(left_dt and right_dt and left_dt == right_dt)
+
+
+def _snapshot_runner(horse):
+    """取消・除外馬をPhase Cのfield_size/有効オッズ判定から除く。"""
+    if any(bool(horse.get(key)) for key in
+           ("scratched", "cancelled", "withdrawn", "is_scratched")):
+        return False
+    status = " ".join(str(horse.get(key) or "") for key in
+                      ("status", "race_status", "entry_status"))
+    return not re.search(r"取消|除外|scratched|cancelled|withdrawn", status, re.I)
+
+
+def _snapshot_quality(stage, scheduled_post_at, observed_at, fetch_duration_ms, horses,
+                      previous_snapshots=(), scheduler_restart=False):
+    """1回のPhase C取得について、保存用メタデータと品質フラグを返す。"""
+    observed = _aware_local(observed_at)
+    scheduled = _aware_local(scheduled_post_at)
+    stage_value = int(stage)
+    runners = [horse for horse in horses if _snapshot_runner(horse)]
+    valid_odds_count = sum(
+        1 for horse in runners if _valid_win_odds(horse.get("odds")) is not None)
+    field_size = len(runners)
+    threshold = max(4, field_size // 2)
+    seconds_to_post = (
+        (scheduled - observed).total_seconds() if scheduled and observed else None)
+
+    flags = []
+    if (seconds_to_post is None
+            or abs(seconds_to_post - stage_value * 60) > 60):
+        flags.append("late_capture")
+
+    catchup_burst = False
+    for previous in previous_snapshots or ():
+        previous_stage = previous.get("stage")
+        previous_observed = _aware_local(previous.get("observed_at"))
+        if (previous_stage is not None and int(previous_stage) != stage_value
+                and observed and previous_observed):
+            elapsed = (observed - previous_observed).total_seconds()
+            if 0 <= elapsed <= 120:
+                catchup_burst = True
+    previous_scheduled = (
+        previous_snapshots[-1].get("scheduled_post_at")
+        if previous_snapshots else None)
+    post_time_changed = (
+        previous_scheduled is not None and scheduled is not None
+        and not _same_instant(previous_scheduled, scheduled))
+    if catchup_burst:
+        flags.append("catchup_burst")
+    if valid_odds_count < threshold:
+        flags.append("insufficient_odds")
+    if post_time_changed:
+        flags.append("post_time_changed")
+    if scheduler_restart:
+        flags.append("scheduler_restart")
+
+    return {
+        "scheduled_post_at": scheduled.isoformat() if scheduled else None,
+        "seconds_to_post": seconds_to_post,
+        "fetch_duration_ms": max(0, int(fetch_duration_ms)),
+        "valid_odds_count": valid_odds_count,
+        "field_size": field_size,
+        "data_quality_flags": flags,
+        "observed_at": observed.isoformat() if observed else None,
+    }
 
 
 def compute_picks(horses, params):
@@ -192,10 +292,12 @@ def compute_wide_picks(horses, params):
             for i, j, ov, mp in cands]
 
 
-def analyze_one(url, params, base_date=None, day_label="", stage=None):
+def analyze_one(url, params, base_date=None, day_label="", stage=None,
+                snapshot_context=None):
     """1レースを解析して監視レコードを返す。stage は発走何分前の取得かの識別子
     (30/15/10/5/2。通常スキャン時はNone) で、odds_snapshotsに記録される
     (時点別オッズ特徴量 Phase C 用)"""
+    fetch_started = time.perf_counter()
     result = analyze_race_url(url, "簡易")
     venue = result.get("venue")
     race_type = result.get("race_type")
@@ -216,15 +318,38 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None):
             "weight_source": h.get("weight_source"),
             "weight_fallback": h.get("weight_source") not in ("jra_live", "jra_live_cache"),
             "pace_fit": h.get("_pace_fit"), "pace_fit_source": h.get("pace_fit_source"),
+            "status": h.get("status") or h.get("race_status") or h.get("entry_status"),
+            "scratched": bool(h.get("scratched") or h.get("cancelled")
+                               or h.get("withdrawn") or h.get("is_scratched")),
             "web_score": h.get("score"), "ml_score": ml,
         })
     n_picked = compute_picks(horses, params)
+
+    # 既存の監視/通知経路が参照するodds_okは、T40以前の判定を維持する。
+    # Phase C用の厳格な有効頭数・不足判定は_snapshot_quality内だけで算出する。
+    n_odds = sum(1 for h in horses
+                 if (_to_float(h.get("odds")) or 0) > 1.0)
+    odds_ok = bool(horses) and n_odds >= max(1, len(horses) // 2)
+    start_dt = _parse_start_time(result.get("race_info"), base_date)
+    observed_at = datetime.now().astimezone()
+    fetch_duration_ms = round((time.perf_counter() - fetch_started) * 1000)
+    snapshot_quality = None
+    snapshot_persisted = None if snapshot_context is None else False
+    if snapshot_context is not None:
+        snapshot_quality = _snapshot_quality(
+            stage=stage,
+            scheduled_post_at=start_dt or snapshot_context.get("scheduled_post_at"),
+            observed_at=observed_at,
+            fetch_duration_ms=fetch_duration_ms,
+            horses=horses,
+            previous_snapshots=snapshot_context.get("previous_snapshots", ()),
+            scheduler_restart=bool(snapshot_context.get("scheduler_restart")),
+        )
 
     log_context = {}
     # Logging is deliberately best-effort: observability must not stop monitoring.
     if LoggingStore is not None:
         try:
-            observed_at = datetime.now().astimezone()
             race_day = (base_date or observed_at).strftime("%Y%m%d")
             race_no = _parse_race_num(result.get("race_info")) or 0
             race_id = f"{race_day}:{venue or 'unknown'}:{race_no:02d}"
@@ -232,6 +357,7 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None):
             store.save_race(
                 race_id=race_id, race_date=race_day, venue=venue or "unknown", race_no=race_no,
                 surface=race_type, distance_m=dist_val, race_class=result.get("race_class"),
+                start_time=start_dt,
             )
             run_id = store.start_run(
                 app_name="ev_monitor", trigger_type="scheduler",
@@ -259,28 +385,38 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None):
                     },
                     "data_quality_flags": [] if h.get("win_prob") is not None else ["win_probability_unavailable"],
                 })
-                odds = _to_float(h.get("odds"))
+                if snapshot_quality is not None:
+                    odds = _valid_win_odds(h.get("odds"))
+                else:
+                    raw_odds = _to_float(h.get("odds"))
+                    odds = raw_odds if raw_odds and raw_odds > 1.0 else None
+                odds_flags = list(
+                    (snapshot_quality or {}).get("data_quality_flags", []))
+                if odds is None:
+                    odds_flags.append("win_odds_unavailable")
                 odds_rows.append({
                     "race_id": race_id, "horse_id": horse_id, "observed_at": observed_at,
-                    "win_odds": odds if odds and odds > 1.0 else None,
+                    "win_odds": odds,
                     "popularity": int(float(h["pop"])) if _to_float(h.get("pop")) else None,
                     "source": "jra", "fetch_id": run_id, "stage": stage,
                     "idempotency_key": f"{run_id}:{race_id}:{horse_id}",
-                    "data_quality_flags": [] if odds and odds > 1.0 else ["win_odds_unavailable"],
+                    "scheduled_post_at": (snapshot_quality or {}).get("scheduled_post_at"),
+                    "seconds_to_post": (snapshot_quality or {}).get("seconds_to_post"),
+                    "fetch_duration_ms": (snapshot_quality or {}).get("fetch_duration_ms"),
+                    "valid_odds_count": (snapshot_quality or {}).get("valid_odds_count"),
+                    "field_size": (snapshot_quality or {}).get("field_size"),
+                    "data_quality_flags": odds_flags,
                 })
             store.save_predictions(run_id, prediction_rows)
-            store.save_odds(odds_rows)
+            saved_odds = store.save_odds(odds_rows)
+            if snapshot_quality is not None:
+                snapshot_persisted = (
+                    bool(odds_rows) and saved_odds == len(odds_rows))
             store.finish_run(run_id)
             log_context = {"prediction_run_id": run_id, "race_id": race_id}
         except Exception as exc:
             print(f"[WARN] common logging failed: {type(exc).__name__}: {exc}")
 
-    # オッズが有効な馬の数 (発売前はカードにオッズが載らず全馬None → EV判定不能)
-    n_odds = sum(1 for h in horses
-                 if (_to_float(h.get("odds")) or 0) > 1.0)
-    odds_ok = bool(horses) and n_odds >= max(1, len(horses) // 2)
-
-    start_dt = _parse_start_time(result.get("race_info"), base_date)
     return {
         "url": url, "venue": venue,
         "race_num": _parse_race_num(result.get("race_info")),
@@ -298,6 +434,8 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None):
         "checked30": False, "checked10": False, "checked2": False,
         "last_update": datetime.now().strftime("%H:%M:%S"),
         "_log_context": log_context,
+        "_snapshot_quality": snapshot_quality,
+        "_snapshot_persisted": snapshot_persisted,
     }
 
 
@@ -565,23 +703,69 @@ def refresh_and_alert(rec, stage):
 _SNAPSHOT_STAGES = ((30, 30 * 60, 20 * 60), (10, 10 * 60, 6 * 60), (2, 2 * 60, 0))
 
 
-def snapshot_odds(rec, stage):
+def snapshot_odds(rec, stage, *, scheduler_restart=False):
     """通知を伴わずオッズだけ再取得して記録する (時点別オッズ特徴量 Phase C 用のデータ蓄積)。
     refresh_and_alert とは完全に独立しており、アラート生成・LINE/Discord/ブラウザ通知の
-    いずれも一切行わない (STATE["alerts"] にも追加しない)。"""
+    いずれも一切行わない (STATE["alerts"] にも追加しない)。戻り値は、保存済みかつ
+    十分=True、保存済みだが不足=False、取得/保存失敗=None のtri-state。"""
     params = STATE["params"]
+    previous_snapshots = list(rec.get("_snapshot_history") or ())
     try:
-        new_rec = analyze_one(rec["url"], params, stage=stage)
+        new_rec = analyze_one(
+            rec["url"], params, base_date=rec.get("_start_dt"), stage=stage,
+            snapshot_context={
+                "scheduled_post_at": rec.get("_start_dt"),
+                "previous_snapshots": previous_snapshots,
+                "scheduler_restart": scheduler_restart,
+            },
+        )
     except Exception as e:
         print(f"[WARN] スナップショット取得失敗 {_rid(rec)} ({stage}分前): {e}")
-        return False
+        return None
+    quality = new_rec.get("_snapshot_quality") or {}
+    persisted = new_rec.get("_snapshot_persisted") is True
     with _LOCK:
-        for k in ("horses", "n_picked", "wide_picks", "last_update"):
+        for k in ("horses", "n_picked", "wide_picks", "last_update",
+                  "odds_ok", "n_odds"):
             rec[k] = new_rec.get(k, rec.get(k))
-    return True
+        if persisted:
+            rec.setdefault("_snapshot_history", []).append({
+                "stage": stage,
+                "observed_at": quality.get("observed_at"),
+                "scheduled_post_at": quality.get("scheduled_post_at"),
+            })
+            # 品質判定に必要なのは直近の少数件だけ。monitor_stateの肥大化を避ける。
+            rec["_snapshot_history"] = rec["_snapshot_history"][-10:]
+    if not persisted:
+        return None
+    return "insufficient_odds" not in quality.get("data_quality_flags", ())
+
+
+def _process_snapshot_stages(rec, remain, *, scheduler_restart=False):
+    """1レース分のPhase Cステージを処理する (通知ステージとは独立)。"""
+    for snap_stage, window_sec, giveup_sec in _SNAPSHOT_STAGES:
+        flag = f"checked{snap_stage}"
+        if not rec.get(flag) and remain <= window_sec:
+            capture_state = snapshot_odds(
+                rec, snap_stage, scheduler_restart=scheduler_restart)
+            # giveup境界を過ぎたら取得/保存失敗(None)でも打ち切る (T40レビュー判断):
+            # LoggingStore不全等の持続故障時、通知は無事なままsnapshotだけが
+            # 全レース×20秒間隔で終日リトライし続けるsilent failureを防ぐ。
+            # 窓内(giveup前)はNone/Falseとも次サイクルで再試行する。
+            if capture_state is True or remain <= giveup_sec:
+                rec[flag] = True
+            # insufficient再試行中も履歴を永続化し、再起動後のcatchup/変更検知に使う。
+            _persist_monitor(rec)
+
+
+def _notification_due_and_pending(rec, remain):
+    """現在の残り時間で処理すべき15/5分通知が未完了ならTrue。"""
+    return ((not rec.get("checked15", False) and remain <= 15 * 60)
+            or (not rec.get("checked5", False) and remain <= 5 * 60))
 
 
 def scheduler_loop():
+    first_scan_cycle = True
     while True:
         time.sleep(20)
         now = datetime.now()
@@ -600,15 +784,6 @@ def scheduler_loop():
                 _maybe_sync_result(rec)
                 _persist_monitor(rec)
                 continue
-            # 30/10/2分前のスナップショット (通知なし)。既存の15分前/5分前の
-            # 通知付き判定 (下のif/elif) とは別の独立したifブロックなので、
-            # 追加しても既存の分岐・挙動には一切影響しない。
-            for snap_stage, window_sec, giveup_sec in _SNAPSHOT_STAGES:
-                flag = f"checked{snap_stage}"
-                if not rec.get(flag) and remain <= window_sec:
-                    if snapshot_odds(rec, snap_stage) or remain <= giveup_sec:
-                        rec[flag] = True
-                        _persist_monitor(rec)
             if not rec["checked15"] and remain <= 15 * 60:
                 if refresh_and_alert(rec, 15) or remain <= 6 * 60:
                     rec["checked15"] = True
@@ -617,6 +792,15 @@ def scheduler_loop():
                 if refresh_and_alert(rec, 5) or remain <= 0:
                     rec["checked5"] = True
                     _persist_monitor(rec)
+            # 30/10/2分前の同期取得は通知判定の後に行い、遅い取得が15/5分前通知を
+            # 先にブロックしないようにする。通知側のif/elif本文・条件は変更しない。
+            # 15分通知を処理した時点ですでに5分窓内なら、5分通知は次周期の
+            # if/elifで先に処理する。通知失敗でpendingの場合もsnapshotを挟まない。
+            if _notification_due_and_pending(rec, remain):
+                continue
+            _process_snapshot_stages(
+                rec, remain, scheduler_restart=first_scan_cycle)
+        first_scan_cycle = False
 
 
 def _persist_monitor(rec):
@@ -741,7 +925,7 @@ def _slim_state():
             "params": STATE["params"], "races": races}
 
 
-@app.route("/api/analyze_start", methods=["POST"])
+@bp.route("/api/analyze_start", methods=["POST"])
 def api_analyze_start():
     data = request.json or {}
     with _LOCK:
@@ -763,13 +947,13 @@ def api_analyze_start():
     return jsonify({"success": True})
 
 
-@app.route("/api/state")
+@bp.route("/api/state")
 def api_state():
     with _LOCK:
         return jsonify(_slim_state())
 
 
-@app.route("/api/alerts")
+@bp.route("/api/alerts")
 def api_alerts():
     after = request.args.get("after", 0, type=int)
     with _LOCK:
@@ -791,7 +975,23 @@ def _auto_start():
     print("  [auto-start] 解析を自動開始しました")
 
 
+# standalone実行時 (このモジュールを直接importしてapp.run()する場合や、テストで
+# app.test_client()を使う場合) に従来どおりprefix無しでルートが解決できるよう、
+# bpをこのモジュール自身のappにも登録しておく (SPEC-T38 §3.1)。
+app.register_blueprint(bp)
+
+
 if __name__ == "__main__":
+    # T38: 統合版 jra_suite.py (port 5005) に統合されたため、引数なしの直接起動は
+    # 案内のみ表示して終了する (通知の二重送信・監視の二重実行を防ぐため)。
+    #
+    # ⚠️ 移行ブリッジ (運用切替=SPEC-T38 §5 完了までの暫定措置):
+    # 週末タスクスケジューラの start_ev_auto.bat は `jra_ev.py --auto-start` を
+    # 呼ぶため、この経路だけは従来どおり単独起動できるまま残す。ここを塞ぐと
+    # スケジューラ登録を差し替えるまでレース日の監視・通知が全損する。
+    # --test-line (LINE疎通診断) も同様に残す。
+    # §5の切替 (タスクスケジューラを start_suite_auto.bat へ差し替え、1開催の
+    # 並行監視確認) が完了したら、このブリッジを削除して案内終了だけにする。
     if "--test-line" in sys.argv:
         # LINE設定後の疎通確認: python jra_ev.py --test-line
         stage = int(os.environ.get("EV_LINE_STAGE", "5"))
@@ -802,22 +1002,33 @@ if __name__ == "__main__":
               "(届かない場合は EV_LINE_CHANNEL_TOKEN と友だち追加を確認)")
         sys.exit(0)
 
-    ensure_port_free(PORT, "期待値レース監視サーバー")
-    url = f"http://localhost:{PORT}"
-    print("=" * 55)
-    print("  期待値レース監視 (Webスコア × MLスコア)")
-    print("=" * 55)
-    print(f"  URL: {url}")
-    print("  ブラウザのタブを開いたままにすると 15分前/5分前に通知します")
-    if os.environ.get("EV_DISCORD_WEBHOOK", "").strip():
-        print("  Discord通知: 有効")
-    if os.environ.get("EV_LINE_CHANNEL_TOKEN", "").strip():
-        print(f"  LINE通知: 有効 ({os.environ.get('EV_LINE_STAGE', '5')}分前 × "
-              f"EV>={os.environ.get('EV_LINE_MIN_EV', '1.3')})")
-    print("  終了: Ctrl+C")
-    print("-" * 55)
-    _restore_phase2_state()
-    threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     if "--auto-start" in sys.argv:
+        print("[注意] 旧単独起動 (--auto-start) です。統合版 jra_suite.py への"
+              "切替後はこの経路を使わないでください (通知二重送信の危険)。",
+              file=sys.stderr)
+        ensure_port_free(PORT, "期待値レース監視サーバー")
+        url = f"http://localhost:{PORT}"
+        print("=" * 55)
+        print("  期待値レース監視 (Webスコア × MLスコア)")
+        print("=" * 55)
+        print(f"  URL: {url}")
+        print("  ブラウザのタブを開いたままにすると 15分前/5分前に通知します")
+        if os.environ.get("EV_DISCORD_WEBHOOK", "").strip():
+            print("  Discord通知: 有効")
+        if os.environ.get("EV_LINE_CHANNEL_TOKEN", "").strip():
+            print(f"  LINE通知: 有効 ({os.environ.get('EV_LINE_STAGE', '5')}分前 × "
+                  f"EV>={os.environ.get('EV_LINE_MIN_EV', '1.3')})")
+        print("  終了: Ctrl+C")
+        print("-" * 55)
+        _restore_phase2_state()
         threading.Timer(6.0, _auto_start).start()
-    app.run(host="127.0.0.1", port=PORT, debug=False)
+        app.run(host="127.0.0.1", port=PORT, debug=False)
+        sys.exit(0)
+
+    print(
+        "[案内] jra_ev.py は統合版 jra_suite.py (port 5005) に統合されました。\n"
+        "  python jra_suite.py で起動してください (または start_suite.bat)。\n"
+        "  このファイルを直接起動すると通知の二重送信が起きる可能性があるため停止しました。",
+        file=sys.stderr,
+    )
+    sys.exit(1)
