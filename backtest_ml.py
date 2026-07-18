@@ -129,6 +129,19 @@ X3_FEATURES = [
 PACK_GROUPS = {"A3": A3_FEATURES, "A7": A7_FEATURES, "A8": A8_FEATURES, "X3": X3_FEATURES}
 PACK_GROUP_ORDER = ("A3", "A7", "A8", "X3")
 
+# T18: jockey rolling-form diagnostic.  This group is deliberately not part
+# of PACK_GROUP_ORDER: T41's frozen ``+ALL`` contract must remain exactly its
+# original 24 columns.  It is appended only when explicitly requested by the
+# T18 harness, together with a preregistered shrinkage k.
+JROLL_FEATURES = ["j_roll30", "j_roll90", "j_roll_n30", "j_roll_n90"]
+PACK_GROUPS["JROLL"] = JROLL_FEATURES
+
+
+def shrunken_rate(hits, starts, prior, shrinkage_k):
+    """Beta-style rate shrinkage used by the T18 rolling features."""
+    return (float(hits) + float(shrinkage_k) * float(prior)) / (
+        float(starts) + float(shrinkage_k))
+
 # race_name (TARGET式圧縮名) のハンデ戦マーカー: 全角Ｈが「名前の直後・
 # 修飾の直前」に付く (例: "小倉大賞ＨG3", "仁川ＳＨ(L)", "早春ＳＨ･3勝",
 # "いわきＨ1000", 末尾 "しらかばＨ")。局名等の名前の一部のＨ
@@ -148,7 +161,84 @@ def pack_feature_names(pack_groups):
     names = []
     for group in selected:
         names.extend(PACK_GROUPS[group])
+    if "JROLL" in pack_groups:
+        names.extend(JROLL_FEATURES)
     return names
+
+
+def build_jockey_rolling_features(runs, shrinkage_k):
+    """Return leak-free rolling jockey features keyed by ``id(run)``.
+
+    A race exactly 30 (or 90) calendar days before the current date is inside
+    the corresponding window.  Every runner on a date is scored before that
+    date's results are added, so same-day and future results cannot leak.
+    The long-term prior is the jockey's expanding pre-date top-3 rate, falling
+    back to the expanding global rate (and 0.0 only when no history exists at
+    all).  Only rows with a positive numeric finish rank enter history.
+    """
+    from collections import deque
+
+    k = float(shrinkage_k)
+    if not math.isfinite(k) or k <= 0:
+        raise ValueError("shrinkage_k must be a positive finite number")
+
+    by_date = defaultdict(list)
+    for run in runs:
+        date = run.get("date")
+        if date:
+            by_date[date].append(run)
+
+    history = defaultdict(lambda: {30: deque(), 90: deque()})
+    long_totals = defaultdict(lambda: [0, 0])  # starts, top3 hits
+    global_starts = global_hits = 0
+    output = {}
+
+    for date in sorted(by_date):
+        current_day = datetime.strptime(date, "%Y%m%d")
+        for run in by_date[date]:
+            jockey = str(run.get("jockey") or "").strip()
+            if jockey:
+                windows = history[jockey]
+                counts = {}
+                for days in (30, 90):
+                    queue = windows[days]
+                    while queue and (current_day - queue[0][0]).days > days:
+                        queue.popleft()
+                    counts[days] = (len(queue), sum(hit for _day, hit in queue))
+                starts, hits = long_totals[jockey]
+                prior = (hits / starts if starts else
+                         (global_hits / global_starts if global_starts else 0.0))
+                values = {}
+                for days in (30, 90):
+                    n, window_hits = counts[days]
+                    values[f"j_roll{days}"] = shrunken_rate(
+                        window_hits, n, prior, k)
+                    values[f"j_roll_n{days}"] = math.log1p(n)
+            else:
+                prior = global_hits / global_starts if global_starts else 0.0
+                values = {
+                    "j_roll30": prior, "j_roll90": prior,
+                    "j_roll_n30": 0.0, "j_roll_n90": 0.0,
+                }
+            output[id(run)] = values
+
+        # Atomic date update: no runner above can see another same-day result.
+        for run in by_date[date]:
+            jockey = str(run.get("jockey") or "").strip()
+            try:
+                rank = int(run.get("rank"))
+            except (TypeError, ValueError):
+                continue
+            if not jockey or rank <= 0:
+                continue
+            hit = 1 if rank <= 3 else 0
+            for days in (30, 90):
+                history[jockey][days].append((current_day, hit))
+            long_totals[jockey][0] += 1
+            long_totals[jockey][1] += hit
+            global_starts += 1
+            global_hits += hit
+    return output
 
 
 def _time_index_value(pr, use_variant):
@@ -429,7 +519,8 @@ def _relative_value_available(mask, source):
     return bool(mask.get(source, False))
 
 
-def build_dataset(runs, date_from, cfg, relative=False, pack_groups=None):
+def build_dataset(runs, date_from, cfg, relative=False, pack_groups=None,
+                  jockey_rolling_k=None):
     """評価出走ごとに特徴量ベクトルを構築 (score_all_runners と同じ部品を使用)
 
     ``pack_groups`` は T41 低コスト特徴パック ({"A3","A7","A8","X3"} の部分集合)。
@@ -440,12 +531,16 @@ def build_dataset(runs, date_from, cfg, relative=False, pack_groups=None):
     import analysis
 
     if pack_groups:
-        unknown = set(pack_groups) - set(PACK_GROUP_ORDER)
+        unknown = set(pack_groups) - set(PACK_GROUPS)
         if unknown:
             raise ValueError(f"未知のpack_groups: {sorted(unknown)}")
         active_pack_groups = frozenset(pack_groups)
     else:
         active_pack_groups = frozenset()
+    if "JROLL" in active_pack_groups and jockey_rolling_k is None:
+        raise ValueError("JROLL pack requires jockey_rolling_k")
+    if jockey_rolling_k is not None and "JROLL" not in active_pack_groups:
+        raise ValueError("jockey_rolling_k is only valid with the JROLL pack")
 
     params = cfg["params"]
     weights = cfg["weights"]
@@ -503,6 +598,8 @@ def build_dataset(runs, date_from, cfg, relative=False, pack_groups=None):
     relative_availability = bytearray()
     X_pack = [] if active_pack_groups else None
     pack_names = pack_feature_names(active_pack_groups) if active_pack_groups else None
+    jockey_rolling = (build_jockey_rolling_features(runs, jockey_rolling_k)
+                      if "JROLL" in active_pack_groups else None)
 
     for horse, lst in by_horse.items():
         layoff_states = _horse_layoff_states(lst) if active_pack_groups else None
@@ -671,6 +768,8 @@ def build_dataset(runs, date_from, cfg, relative=False, pack_groups=None):
                 pack_values = _pack_feature_values(
                     lst, i, active_pack_groups, use_variant=use_variant,
                     layoff_states=layoff_states, tfeat_current=f["tfeat"])
+                if jockey_rolling is not None:
+                    pack_values.update(jockey_rolling[id(cur)])
                 X_pack.append([pack_values[name] for name in pack_names])
     if relative:
         X = _append_relative_features(X, race_keys, relative_availability)
