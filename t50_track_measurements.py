@@ -16,6 +16,7 @@ import sqlite3
 import sys
 import time
 import unicodedata
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -296,6 +297,37 @@ def save_measurements(connection: sqlite3.Connection,
     return len(payload)
 
 
+def reconcile_race_day_flags(t50_db: Path, race_calendar_db: Path) -> dict:
+    """Reconcile legacy date columns against actual JRA venue/date racing.
+
+    Legacy holiday blocks may alternate pre-measurement and race dates, while
+    their PDF header only lists a date range and meeting-day count.  ability.db
+    supplies only the JRA calendar here; every measurement value still comes
+    exclusively from the official archive PDF.
+    """
+    with closing(sqlite3.connect(race_calendar_db)) as calendar:
+        race_days = {(str(day), venue) for day, venue in calendar.execute(
+            """SELECT DISTINCT date, place FROM runs
+                 WHERE date BETWEEN '20210101' AND '20261231'
+                   AND rank IS NOT NULL""")}
+    with closing(sqlite3.connect(t50_db)) as connection:
+        rows = connection.execute(
+            "SELECT date, venue, is_race_day FROM track_measurements").fetchall()
+        updates = []
+        for day, venue, old_flag in rows:
+            new_flag = int((day.replace("-", ""), venue) in race_days)
+            if new_flag != int(old_flag):
+                updates.append((new_flag, day, venue))
+        connection.executemany(
+            "UPDATE track_measurements SET is_race_day=? WHERE date=? AND venue=?",
+            updates)
+        connection.commit()
+        race_rows = connection.execute(
+            "SELECT COUNT(*) FROM track_measurements WHERE is_race_day=1").fetchone()[0]
+    return {"changed_flags": len(updates), "race_day_rows": race_rows,
+            "calendar_days": len(race_days)}
+
+
 class Fetcher:
     def __init__(self, *, session=None, min_interval: float = 1.0,
                  max_consecutive_failures: int = 10,
@@ -427,12 +459,17 @@ def main() -> int:
     parser.add_argument("--db", type=Path, default=Path("data/t50/track_measurements.sqlite"))
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--limit", type=int, help="parse at most N PDFs (smoke test)")
+    parser.add_argument("--race-calendar-db", type=Path, default=Path("ability.db"),
+                        help="JRA venue/date calendar for legacy holiday reconciliation")
     args = parser.parse_args()
     if args.from_year > args.to_year:
         parser.error("--from-year must be <= --to-year")
     result = collect(years=range(args.from_year, args.to_year + 1),
                      data_dir=args.data_dir, db_path=args.db,
                      refresh=args.refresh, limit=args.limit)
+    if args.limit is None and args.race_calendar_db.exists():
+        result["race_day_reconciliation"] = reconcile_race_day_flags(
+            args.db, args.race_calendar_db)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return int(bool(result["parse_failures"]))
 

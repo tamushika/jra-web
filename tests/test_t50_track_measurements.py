@@ -1,4 +1,5 @@
 from pathlib import Path
+import sqlite3
 
 import pytest
 import requests
@@ -10,6 +11,7 @@ from t50_track_measurements import (
     open_store,
     parse_legacy_text,
     parse_modern_text,
+    reconcile_race_day_flags,
     save_measurements,
 )
 
@@ -119,3 +121,36 @@ def test_fetcher_enforces_interval_and_halts_on_tenth_failure():
 
     assert len(sleeps) == 9
     assert all(seconds >= 1.0 for seconds in sleeps)
+
+
+def test_race_day_reconciliation_fixes_irregular_holiday_columns(tmp_path):
+    t50_db = tmp_path / "t50.sqlite"
+    connection = open_store(t50_db)
+    rows = parse_legacy_text("""
+    第1日・第2日（2024年10月11日～14日）
+    クッション値 芝 9.0 9.1 9.2 9.3
+    含水率 芝 ゴール前 10.0 10.1 10.2 10.3
+    4コーナー 11.0 11.1 11.2 11.3
+    ダート ゴール前 5.0 5.1 5.2 5.3
+    4コーナー 6.0 6.1 6.2 6.3
+    """, "新潟")
+    save_measurements(connection, rows)
+    connection.close()
+
+    calendar_db = tmp_path / "ability.sqlite"
+    calendar = sqlite3.connect(calendar_db)
+    calendar.execute("CREATE TABLE runs(date TEXT, place TEXT, rank INTEGER)")
+    calendar.executemany("INSERT INTO runs VALUES (?,?,1)",
+                         [("20241012", "新潟"), ("20241014", "新潟")])
+    calendar.commit()
+    calendar.close()
+
+    result = reconcile_race_day_flags(t50_db, calendar_db)
+    connection = sqlite3.connect(t50_db)
+    flags = connection.execute(
+        "SELECT date,is_race_day FROM track_measurements ORDER BY date").fetchall()
+    connection.close()
+
+    assert result["changed_flags"] == 2
+    assert flags == [("2024-10-11", 0), ("2024-10-12", 1),
+                     ("2024-10-13", 0), ("2024-10-14", 1)]
