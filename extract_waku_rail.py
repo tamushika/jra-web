@@ -61,9 +61,15 @@ def load_processed():
             for line in f:
                 try:
                     rec = json.loads(line)
-                    done[rec["file"]] = rec
                 except json.JSONDecodeError:
                     continue
+                if rec.get("page_type") == "error":
+                    # 一時的な失敗 (レート制限待機中のmalloc失敗等) を処理済み扱いに
+                    # すると恒久欠落する。errorは未処理として次回再試行し、成功した
+                    # 記録が後段の行として追記されれば最後の記録が勝つ
+                    done.pop(rec.get("file"), None)
+                    continue
+                done[rec["file"]] = rec
     return done
 
 
