@@ -22,6 +22,14 @@
                     font-size: 11px; font-weight: bold; background: rgba(255,255,255,0.1); }
         .hit-y { color: #66bb6a; font-weight: bold; }
         .hit-n { color: #ef7070; }
+        .w5-detail summary { cursor: pointer; color: var(--primary); font-size: 12px; }
+        .w5-detail-body { margin-top: 6px; text-align: left; font-size: 12px; }
+        .w5-race-row { padding: 2px 0; border-bottom: 1px dashed var(--border-color); }
+        .w5-race-row:last-of-type { border-bottom: none; }
+        .w5-pick { display: inline-block; margin-right: 4px; }
+        .w5-winner-line { color: var(--text-muted); margin-left: 4px; }
+        .w5-summary-line { margin-top: 4px; font-weight: bold; }
+        .pf-warn { color: #ffb74d; }
         .pf-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
                        margin: 8px 0 12px; }
         .pf-controls input { background: rgba(0,0,0,0.25); color: var(--text-color);
@@ -84,7 +92,7 @@
         <div class="pf-title">🎯 WIN5の実績</div>
         <table class="pf-table"><thead><tr>
             <th>予測日時</th><th>点数</th><th>推定的中率</th><th>配分</th><th>軸</th>
-            <th>レース別 (○=勝ち馬を含む)</th><th>WIN5</th>
+            <th>レース別 (○=勝ち馬を含む)</th><th>WIN5</th><th>詳細</th>
         </tr></thead><tbody id="w5Body"></tbody></table>
     </div>
 
@@ -127,6 +135,47 @@ function finish(v) {
     if (v === 1) return '<span class="hit-y">1着</span>';
     if (v <= 3) return `<span class="hit-y">${v}着</span>`;
     return `<span class="hit-n">${v}着</span>`;
+}
+
+// T55: WIN5詳細表示 (買い目×確定人気・勝ち馬・払戻金額)。
+// 人気は race_results.final_win_odds から導出済み (欠損 = pop null = 「-」表示、推測しない)。
+function popLabel(pop) { return pop == null ? '-' : `${pop}人気`; }
+function yen(v) { return v == null ? '¥0' : `¥${Number(v).toLocaleString()}`; }
+
+function win5RaceRowHtml(r) {
+    const picks = (r.picks || []).map(p =>
+        `<span class="w5-pick${p.hit ? ' hit-y' : ''}">${esc(p.no)}(${popLabel(p.pop)})</span>`).join(' ');
+    const mark = !r.settled ? '<span class="pf-meta">未確定</span>'
+        : (r.hit ? '<span class="hit-y">○</span>' : '<span class="hit-n">×</span>');
+    let winnerLine = '';
+    if (r.settled && !r.hit && r.winner) {
+        winnerLine = `<span class="w5-winner-line">→ 勝ち馬: ${esc(r.winner.no)}番`
+            + `${r.winner.name ? ' ' + esc(r.winner.name) : ''} (${popLabel(r.winner.pop)})</span>`;
+    }
+    const label = `${esc(r.venue)}${esc(r.race_no)}R${r.race_name ? ' ' + esc(r.race_name) : ''}`;
+    return `<div class="w5-race-row">${label} | 買い目: ${picks || '<span class="pf-meta">-</span>'} | ${mark}${winnerLine}</div>`;
+}
+
+function win5DetailHtml(entry) {
+    // entry is either a per-plan WIN5実績 row (entry.hits = [true/false/null,...])
+    // or a days集計 row (entry.hits = 的中数のint, entry.total = レース数).
+    const races = entry.races || [];
+    const rows = races.map(win5RaceRowHtml).join('');
+    const hitsN = Array.isArray(entry.hits) ? entry.hits.filter(h => h === true).length : (entry.hits || 0);
+    const totalN = Array.isArray(entry.hits) ? entry.hits.length : (entry.total ?? races.length ?? 5);
+    const p = entry.payout || {fetched: false};
+    let payoutLine;
+    if (!p.fetched) {
+        payoutLine = '配当: 未取得';
+    } else {
+        const amount = entry.win5_hit ? `<b class="hit-y">${yen(p.payout_yen)}</b>` : yen(p.payout_yen);
+        const ticket = p.hit_ticket_count != null ? `的中${esc(p.hit_ticket_count)}票` : '的中0票';
+        const carry = p.carryover_flag
+            ? `キャリーオーバー: 有 (${yen(p.carryover_amount)})` : 'キャリーオーバー: 無';
+        payoutLine = `払戻 ${amount} (${ticket}) | ${carry}`;
+        if (p.mismatch) payoutLine += ' <span class="pf-warn">⚠ 勝ち馬の記録が外部結果と不一致</span>';
+    }
+    return `${rows}<div class="w5-summary-line">WIN5結果: 的中${hitsN}/${totalN} | ${payoutLine}</div>`;
 }
 
 let lastSyncMessage = '';
@@ -192,14 +241,20 @@ function renderDays(days) {
             });
         }
         if (!items.length) return;
+        const hasWin5Detail = !!(day.win5 && (day.win5.races || []).length);
+        const totalRows = items.length + (hasWin5Detail ? 1 : 0);
         items.forEach((item, idx) => {
             const dateCell = idx === 0
-                ? `<td rowspan="${items.length}"><a href="#" onclick="event.preventDefault(); jumpToDate('${esc(day.date)}');">${esc(dateFmt(day.date))}</a></td>`
+                ? `<td rowspan="${totalRows}"><a href="#" onclick="event.preventDefault(); jumpToDate('${esc(day.date)}');">${esc(dateFmt(day.date))}</a></td>`
                 : '';
             rows.push(`<tr>${dateCell}
                 <td class="left">${item.kind}</td><td class="left">${item.detail}</td><td>${item.target}</td>
                 <td>${item.win}</td><td>${item.tan}</td><td>${item.fuku}</td><td>${item.note}</td></tr>`);
         });
+        if (hasWin5Detail) {
+            rows.push(`<tr><td colspan="7"><details class="w5-detail"><summary>🎯 WIN5詳細</summary>
+                <div class="w5-detail-body">${win5DetailHtml(day.win5)}</div></details></td></tr>`);
+        }
     });
     document.getElementById('daysBody').innerHTML = rows.join('')
         || '<tr><td colspan="8" class="pf-meta">なし</td></tr>';
@@ -264,8 +319,10 @@ async function load() {
                 <td>${w.hits.map(h => h == null ? '<span class="pf-meta">待</span>'
                      : h ? '<span class="hit-y">○</span>' : '<span class="hit-n">×</span>').join(' ')}</td>
                 <td>${!w.all_settled ? '<span class="pf-meta">確定待ち</span>'
-                     : w.win5_hit ? '<span class="hit-y">的中!</span>' : '<span class="hit-n">不的中</span>'}</td></tr>`).join('')
-            || '<tr><td colspan="7" class="pf-meta">まだWIN5予測の記録がありません</td></tr>';
+                     : w.win5_hit ? '<span class="hit-y">的中!</span>' : '<span class="hit-n">不的中</span>'}</td>
+                <td><details class="w5-detail"><summary>詳細</summary>
+                    <div class="w5-detail-body">${win5DetailHtml(w)}</div></details></td></tr>`).join('')
+            || '<tr><td colspan="8" class="pf-meta">まだWIN5予測の記録がありません</td></tr>';
 
         const daysSection = document.getElementById('daysSection');
         if (d.selected_date) {

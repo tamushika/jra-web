@@ -30,6 +30,7 @@ from api.result_service import normalize_race_date, sync_results_for_date
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "data", "jra_logging.db")
+ABILITY_DB_PATH = os.path.join(BASE_DIR, "ability.db")
 PORT = 5004
 
 app = Flask(__name__, static_folder=BASE_DIR, static_url_path="/")
@@ -105,6 +106,186 @@ def _win5_hit_flags(race_ids, selections, results):
     return hit_flags, settled_all
 
 
+def _selection_numbers(sel):
+    nums = sel if isinstance(sel, list) else sel.get("horse_numbers", sel.get("nums", []))
+    return [int(x) for x in nums]
+
+
+def _popularity_by_race(results):
+    """race_id -> {馬番(int): 確定人気(int) or None}。
+    race_results.final_win_odds をレース内で昇順順位化して人気を導出する (T55)。
+    同値はmin rank (通常の競技順位)。**全馬分のオッズが揃うレースのみ順位化する**:
+    現実装の結果取得では勝ち馬しか final_win_odds を持たないため、部分順位化すると
+    「勝ち馬が常に1人気」という誤表示になる (実データで確認)。揃わない場合は全馬 None。"""
+    by_race = defaultdict(list)
+    for (race_id, horse_id), row in results.items():
+        try:
+            horse_no = int(horse_id.split(":")[-1])
+        except (TypeError, ValueError):
+            continue
+        by_race[race_id].append((horse_no, row.get("final_win_odds")))
+    out = {}
+    for race_id, entries in by_race.items():
+        if len(entries) < 2 or any(odds is None for _no, odds in entries):
+            out[race_id] = {no: None for no, _odds in entries}
+            continue
+        valid = sorted((odds, no) for no, odds in entries if odds is not None)
+        ranks, prev_odds, prev_rank = {}, None, 0
+        for idx, (odds, no) in enumerate(valid, start=1):
+            if odds != prev_odds:
+                prev_rank, prev_odds = idx, odds
+            ranks[no] = prev_rank
+        out[race_id] = {no: ranks.get(no) for no, _odds in entries}
+    return out
+
+
+def _ability_popularity_for(race_ids, db_path=None):
+    """race_id集合 -> {race_id: {馬番(int): 確定人気(int)}} を ability.db の
+    runs.popularity (全馬分の確定人気) から引く (T55)。
+    race_results.final_win_odds は勝ち馬分しか無いため、こちらを第一ソースにする。
+    ability.db が無い / 該当日が未同期 / 形式不一致は空dictへfail-soft
+    (呼び出し側が final_win_odds 順位化へフォールバック)。書き込みはしない (mode=ro)。"""
+    path = db_path or ABILITY_DB_PATH
+    triples = []
+    for rid in race_ids:
+        parts = str(rid).split(":")
+        if len(parts) != 3:
+            continue
+        try:
+            triples.append((rid, parts[0].strip(), parts[1].strip(), int(parts[2])))
+        except (TypeError, ValueError):
+            continue
+    if not triples or not os.path.exists(path):
+        return {}
+    out = {}
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            for rid, date, place, r in triples:
+                pops = {}
+                for umaban, pop in conn.execute(
+                        "SELECT umaban, popularity FROM runs WHERE date=? AND place=? AND r=?",
+                        (date, place, r)):
+                    try:
+                        if pop is not None:
+                            pops[int(umaban)] = int(pop)
+                    except (TypeError, ValueError):
+                        continue
+                if pops:
+                    out[rid] = pops
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return {}
+    return out
+
+
+def _snapshot_popularity_for(cur, race_ids):
+    """race_id -> {馬番(int): 人気(int)} を odds_snapshots の最終スナップショット
+    (popularity列・全馬分) から引く (T55)。確定人気ではなく最終取得時点
+    (通常発走2〜5分前) の人気。ability.db が未同期の直近開催日のフォールバック。"""
+    out = {}
+    for rid in race_ids:
+        try:
+            rows = cur.execute(
+                "SELECT horse_id, popularity FROM odds_snapshots WHERE race_id=? "
+                "AND observed_at=(SELECT MAX(observed_at) FROM odds_snapshots WHERE race_id=?)",
+                (rid, rid)).fetchall()
+        except sqlite3.OperationalError:
+            return out
+        pops = {}
+        for row in rows:
+            try:
+                if row["popularity"] is not None:
+                    pops[int(str(row["horse_id"]).split(":")[-1])] = int(row["popularity"])
+            except (TypeError, ValueError):
+                continue
+        if pops:
+            out[rid] = pops
+    return out
+
+
+def _merge_popularity(odds_pop, ability_pop):
+    """確定人気のマージ (T55): ability.db由来 (全馬分) を優先し、
+    足りない馬番だけ final_win_odds 順位化 (odds_pop) で補完する。"""
+    merged = {rid: dict(m) for rid, m in odds_pop.items()}
+    for rid, pops in ability_pop.items():
+        base = merged.setdefault(rid, {})
+        for no, pop in pops.items():
+            base[no] = pop
+    return merged
+
+
+def _win5_race_details(race_ids, selections, results, race_meta, pop_by_race, hit_flags):
+    """WIN5詳細表示 (T55): レースごとの買い目×確定人気、的中選択馬の判定、
+    不的中レースの勝ち馬 (馬番・馬名・人気) を返す。"""
+    rows = []
+    for rid, sel, hit in zip(race_ids, selections, hit_flags):
+        nums = _selection_numbers(sel)
+        pop_map = pop_by_race.get(rid, {})
+        winner_row = next((res for (r, h), res in results.items()
+                           if r == rid and res["finish_position"] == 1), None)
+        winner_no = int(winner_row["horse_id"].split(":")[-1]) if winner_row else None
+        meta = race_meta.get(rid, {})
+        picks = [{"no": n, "pop": pop_map.get(n), "hit": winner_no is not None and n == winner_no}
+                 for n in nums]
+        winner = None
+        if winner_row is not None:
+            winner = {"no": winner_no, "name": winner_row.get("horse_name"), "pop": pop_map.get(winner_no)}
+        rows.append({
+            "race_id": rid, "venue": meta.get("venue") or rid.split(":")[1],
+            "race_no": meta.get("race_no") or int(rid.split(":")[-1]),
+            "race_name": meta.get("race_name"),
+            "picks": picks, "settled": hit is not None, "hit": hit, "winner": winner,
+        })
+    return rows
+
+
+def _load_win5_results(cur, compact_date):
+    """win5_results テーブル (T55; 結果取り込み経路のみが書き込む) を日付→行のdictで返す。
+    migration未適用の古いDBではテーブルが無いので、その場合は空dictにfail-soft。"""
+    try:
+        sql = "SELECT * FROM win5_results"
+        params = ()
+        if compact_date:
+            sql += " WHERE race_date=?"
+            params = (compact_date,)
+        return {row["race_date"]: dict(row) for row in cur.execute(sql, params)}
+    except sqlite3.OperationalError:
+        return {}
+
+
+def _win5_payout_view(win5_result_row, race_rows):
+    """win5_results の1行 + レース別勝ち馬情報 → ダッシュボード表示用の配当dict (T55)。
+    winning_numbers_json (照合用の冗長記録) と race_results 由来の勝ち馬が食い違う場合は
+    mismatch=True (表示側で警告)。"""
+    if not win5_result_row:
+        return {"fetched": False}
+    mismatch = False
+    try:
+        stored_numbers = json.loads(win5_result_row.get("winning_numbers_json") or "null")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        stored_numbers = None
+    if stored_numbers:
+        for idx, row in enumerate(race_rows):
+            winner = row.get("winner")
+            if winner is None or idx >= len(stored_numbers):
+                continue
+            try:
+                if int(stored_numbers[idx]) != int(winner["no"]):
+                    mismatch = True
+            except (TypeError, ValueError):
+                continue
+    return {
+        "fetched": True,
+        "payout_yen": win5_result_row.get("payout_yen"),
+        "hit_ticket_count": win5_result_row.get("hit_ticket_count"),
+        "carryover_flag": bool(win5_result_row.get("carryover_flag")),
+        "carryover_amount": win5_result_row.get("carryover_amount"),
+        "mismatch": mismatch,
+    }
+
+
 def collect(race_date=None):
     compact_date = normalize_race_date(race_date) if race_date else None
     conn = _conn()
@@ -122,7 +303,7 @@ def collect(race_date=None):
     # 結果 (確定着順と払戻)
     results = {}
     result_sql = """SELECT race_id, horse_id, horse_name, finish_position,
-                           win_payout, place_payout FROM race_results"""
+                           final_win_odds, win_payout, place_payout FROM race_results"""
     result_params = ()
     if compact_date:
         result_sql += " WHERE substr(race_id,1,8)=?"
@@ -292,6 +473,8 @@ def collect(race_date=None):
             })
 
     # WIN5実績
+    pop_by_race = _popularity_by_race(results)
+    win5_results_by_date = _load_win5_results(cur, compact_date)
     win5 = []
     if compact_date:
         win5_sql = """SELECT * FROM win5_predictions WHERE race_ids_json LIKE ?
@@ -300,7 +483,20 @@ def collect(race_date=None):
     else:
         win5_sql = "SELECT * FROM win5_predictions ORDER BY created_at DESC LIMIT 30"
         win5_params = ()
-    for w in cur.execute(win5_sql, win5_params):
+    win5_rows = list(cur.execute(win5_sql, win5_params))
+    win5_daily_rows = list(cur.execute(
+        "SELECT * FROM win5_predictions ORDER BY created_at DESC"))
+    # T55: WIN5対象レースの人気は3段ソース。優先度は
+    # ability.db確定人気 > 最終スナップショット人気 (2〜5分前) > final_win_odds順位化
+    win5_race_ids = set()
+    for w in win5_rows + win5_daily_rows:
+        try:
+            win5_race_ids.update(str(r) for r in json.loads(w["race_ids_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+    pop_by_race = _merge_popularity(pop_by_race, _snapshot_popularity_for(cur, win5_race_ids))
+    pop_by_race = _merge_popularity(pop_by_race, _ability_popularity_for(win5_race_ids))
+    for w in win5_rows:
         race_ids = json.loads(w["race_ids_json"])
         if compact_date and not any(str(rid).startswith(f"{compact_date}:") for rid in race_ids):
             continue
@@ -308,17 +504,21 @@ def collect(race_date=None):
             break
         selections = json.loads(w["selections_json"])
         hit_flags, settled_all = _win5_hit_flags(race_ids, selections, results)
+        plan_date = str(race_ids[0]).split(":")[0] if race_ids else None
+        race_rows = _win5_race_details(race_ids, selections, results, race_meta, pop_by_race, hit_flags)
         win5.append({
             "created_at": _to_jst(w["created_at"]), "budget": w["budget"],
             "points": w["total_points"], "est": w["estimated_hit_rate"],
             "method": w["allocation_method"], "single_axis": bool(w["single_axis"]),
             "hits": hit_flags, "all_settled": settled_all,
             "win5_hit": settled_all and all(hit_flags),
+            "races": race_rows,
+            "payout": _win5_payout_view(win5_results_by_date.get(plan_date), race_rows),
         })
 
     # 日別WIN5実績 (T30): 日付ごとに最新プラン (created_at最大) の的中状況を採る
     win5_by_date = {}
-    for w in cur.execute("SELECT * FROM win5_predictions ORDER BY created_at DESC"):
+    for w in win5_daily_rows:
         race_ids = json.loads(w["race_ids_json"])
         if not race_ids:
             continue
@@ -329,9 +529,12 @@ def collect(race_date=None):
             continue  # 既に採用済みの日 (created_at DESCなのでこれより新しいものは無い)
         selections = json.loads(w["selections_json"])
         hit_flags, settled_all = _win5_hit_flags(race_ids, selections, results)
+        race_rows = _win5_race_details(race_ids, selections, results, race_meta, pop_by_race, hit_flags)
         win5_by_date[wdate] = {
             "hits": sum(1 for h in hit_flags if h), "total": len(hit_flags),
             "all_settled": settled_all, "win5_hit": settled_all and all(hit_flags),
+            "races": race_rows,
+            "payout": _win5_payout_view(win5_results_by_date.get(wdate), race_rows),
         }
 
     # 日別実績 (T30): モデル別 + EV通知 + WIN5 を日付単位にまとめる

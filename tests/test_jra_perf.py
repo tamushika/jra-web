@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import datetime
 
 import jra_perf
@@ -205,6 +206,161 @@ def test_collect_days_aggregates_models_ev_and_win5(tmp_path, monkeypatch):
     assert day["win5"]["win5_hit"] is False
 
 
+# ─── T55: WIN5詳細表示 (買い目×人気・勝ち馬・払戻金額) ────────────────────────
+
+def test_popularity_by_race_ranks_ascending_with_ties_when_full_coverage():
+    # final_win_odds を昇順順位化: 同値はmin rank。全馬分が揃うレースのみ順位化する。
+    race_id = "20260714:東京:01"
+    results = {
+        (race_id, f"{race_id}:01"): {"horse_id": f"{race_id}:01", "final_win_odds": 3.0},
+        (race_id, f"{race_id}:02"): {"horse_id": f"{race_id}:02", "final_win_odds": 3.0},
+        (race_id, f"{race_id}:03"): {"horse_id": f"{race_id}:03", "final_win_odds": 8.5},
+    }
+    pop = jra_perf._popularity_by_race(results)
+    assert pop[race_id] == {1: 1, 2: 1, 3: 3}
+
+
+def test_popularity_by_race_suppresses_partial_coverage():
+    # 勝ち馬しかオッズを持たない実データでは部分順位化が「勝ち馬=常に1人気」の
+    # 誤表示になるため、1頭でも欠損があれば全馬 None (「-」表示、推測しない)。
+    race_id = "20260714:東京:01"
+    results = {
+        (race_id, f"{race_id}:01"): {"horse_id": f"{race_id}:01", "final_win_odds": 3.0},
+        (race_id, f"{race_id}:02"): {"horse_id": f"{race_id}:02", "final_win_odds": None},
+        (race_id, f"{race_id}:03"): {"horse_id": f"{race_id}:03", "final_win_odds": None},
+    }
+    pop = jra_perf._popularity_by_race(results)
+    assert pop[race_id] == {1: None, 2: None, 3: None}
+
+
+def test_win5_race_details_shows_hit_miss_and_unsettled_states(tmp_path, monkeypatch):
+    store = LoggingStore(tmp_path / "win5-detail.db")
+    race_date = "20260714"
+    race_hit = f"{race_date}:東京:01"      # 選択馬が勝ち馬と一致 (的中)
+    race_miss = f"{race_date}:中山:02"     # 選択馬が勝ち馬と不一致 (不的中)
+    race_open = f"{race_date}:阪神:03"     # 結果未確定
+    for rid in (race_hit, race_miss, race_open):
+        store.save_race(race_id=rid, race_date=race_date, venue=rid.split(":")[1],
+                         race_no=int(rid.split(":")[2]))
+    store.save_race_results([
+        {"race_id": race_hit, "horse_id": f"{race_hit}:01", "horse_name": "本命馬",
+         "finish_position": 1, "official_status": "official", "final_win_odds": 2.5,
+         "win_payout": 250, "place_payout": 120, "result_fetched_at": datetime.now().astimezone(),
+         "source_hash": f"{race_hit}:1", "data_quality_flags": []},
+        {"race_id": race_hit, "horse_id": f"{race_hit}:02", "horse_name": "対抗馬",
+         "finish_position": 2, "official_status": "official", "final_win_odds": 10.0,
+         "result_fetched_at": datetime.now().astimezone(),
+         "source_hash": f"{race_hit}:2", "data_quality_flags": []},
+        {"race_id": race_miss, "horse_id": f"{race_miss}:03", "horse_name": "勝ち馬中山",
+         "finish_position": 1, "official_status": "official", "final_win_odds": 4.0,
+         "win_payout": 400, "place_payout": 150, "result_fetched_at": datetime.now().astimezone(),
+         "source_hash": f"{race_miss}:1", "data_quality_flags": []},
+        {"race_id": race_miss, "horse_id": f"{race_miss}:04", "horse_name": "対抗馬中山",
+         "finish_position": 2, "official_status": "official",
+         "result_fetched_at": datetime.now().astimezone(),
+         "source_hash": f"{race_miss}:2", "data_quality_flags": []},
+    ])
+    race_ids = [race_hit, race_miss, race_open]
+    selections = [
+        {"race_id": race_hit, "horse_numbers": [1]},
+        {"race_id": race_miss, "horse_numbers": [4]},
+        {"race_id": race_open, "horse_numbers": [7]},
+    ]
+    store.save_win5_prediction(
+        prediction_run_ids=["r1", "r2", "r3"], race_ids=race_ids, budget=100, total_points=100,
+        selections=selections, coverage=[0.5, 0.5, 0.5], estimated_hit_rate=0.05,
+        allocation_method="prob", allocation_version=1, single_axis=False, axis_index=None,
+        idempotency_key="detail-key")
+
+    monkeypatch.setattr(jra_perf, "DB_PATH", str(store.db_path))
+    result = jra_perf.collect("2026-07-14")
+
+    entry = result["win5"][0]
+    races = {row["race_id"]: row for row in entry["races"]}
+
+    hit_row = races[race_hit]
+    assert hit_row["settled"] is True and hit_row["hit"] is True
+    assert hit_row["picks"] == [{"no": 1, "pop": 1, "hit": True}]
+    assert hit_row["winner"] == {"no": 1, "name": "本命馬", "pop": 1}
+
+    miss_row = races[race_miss]
+    assert miss_row["settled"] is True and miss_row["hit"] is False
+    assert miss_row["picks"] == [{"no": 4, "pop": None, "hit": False}]
+    # 中山は対抗馬のオッズが無い部分カバレッジ → 順位化を抑止 (勝ち馬=常に1人気の誤表示防止)
+    assert miss_row["winner"] == {"no": 3, "name": "勝ち馬中山", "pop": None}
+
+    open_row = races[race_open]
+    assert open_row["settled"] is False and open_row["hit"] is None
+    assert open_row["picks"] == [{"no": 7, "pop": None, "hit": False}]
+    assert open_row["winner"] is None
+
+
+def test_win5_payout_view_unfetched_fetched_and_mismatch():
+    race_rows_settled = [
+        {"race_id": "r1", "winner": {"no": 1, "name": "A", "pop": 1}},
+        {"race_id": "r2", "winner": {"no": 3, "name": "B", "pop": 2}},
+        {"race_id": "r3", "winner": None},  # 未確定レースは比較対象外
+    ]
+    assert jra_perf._win5_payout_view(None, race_rows_settled) == {"fetched": False}
+
+    matching_row = {"payout_yen": 6_412_100, "hit_ticket_count": 79, "carryover_flag": 0,
+                     "carryover_amount": None, "winning_numbers_json": "[1,3,7]"}
+    view = jra_perf._win5_payout_view(matching_row, race_rows_settled)
+    assert view == {"fetched": True, "payout_yen": 6_412_100, "hit_ticket_count": 79,
+                     "carryover_flag": False, "carryover_amount": None, "mismatch": False}
+
+    mismatched_row = dict(matching_row, winning_numbers_json="[999,3,7]")
+    view2 = jra_perf._win5_payout_view(mismatched_row, race_rows_settled)
+    assert view2["mismatch"] is True
+
+
+def test_collect_win5_attaches_payout_from_win5_results_table(tmp_path, monkeypatch):
+    store = LoggingStore(tmp_path / "win5-payout.db")
+    race_date = "20260714"
+    race_id = f"{race_date}:東京:01"
+    store.save_race(race_id=race_id, race_date=race_date, venue="東京", race_no=1)
+    store.save_race_results([
+        {"race_id": race_id, "horse_id": f"{race_id}:01", "horse_name": "本命馬",
+         "finish_position": 1, "official_status": "official", "final_win_odds": 2.5,
+         "win_payout": 250, "place_payout": 120, "result_fetched_at": datetime.now().astimezone(),
+         "source_hash": f"{race_id}:1", "data_quality_flags": []},
+    ])
+    store.save_win5_prediction(
+        prediction_run_ids=["r1"], race_ids=[race_id], budget=100, total_points=100,
+        selections=[{"race_id": race_id, "horse_numbers": [1]}], coverage=[0.9],
+        estimated_hit_rate=0.5, allocation_method="prob", allocation_version=1,
+        single_axis=False, axis_index=None, idempotency_key="payout-key")
+
+    monkeypatch.setattr(jra_perf, "DB_PATH", str(store.db_path))
+
+    # win5_results 未取得 (レコード無し) -> 「未取得」
+    unfetched = jra_perf.collect("2026-07-14")
+    assert unfetched["win5"][0]["payout"] == {"fetched": False}
+
+    # 取得済み -> 配当情報が反映される
+    store.save_win5_result(
+        race_date=race_date, payout_yen=250, hit_ticket_count=100, carryover_flag=False,
+        carryover_amount=None, winning_numbers=[1],
+        source_url="https://race.netkeiba.com/top/win5.html?date=20260714", source_hash="h1")
+    fetched = jra_perf.collect("2026-07-14")
+    payout = fetched["win5"][0]["payout"]
+    assert payout["fetched"] is True
+    assert payout["payout_yen"] == 250
+    assert payout["mismatch"] is False
+
+
+def test_collect_is_fail_soft_when_win5_results_table_is_missing(tmp_path, monkeypatch):
+    # T55: dashboards opened against a DB whose migration hasn't run yet (or a
+    # read-only connection racing a fresh initialize()) must not 500.
+    store = LoggingStore(tmp_path / "no-win5-table.db")
+    store.initialize()
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute("DROP TABLE win5_results")
+    monkeypatch.setattr(jra_perf, "DB_PATH", str(store.db_path))
+    result = jra_perf.collect()
+    assert result["win5"] == []
+
+
 def test_result_sync_api_uses_selected_date(tmp_path, monkeypatch):
     store = LoggingStore(tmp_path / "sync-api.db")
     store.initialize()
@@ -221,3 +377,63 @@ def test_result_sync_api_uses_selected_date(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert response.get_json()["synced"] == 1
     assert called == [("2026-07-11", str(store.db_path))]
+
+
+# ---------------------------------------------------------------------------
+# T55: ability.db 確定人気 (全馬分) の第一ソース化
+# ---------------------------------------------------------------------------
+
+def _make_ability_db(path, rows):
+    conn = sqlite3.connect(str(path))
+    conn.execute("CREATE TABLE runs (date TEXT, place TEXT, r INTEGER,"
+                 " umaban INTEGER, popularity INTEGER)")
+    conn.executemany("INSERT INTO runs VALUES (?,?,?,?,?)", rows)
+    conn.commit()
+    conn.close()
+
+
+def test_ability_popularity_is_primary_source(tmp_path):
+    db = tmp_path / "ability.db"
+    _make_ability_db(db, [
+        ("20260712", "小倉", 10, 5, 3),
+        ("20260712", "小倉", 10, 10, 1),
+        ("20260712", "小倉", 10, 7, None),  # 取消等: popularity無しは載せない
+    ])
+    pops = jra_perf._ability_popularity_for(["20260712:小倉:10"], db_path=str(db))
+    assert pops == {"20260712:小倉:10": {5: 3, 10: 1}}
+    merged = jra_perf._merge_popularity({"20260712:小倉:10": {5: 9, 2: 4}}, pops)
+    # ability値 (5番=3人気) がオッズ順位化 (5番=9) より優先。
+    # ability非収載の2番はオッズ順位化で補完、10番はability単独でも入る
+    assert merged["20260712:小倉:10"] == {5: 3, 2: 4, 10: 1}
+
+
+def test_snapshot_popularity_uses_latest_snapshot_only(tmp_path):
+    db = tmp_path / "log.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE odds_snapshots (race_id TEXT, horse_id TEXT,"
+                 " observed_at TEXT, popularity INTEGER)")
+    rid = "20260718:福島:10"
+    conn.executemany("INSERT INTO odds_snapshots VALUES (?,?,?,?)", [
+        (rid, f"{rid}:01", "2026-07-18T06:00:00Z", 5),   # 古いスナップショット (無視)
+        (rid, f"{rid}:01", "2026-07-18T06:08:00Z", 3),   # 最終スナップショット
+        (rid, f"{rid}:02", "2026-07-18T06:08:00Z", 1),
+        (rid, f"{rid}:03", "2026-07-18T06:08:00Z", None),  # 人気欠損は載せない
+    ])
+    conn.commit()
+    cur = conn.cursor()
+    cur.row_factory = sqlite3.Row
+    assert jra_perf._snapshot_popularity_for(cur, [rid]) == {rid: {1: 3, 2: 1}}
+    # テーブルが無いDBでもfail-soft
+    empty = sqlite3.connect(str(tmp_path / "empty.db"))
+    assert jra_perf._snapshot_popularity_for(empty.cursor(), [rid]) == {}
+
+
+def test_ability_popularity_fails_soft_when_db_missing_or_unsynced(tmp_path):
+    missing = tmp_path / "no_such.db"
+    assert jra_perf._ability_popularity_for(
+        ["20260712:小倉:10"], db_path=str(missing)) == {}
+    db = tmp_path / "ability.db"
+    _make_ability_db(db, [("20260101", "中山", 1, 1, 1)])
+    # 該当日未同期は空 (フォールバック)。壊れたrace_idは例外を出さずスキップ
+    assert jra_perf._ability_popularity_for(
+        ["20260712:小倉:10", "bogus", "a:b:c"], db_path=str(db)) == {}

@@ -183,6 +183,17 @@ CREATE TABLE IF NOT EXISTS races (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_races_filters ON races(race_date, venue, distance_m);
+CREATE TABLE IF NOT EXISTS win5_results (
+    race_date TEXT PRIMARY KEY,
+    payout_yen INTEGER,
+    hit_ticket_count INTEGER,
+    carryover_flag INTEGER NOT NULL DEFAULT 0,
+    carryover_amount INTEGER,
+    winning_numbers_json TEXT,
+    fetched_at TEXT NOT NULL,
+    source_url TEXT,
+    source_hash TEXT
+);
 """
 
 
@@ -310,6 +321,9 @@ class LoggingStore:
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(6, ?)", (utc_now(),))
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(7, ?)", (utc_now(),))
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(8, ?)", (utc_now(),))
+            # version 9 (T55): win5_results table (created above via CREATE TABLE IF NOT EXISTS,
+            # so this migration is idempotent on both fresh and existing DBs).
+            conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(9, ?)", (utc_now(),))
         self._write(op)
 
     def start_run(self, *, app_name: str, trigger_type: str = "manual", model_name: str | None = None,
@@ -531,6 +545,31 @@ class LoggingStore:
                 "SELECT win5_prediction_id FROM win5_predictions WHERE idempotency_key=?", (idempotency_key,)
             ).fetchone()[0]
         return self._write(op)
+
+    def save_win5_result(self, *, race_date: str, payout_yen: int | None, hit_ticket_count: int | None,
+                         carryover_flag: bool, carryover_amount: int | None,
+                         winning_numbers: list[int] | None, source_url: str | None,
+                         source_hash: str | None, fetched_at: datetime | str | None = None) -> None:
+        """Upsert one day's official WIN5 payout (T55). Called from the result-sync path only;
+        the read-only dashboard never writes here."""
+        self.initialize()
+        values = (str(race_date), payout_yen, hit_ticket_count, int(bool(carryover_flag)), carryover_amount,
+                  stable_json(winning_numbers) if winning_numbers is not None else None,
+                  _utc(fetched_at) or utc_now(), source_url, source_hash)
+        self._write(lambda conn: conn.execute("""INSERT INTO win5_results
+            (race_date,payout_yen,hit_ticket_count,carryover_flag,carryover_amount,
+             winning_numbers_json,fetched_at,source_url,source_hash)
+            VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(race_date) DO UPDATE SET
+            payout_yen=excluded.payout_yen,hit_ticket_count=excluded.hit_ticket_count,
+            carryover_flag=excluded.carryover_flag,carryover_amount=excluded.carryover_amount,
+            winning_numbers_json=excluded.winning_numbers_json,fetched_at=excluded.fetched_at,
+            source_url=excluded.source_url,source_hash=excluded.source_hash""", values))
+
+    def get_win5_result(self, race_date: str) -> dict[str, Any] | None:
+        self.initialize()
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM win5_results WHERE race_date=?", (str(race_date),)).fetchone()
+        return dict(row) if row else None
 
     def save_race(self, *, race_id: str, race_date: str, venue: str, race_no: int,
                   race_name: str | None = None, surface: str | None = None,

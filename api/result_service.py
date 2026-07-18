@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -140,10 +141,10 @@ def result_url_candidates(url: str, *, card_html: str | None = None,
     return candidates
 
 
-def _get(url: str, timeout: int):
+def _get(url: str, timeout: int, *, encoding: str = "cp932"):
     response = requests.get(url, headers=HEADERS, timeout=timeout)
     response.raise_for_status()
-    response.encoding = "cp932"
+    response.encoding = encoding
     return response
 
 
@@ -197,6 +198,110 @@ def normalize_race_date(value: str) -> str:
     return compact
 
 
+# ─── WIN5 payout (T55) ──────────────────────────────────────────────────────
+# WIN5 spans 5 races across up to 5 venues and has no payout page of its own on
+# jra.go.jp per race, so the official race-result flow above cannot surface it.
+# netkeiba's WIN5 corner (race.netkeiba.com/top/win5.html?date=YYYYMMDD) publishes
+# the same figures JRA announces (cross-checked manually against jra.go.jp/news
+# for 2026-07-12: payout 6,412,100 yen / 79 tickets) and is stable/scriptable,
+# so it is used as the source here. One request per race day; see
+# fetch_and_save_win5_result / sync_results_for_date for the call-site rules.
+WIN5_RESULT_URL = "https://race.netkeiba.com/top/win5.html?date={date}"
+_WIN5_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+
+def _yen_amount(text: str | None) -> int | None:
+    """Parse a Japanese amount like "641万2100円" / "5億3990万5240円" / "-円" into yen.
+
+    Returns None for the "-円" placeholder netkeiba shows when there is no payout
+    (e.g. a carryover day with zero winning tickets).
+    """
+    text = (text or "").strip()
+    if not text or text.startswith("-"):
+        return None
+    match = re.match(r"(?:(\d+)億)?(?:(\d+)万)?(\d+)?円", text)
+    if not match or not any(match.groups()):
+        return None
+    oku, man, yen = (int(g) if g else 0 for g in match.groups())
+    return oku * 100_000_000 + man * 10_000 + yen
+
+
+def parse_win5_result_html(html: str, *, race_date: str | None = None, source_url: str = "") -> dict[str, Any]:
+    """Parse netkeiba's WIN5 result page into the win5_results row shape (T55)."""
+    soup = BeautifulSoup(html, "html.parser")
+    heading = soup.select_one(".TitleHeadingWin")
+    heading_text = heading.get_text(strip=True) if heading else ""
+    date_match = re.search(r"(20\d{2})年(\d{2})月(\d{2})日", heading_text)
+    if not race_date and date_match:
+        race_date = f"{date_match.group(1)}{date_match.group(2)}{date_match.group(3)}"
+    if not race_date:
+        raise ValueError("win5 result date could not be determined")
+
+    numbers = [_integer(li.get_text(strip=True)) for li in soup.select(".Win5_UmabanWrap li.w5")]
+    numbers = [n for n in numbers if n is not None]
+    if not numbers:
+        raise ResultNotReady("win5 result page has no winning-number data yet")
+
+    payout_yen = hit_ticket_count = None
+    for row in soup.select(".WIN5_AllResult tr.Result"):
+        th, td = row.select_one("th"), row.select_one("td")
+        if th is None or td is None:
+            continue
+        label = th.get_text(strip=True)
+        if label == "払戻金":
+            payout_yen = _yen_amount(td.get_text(strip=True))
+        elif label == "的中票数":
+            hit_ticket_count = _integer(td.get_text(strip=True))
+
+    carryover_amount = None
+    carryover_table = soup.select_one('table[summary="結果"]')
+    if carryover_table and "キャリーオーバー" in carryover_table.get_text():
+        td = carryover_table.select_one("td")
+        carryover_amount = _yen_amount(td.get_text(strip=True)) if td else None
+    carryover_flag = bool(carryover_amount)
+
+    source_hash = hashlib.sha256(html.encode("utf-8")).hexdigest()
+    return {
+        "race_date": race_date, "payout_yen": payout_yen, "hit_ticket_count": hit_ticket_count,
+        "carryover_flag": carryover_flag, "carryover_amount": carryover_amount,
+        "winning_numbers": numbers, "source_url": source_url, "source_hash": source_hash,
+    }
+
+
+def fetch_and_save_win5_result(race_date: str, *, store: LoggingStore | None = None,
+                               timeout: int = 20, force: bool = False) -> dict[str, Any]:
+    """Fetch and persist one day's official WIN5 payout (fail-soft; T55).
+
+    At most one HTTP request per race day: if a row already exists for the date
+    (a prior fetch already succeeded), this returns it without a network call
+    unless ``force`` is set. Any failure (network error, unparsable/not-yet-
+    published page) raises ResultNotReady/ValueError and leaves no row behind,
+    so the dashboard keeps showing "未取得" until a later sync retries it.
+    """
+    compact = normalize_race_date(race_date)
+    target = store or LoggingStore()
+    if not force:
+        cached = target.get_win5_result(compact)
+        if cached is not None:
+            return dict(cached, already_stored=True)
+    url = WIN5_RESULT_URL.format(date=compact)
+    time.sleep(1)  # netkeibaへのアクセスは1リクエスト1秒以上のスリープを挟む (厳守事項)
+    try:
+        response = requests.get(url, headers=_WIN5_HEADERS, timeout=timeout)
+        response.raise_for_status()
+        response.encoding = response.apparent_encoding or "utf-8"
+    except requests.RequestException as exc:
+        raise ResultNotReady(f"{url}: {type(exc).__name__}: {exc}") from exc
+    parsed = parse_win5_result_html(response.text, race_date=compact, source_url=url)
+    target.save_win5_result(
+        race_date=parsed["race_date"], payout_yen=parsed["payout_yen"],
+        hit_ticket_count=parsed["hit_ticket_count"], carryover_flag=parsed["carryover_flag"],
+        carryover_amount=parsed["carryover_amount"], winning_numbers=parsed["winning_numbers"],
+        source_url=parsed["source_url"], source_hash=parsed["source_hash"],
+    )
+    return dict(parsed, already_stored=False)
+
+
 def monitored_result_sources(race_date: str, *, store: LoggingStore | None = None) -> list[dict[str, str]]:
     """Return persisted race-card URLs for one locally monitored race day."""
     compact = normalize_race_date(race_date)
@@ -247,6 +352,20 @@ def sync_results_for_date(race_date: str, *, store: LoggingStore | None = None,
                     "error": f"{type(exc).__name__}: {exc}",
                 })
 
+    # WIN5 payout (T55): fail-soft best-effort, at most one netkeiba request (see
+    # fetch_and_save_win5_result). A missing/failed fetch must not affect the
+    # official race-result sync above, so failures are swallowed here.
+    win5_result: dict[str, Any] = {"fetched": False}
+    try:
+        parsed = fetch_and_save_win5_result(compact, store=target, timeout=timeout)
+        win5_result = {
+            "fetched": True, "already_stored": parsed.get("already_stored", False),
+            "payout_yen": parsed.get("payout_yen"), "hit_ticket_count": parsed.get("hit_ticket_count"),
+            "carryover_flag": parsed.get("carryover_flag"),
+        }
+    except Exception as exc:
+        win5_result = {"fetched": False, "error": f"{type(exc).__name__}: {exc}"}
+
     return {
         "date": compact,
         "sources": len(sources),
@@ -254,6 +373,7 @@ def sync_results_for_date(race_date: str, *, store: LoggingStore | None = None,
         "failed": len(failed),
         "details": sorted(synced, key=lambda item: item["race_id"]),
         "errors": sorted(failed, key=lambda item: item["race_id"]),
+        "win5_result": win5_result,
     }
 
 

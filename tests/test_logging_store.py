@@ -21,9 +21,70 @@ def scalar(store, sql):
 
 
 def test_initialize_is_one_command_and_enables_wal(store):
-    assert scalar(store, "SELECT count(*) FROM schema_migrations") == 8
+    assert scalar(store, "SELECT count(*) FROM schema_migrations") == 9
     with sqlite3.connect(store.db_path) as conn:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
+def test_win5_results_table_is_added_to_pre_t55_database(tmp_path):
+    # Simulate a real DB that predates T55: schema_migrations exists with versions
+    # 1-8 applied but no win5_results table yet.
+    db_path = tmp_path / "pre-t55.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)""")
+        conn.executemany("INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)",
+                          [(v, "2026-01-01T00:00:00Z") for v in range(1, 9)])
+
+    migrated = LoggingStore(db_path)
+    migrated.initialize()
+    migrated.initialize()  # must be safe to run twice (idempotent migration)
+    with sqlite3.connect(db_path) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        version_count = conn.execute(
+            "SELECT count(*) FROM schema_migrations WHERE version=9").fetchone()[0]
+    assert "win5_results" in tables
+    assert version_count == 1
+
+
+def test_win5_results_migration_is_idempotent_on_existing_db(store):
+    # T55: re-running initialize() on a DB that already has win5_results (and on
+    # one that predates it) must not raise and must not duplicate the migration row.
+    store.initialize()
+    store.initialize()
+    with sqlite3.connect(store.db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(win5_results)")}
+        migration_rows = conn.execute(
+            "SELECT count(*) FROM schema_migrations WHERE version=9").fetchone()[0]
+    assert {"race_date", "payout_yen", "hit_ticket_count", "carryover_flag",
+            "carryover_amount", "winning_numbers_json", "fetched_at", "source_url",
+            "source_hash"} <= columns
+    assert migration_rows == 1
+
+
+def test_save_and_get_win5_result_upserts_by_date(store):
+    store.save_win5_result(
+        race_date="20260712", payout_yen=6_412_100, hit_ticket_count=79,
+        carryover_flag=False, carryover_amount=None,
+        winning_numbers=[10, 11, 10, 6, 11],
+        source_url="https://race.netkeiba.com/top/win5.html?date=20260712",
+        source_hash="abc123")
+    row = store.get_win5_result("20260712")
+    assert row["payout_yen"] == 6_412_100
+    assert row["hit_ticket_count"] == 79
+    assert json.loads(row["winning_numbers_json"]) == [10, 11, 10, 6, 11]
+
+    # Upsert: a later fetch for the same date overwrites rather than duplicating.
+    store.save_win5_result(
+        race_date="20260712", payout_yen=6_412_100, hit_ticket_count=80,
+        carryover_flag=False, carryover_amount=None,
+        winning_numbers=[10, 11, 10, 6, 11],
+        source_url="https://race.netkeiba.com/top/win5.html?date=20260712",
+        source_hash="def456")
+    row2 = store.get_win5_result("20260712")
+    assert row2["hit_ticket_count"] == 80
+    assert scalar(store, "SELECT count(*) FROM win5_results") == 1
+    assert store.get_win5_result("20260713") is None
 
 
 def test_run_and_prediction_are_idempotent(store):
