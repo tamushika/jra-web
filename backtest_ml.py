@@ -19,7 +19,9 @@ import argparse
 import json
 import math
 import os
+import re
 import sqlite3
+import statistics
 import sys
 from collections import defaultdict
 from datetime import datetime
@@ -82,9 +84,249 @@ _RELATIVE_AVAILABILITY_BITS = {
 }
 
 
-def active_feature_names(relative=False):
+def active_feature_names(relative=False, pack_groups=None):
     """今回のデータセットに含める特徴量名を、列順どおりに返す。"""
-    return list(FEATURES) + (list(RELATIVE_FEATURES) if relative else [])
+    return (list(FEATURES) + (list(RELATIVE_FEATURES) if relative else [])
+            + pack_feature_names(pack_groups))
+
+
+# T41: 低コスト特徴パック (A3馬体重変動/A7ローテ/A8斤量差分/X3タイム指数状態量)。
+# T13 の RELATIVE_FEATURES と同じ隔離パターン。本番 FEATURES は不変。
+# pack_groups が空/None のときは build_dataset の出力に一切影響しない
+# (SPEC-T41 §2/§5.4: パックOFFで既存出力が決定論SHA一致すること)。
+A3_FEATURES = [
+    "weight_delta_prev",                  # 当日体重-前走体重 (前走なしは0)
+    "weight_delta_rate",                  # 上記/前走体重
+    "weight_no_prior_flag",               # 前走なし (初出走) flag
+    "weight_today_missing_flag",          # 当日体重欠損 (前走値fallback使用) flag
+    "weight_dev_expanding",               # 過去走のみのexpanding中央値からのMAD正規化偏差
+    "weight_dev_expanding_missing_flag",  # 過去2走未満 flag
+    "weight_delta_x_layoff",              # weight_delta_prev × ln(休養日数)
+]
+A7_FEATURES = [
+    "starts_28d",                    # 過去28日の出走数
+    "starts_56d",                    # 過去56日の出走数
+    "run_after_layoff",              # 休養(90日以上)明け何戦目か (上限5クリップ、休養未経験は0)
+    "class_delta",                   # 前走とのクラス差 (昇級+/降級-、初出走0)
+    "dist_delta_log",                # ln(今回距離/前走距離) (初出走0)
+    "surface_change",                # 芝⇔ダ替わり flag (初出走0)
+    "venue_change_transport_proxy",  # 前走と別競馬場 flag (滞在競馬は区別できないためproxy呼称)
+    "jockey_change",                 # 前走と騎手が異なる flag
+]
+A8_FEATURES = [
+    "kinryo_delta_prev",         # 今回斤量-前走斤量 (前走なしは0)
+    "kinryo_per_weight",         # 斤量/当日馬体重 (体重欠損時は前走体重fallback)
+    "kinryo_delta_x_handicap",   # kinryo_delta_prev × ハンデ戦flag
+]
+X3_FEATURES = [
+    "tfeat_rwmean",              # recency加重平均 (半減期2走、直近8走)
+    "tfeat_std",                 # 同ウィンドウの標準偏差
+    "tfeat_std_missing_flag",    # 有効走数2走未満 flag
+    "tfeat_slope2",              # 直近2走(有効値)の傾き
+    "tfeat_gap_from_max",        # tfeat_rwmean - 現行tfeat(直近4走max)
+    "tfeat_post_layoff_delta",   # 前走が休養明け初戦だった場合のその走の指数変化
+]
+PACK_GROUPS = {"A3": A3_FEATURES, "A7": A7_FEATURES, "A8": A8_FEATURES, "X3": X3_FEATURES}
+PACK_GROUP_ORDER = ("A3", "A7", "A8", "X3")
+
+# race_name (TARGET式圧縮名) のハンデ戦マーカー: 全角Ｈが「名前の直後・
+# 修飾の直前」に付く (例: "小倉大賞ＨG3", "仁川ＳＨ(L)", "早春ＳＨ･3勝",
+# "いわきＨ1000", 末尾 "しらかばＨ")。局名等の名前の一部のＨ
+# ("ＮＨＫマG1", "ＨＢＣ賞1000", "ＵＨＢ杯") はハンデではない。
+# ability.db全件でＨ直後の文字はマーカー位置 (数字/･/G+数字/括弧/末尾) と
+# 名前連続 (Ｂ/Ｔ/Ｋ) に完全二分されることを確認済み (T41レビュー、誤検知1,990走を除外)。
+HANDICAP_RACE_NAME_MARKER_RE = re.compile(r"Ｈ(?=$|[GＧ][1-3１-３]|[0-9０-９]|･|\(|（)")
+X3_WINDOW = 8
+X3_HALFLIFE_STARTS = 2.0
+
+
+def pack_feature_names(pack_groups):
+    """要求されたパックグループの特徴量名を、固定順 (A3→A7→A8→X3) で返す。"""
+    if not pack_groups:
+        return []
+    selected = [g for g in PACK_GROUP_ORDER if g in pack_groups]
+    names = []
+    for group in selected:
+        names.extend(PACK_GROUPS[group])
+    return names
+
+
+def _time_index_value(pr, use_variant):
+    """単一走のタイム指数 (標準タイム+馬場差-実タイム、クリップ済み)。
+
+    現行tfeat/cfeatが使う値と同一の定義 (build_dataset内のtbest計算と同じ
+    scoring.std_time/track_variant呼び出し)。X3はこの値の分布・推移だけを見る。
+    """
+    if not pr.get("time_sec") or not pr.get("condition"):
+        return None
+    base = scoring.std_time(pr["place"], pr["track_type"], pr["distance"],
+                            pr["race_class"], pr["condition"])
+    if base is None:
+        return None
+    tv = scoring.track_variant(pr["date"], pr["place"],
+                               pr["track_type"]) if use_variant else 0.0
+    return max(-TIME_DIFF_CLIP, min(TIME_DIFF_CLIP, base + tv - pr["time_sec"]))
+
+
+def _days_between(later, earlier):
+    try:
+        d1 = datetime.strptime(later, "%Y%m%d")
+        d0 = datetime.strptime(earlier, "%Y%m%d")
+    except (TypeError, ValueError):
+        return None
+    return (d1 - d0).days
+
+
+def _horse_layoff_states(lst):
+    """休養(90日以上)明け何戦目かを、その馬のキャリア列(時系列昇順)全体について
+    1回だけ計算する。値は各インデックス位置の「その走時点の状態」(0=休養未経験
+    または休養区間対象外、1..5=休養明けから数えた出走数・上限5クリップ)。
+    どちらの側も当該走およびそれより未来の情報は使わない。
+    """
+    states = [0] * len(lst)
+    state = 0
+    for j in range(1, len(lst)):
+        gap = _days_between(lst[j]["date"], lst[j - 1]["date"])
+        if gap is not None and gap >= 90:
+            state = 1
+        elif state > 0:
+            state = min(state + 1, 5)
+        states[j] = state
+    return states
+
+
+def _pack_feature_values(lst, i, groups, *, use_variant, layoff_states, tfeat_current):
+    """行iのパック特徴量を計算する。lst[:i] (当該走より前) のみを参照する。"""
+    cur = lst[i]
+    full_prior = lst[:i]
+    prev = full_prior[-1] if full_prior else None
+    prev_prev = full_prior[-2] if len(full_prior) >= 2 else None
+    values = {}
+
+    if "A3" in groups:
+        cur_weight = cur.get("weight")
+        prev_weight = prev.get("weight") if prev else None
+        no_prior = prev is None or prev_weight is None
+        today_missing = cur_weight is None
+        effective_cur_weight = cur_weight if cur_weight is not None else prev_weight
+        if no_prior or effective_cur_weight is None:
+            delta_prev = 0.0
+            delta_rate = 0.0
+        else:
+            delta_prev = float(effective_cur_weight) - float(prev_weight)
+            delta_rate = delta_prev / prev_weight if prev_weight else 0.0
+        past_weights = [p.get("weight") for p in full_prior if p.get("weight") is not None]
+        if len(past_weights) < 2 or effective_cur_weight is None:
+            dev_expanding = 0.0
+            dev_missing = 1.0
+        else:
+            median = statistics.median(past_weights)
+            mad = statistics.median([abs(w - median) for w in past_weights])
+            dev_expanding = ((float(effective_cur_weight) - median) / mad) if mad > 0 else 0.0
+            dev_missing = 0.0
+        if not no_prior:
+            gap = _days_between(cur["date"], prev["date"])
+            layoff_ln = math.log(max(gap, 1)) if gap is not None else 0.0
+        else:
+            layoff_ln = 0.0
+        values["weight_delta_prev"] = delta_prev
+        values["weight_delta_rate"] = delta_rate
+        values["weight_no_prior_flag"] = 1.0 if no_prior else 0.0
+        values["weight_today_missing_flag"] = 1.0 if today_missing else 0.0
+        values["weight_dev_expanding"] = dev_expanding
+        values["weight_dev_expanding_missing_flag"] = dev_missing
+        values["weight_delta_x_layoff"] = delta_prev * layoff_ln
+
+    if "A7" in groups:
+        starts_28 = starts_56 = 0
+        for p in full_prior:
+            gap = _days_between(cur["date"], p["date"])
+            if gap is None or gap <= 0:
+                continue
+            if gap <= 28:
+                starts_28 += 1
+            if gap <= 56:
+                starts_56 += 1
+        if prev is not None:
+            class_delta = float(CLASS_RANK.get(cur.get("race_class"), 0)
+                                - CLASS_RANK.get(prev.get("race_class"), 0))
+        else:
+            class_delta = 0.0
+        if prev is not None and cur.get("distance") and prev.get("distance"):
+            dist_delta_log = math.log(cur["distance"] / prev["distance"])
+        else:
+            dist_delta_log = 0.0
+        surface_change = 1.0 if (
+            prev is not None and prev.get("track_type") != cur.get("track_type")) else 0.0
+        venue_change = 1.0 if (
+            prev is not None and prev.get("place") != cur.get("place")) else 0.0
+        jockey_change = 1.0 if (
+            prev is not None and prev.get("jockey") != cur.get("jockey")) else 0.0
+        values["starts_28d"] = float(starts_28)
+        values["starts_56d"] = float(starts_56)
+        values["run_after_layoff"] = float(layoff_states[i])
+        values["class_delta"] = class_delta
+        values["dist_delta_log"] = dist_delta_log
+        values["surface_change"] = surface_change
+        values["venue_change_transport_proxy"] = venue_change
+        values["jockey_change"] = jockey_change
+
+    if "A8" in groups:
+        cur_weight = cur.get("weight")
+        prev_weight = prev.get("weight") if prev else None
+        effective_weight = cur_weight if cur_weight is not None else prev_weight
+        cur_kinryo = cur.get("kinryo")
+        prev_kinryo = prev.get("kinryo") if prev else None
+        if prev is not None and cur_kinryo is not None and prev_kinryo is not None:
+            kinryo_delta_prev = float(cur_kinryo) - float(prev_kinryo)
+        else:
+            kinryo_delta_prev = 0.0
+        if cur_kinryo is not None and effective_weight:
+            kinryo_per_weight = float(cur_kinryo) / float(effective_weight)
+        else:
+            kinryo_per_weight = 0.0
+        is_handicap = 1.0 if HANDICAP_RACE_NAME_MARKER_RE.search(
+            str(cur.get("race_name") or "")) else 0.0
+        values["kinryo_delta_prev"] = kinryo_delta_prev
+        values["kinryo_per_weight"] = kinryo_per_weight
+        values["kinryo_delta_x_handicap"] = kinryo_delta_prev * is_handicap
+
+    if "X3" in groups:
+        window = full_prior[-X3_WINDOW:][::-1]  # recency順 (0=直近)
+        indexed = [(j, _time_index_value(p, use_variant)) for j, p in enumerate(window)]
+        valid = [(j, v) for j, v in indexed if v is not None]
+        if valid:
+            weights = [2.0 ** (-j / X3_HALFLIFE_STARTS) for j, _ in valid]
+            wsum = sum(weights)
+            rwmean = sum(w * v for (_j, v), w in zip(valid, weights)) / wsum
+        else:
+            rwmean = 0.0
+        if len(valid) >= 2:
+            tstd = statistics.pstdev([v for _j, v in valid])
+            std_missing = 0.0
+        else:
+            tstd = 0.0
+            std_missing = 1.0
+        ordered = sorted(valid, key=lambda item: item[0])
+        if len(ordered) >= 2:
+            slope2 = ordered[0][1] - ordered[1][1]
+        else:
+            slope2 = 0.0
+        gap_from_max = rwmean - tfeat_current
+        post_layoff_delta = 0.0
+        if prev is not None and layoff_states[i - 1] == 1 and prev_prev is not None:
+            v_prev = _time_index_value(prev, use_variant)
+            v_prev_prev = _time_index_value(prev_prev, use_variant)
+            if v_prev is not None and v_prev_prev is not None:
+                post_layoff_delta = v_prev - v_prev_prev
+        values["tfeat_rwmean"] = rwmean
+        values["tfeat_std"] = tstd
+        values["tfeat_std_missing_flag"] = std_missing
+        values["tfeat_slope2"] = slope2
+        values["tfeat_gap_from_max"] = gap_from_max
+        values["tfeat_post_layoff_delta"] = post_layoff_delta
+
+    return values
 
 
 PEDIGREE_MIN_COVERAGE = 0.70  # 評価出走の血統判明率がこれ未満なら sire_pts は無効のまま
@@ -187,11 +429,23 @@ def _relative_value_available(mask, source):
     return bool(mask.get(source, False))
 
 
-def build_dataset(runs, date_from, cfg, relative=False):
-    """評価出走ごとに特徴量ベクトルを構築 (score_all_runners と同じ部品を使用)"""
+def build_dataset(runs, date_from, cfg, relative=False, pack_groups=None):
+    """評価出走ごとに特徴量ベクトルを構築 (score_all_runners と同じ部品を使用)
+
+    ``pack_groups`` は T41 低コスト特徴パック ({"A3","A7","A8","X3"} の部分集合)。
+    None/空のときは一切のコード分岐に入らず、既存の出力と完全に同一になる。
+    """
     from backtest_criteria import (load_filtered_criteria, load_mawari,
                                    build_h, attach_agari_rank)
     import analysis
+
+    if pack_groups:
+        unknown = set(pack_groups) - set(PACK_GROUP_ORDER)
+        if unknown:
+            raise ValueError(f"未知のpack_groups: {sorted(unknown)}")
+        active_pack_groups = frozenset(pack_groups)
+    else:
+        active_pack_groups = frozenset()
 
     params = cfg["params"]
     weights = cfg["weights"]
@@ -247,8 +501,11 @@ def build_dataset(runs, date_from, cfg, relative=False):
     # Six availability flags fit in one byte per runner; a bytearray avoids
     # retaining tens of thousands of Python dict/int objects in yearly folds.
     relative_availability = bytearray()
+    X_pack = [] if active_pack_groups else None
+    pack_names = pack_feature_names(active_pack_groups) if active_pack_groups else None
 
     for horse, lst in by_horse.items():
+        layoff_states = _horse_layoff_states(lst) if active_pack_groups else None
         for i, cur in enumerate(lst):
             if cur["date"] < date_from or cur["rank"] is None:
                 continue
@@ -410,8 +667,16 @@ def build_dataset(runs, date_from, cfg, relative=False):
             meta.append(cur)
             if relative:
                 relative_availability.append(available)
+            if active_pack_groups:
+                pack_values = _pack_feature_values(
+                    lst, i, active_pack_groups, use_variant=use_variant,
+                    layoff_states=layoff_states, tfeat_current=f["tfeat"])
+                X_pack.append([pack_values[name] for name in pack_names])
     if relative:
         X = _append_relative_features(X, race_keys, relative_availability)
+    if active_pack_groups:
+        base = X if isinstance(X, np.ndarray) else np.asarray(X, dtype=float)
+        X = np.hstack([base, np.asarray(X_pack, dtype=float)])
     return np.array(X), np.array(y), race_keys, meta
 
 
