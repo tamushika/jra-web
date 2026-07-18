@@ -37,6 +37,21 @@
                              padding: 7px 10px; }
         .pf-controls button { padding: 7px 12px; }
         .pf-controls button:disabled { opacity: .55; cursor: wait; }
+        .pf-graph-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+        .pf-graph-controls select { max-width: min(560px, 90vw); background: rgba(0,0,0,0.25);
+                                    color: var(--text-color); border: 1px solid var(--border-color);
+                                    border-radius: 6px; padding: 7px 10px; }
+        .metric-btn.active { color: #fff; background: var(--primary); }
+        .pf-chart-wrap { overflow-x: auto; }
+        #dailyChart { display: block; width: 100%; min-width: 620px; height: 300px; }
+        #dailyChart .grid { stroke: var(--border-color); stroke-width: 1; }
+        #dailyChart .baseline { stroke: #ffb74d; stroke-width: 1.5; stroke-dasharray: 6 4; }
+        #dailyChart .line { fill: none; stroke: var(--primary); stroke-width: 2.5; }
+        #dailyChart .point { fill: var(--primary); stroke: #fff; stroke-width: 1; cursor: pointer; }
+        #dailyChart text { fill: var(--text-muted); font-size: 11px; }
+        .race-date-row td { background: rgba(255,255,255,0.055); font-weight: bold; text-align: left; }
+        .race-date-detail summary { cursor: pointer; color: var(--primary); padding: 3px 0; }
+        .race-date-content { margin-top: 8px; }
     </style>
 </head>
 <body>
@@ -94,6 +109,19 @@
             <th>予測日時</th><th>点数</th><th>推定的中率</th><th>配分</th><th>軸</th>
             <th>レース別 (○=勝ち馬を含む)</th><th>WIN5</th><th>詳細</th>
         </tr></thead><tbody id="w5Body"></tbody></table>
+    </div>
+
+    <div class="pf-section" id="graphSection">
+        <div class="pf-title">📈 日別成績グラフ</div>
+        <div class="pf-graph-controls">
+            <label for="seriesSelect">系列</label>
+            <select id="seriesSelect" onchange="renderGraph()"></select>
+            <button class="metric-btn active" data-metric="win_rate" onclick="setGraphMetric('win_rate')">単勝的中率</button>
+            <button class="metric-btn" data-metric="tan_roi" onclick="setGraphMetric('tan_roi')">単勝回収</button>
+            <button class="metric-btn" data-metric="fuku_roi" onclick="setGraphMetric('fuku_roi')">複勝回収</button>
+        </div>
+        <div id="graphNote" class="pf-meta" style="margin-bottom:4px;"></div>
+        <div class="pf-chart-wrap"><svg id="dailyChart" role="img" aria-label="日別成績グラフ"></svg></div>
     </div>
 
     <div class="pf-section" id="daysSection">
@@ -179,6 +207,9 @@ function win5DetailHtml(entry) {
 }
 
 let lastSyncMessage = '';
+let graphSeries = [];
+let graphMetric = 'win_rate';
+const raceRowsByDate = new Map();
 
 function selectedDate() { return document.getElementById('dateFilter').value; }
 function setUrlDate(value) {
@@ -211,6 +242,148 @@ function jumpToDate(value) {
     document.getElementById('dateFilter').value = value;
     setUrlDate(value);
     load();
+}
+
+function raceRowsHtml(rows) {
+    return (rows || []).map(r => `<tr><td>${esc(dateFmt(r.date))}</td>
+        <td class="left">${esc(r.venue)} ${esc(r.race_no)}R${r.race_name ? ' ' + esc(r.race_name) : ''}</td>
+        <td class="left">${esc(r.app)} / ${esc(r.model)} ${esc(r.version)}</td>
+        <td>${esc(r.horse)}${r.horse_name ? ' ' + esc(r.horse_name) : ''}</td>
+        <td>${r.score != null ? Number(r.score).toFixed(2) : '-'}</td>
+        <td>${r.winner ? esc(r.winner) + (r.winner_name ? ' ' + esc(r.winner_name) : '') : '<span class="pf-meta">待ち</span>'}</td>
+        <td>${finish(r.result)}</td><td>${r.win_payout ? r.win_payout + '円' : '-'}</td>
+        <td>${r.place_payout ? r.place_payout + '円' : '-'}</td></tr>`).join('');
+}
+
+function raceDateSummary(r) {
+    return `${esc(r.date)} (${r.races}R / 確定${r.settled} / 単勝的中${r.win} / 回収${r.tan_roi == null ? '-' : Number(r.tan_roi).toFixed(1) + '%'})`;
+}
+
+async function loadRaceDate(details, date) {
+    if (!details.open) return;
+    const body = details.querySelector('.race-date-content');
+    if (raceRowsByDate.has(date)) {
+        body.innerHTML = raceRowsByDate.get(date);
+        return;
+    }
+    body.innerHTML = '<span class="pf-meta">読み込み中…</span>';
+    try {
+        const response = await fetch(`api/perf?date=${encodeURIComponent(date)}`);
+        const data = await response.json();
+        if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
+        const html = `<table class="pf-table"><thead><tr><th>日付</th><th>レース</th><th>モデル</th>`
+            + `<th>予測1位馬</th><th>スコア</th><th>勝ち馬</th><th>着順</th><th>単勝払戻</th><th>複勝払戻</th>`
+            + `</tr></thead><tbody>${raceRowsHtml(data.race_details) || '<tr><td colspan="9" class="pf-meta">なし</td></tr>'}</tbody></table>`;
+        raceRowsByDate.set(date, html);
+        body.innerHTML = html;
+    } catch (error) {
+        body.innerHTML = `<span class="hit-n">読み込みエラー: ${esc(error.message)}</span>`;
+    }
+}
+
+function renderRaceResults(data) {
+    const body = document.getElementById('raceBody');
+    if (data.selected_date || !data.race_dates) {
+        body.innerHTML = raceRowsHtml(data.race_details)
+            || '<tr><td colspan="9" class="pf-meta">この日の予測記録はありません</td></tr>';
+        return;
+    }
+    const dates = data.race_dates || [];
+    if (!dates.length) {
+        body.innerHTML = '<tr><td colspan="9" class="pf-meta">予測記録はありません</td></tr>';
+        return;
+    }
+    const latest = dates[0];
+    const rows = [`<tr class="race-date-row"><td colspan="9">${raceDateSummary(latest)}</td></tr>`,
+                  raceRowsHtml(data.race_details)];
+    dates.slice(1).forEach(item => rows.push(`<tr><td colspan="9"><details class="race-date-detail"`
+        + ` ontoggle="loadRaceDate(this, '${esc(item.date)}')"><summary>${raceDateSummary(item)}</summary>`
+        + `<div class="race-date-content"></div></details></td></tr>`));
+    body.innerHTML = rows.join('');
+}
+
+function setupGraph(series) {
+    const models = (series?.models || []).map((item, index) => ({
+        key: `model:${index}`, label: `${item.app} / ${item.model} ${item.version} (${item.config})`,
+        type: 'model', points: item.points || [],
+    }));
+    graphSeries = [...models,
+        {key: 'ev', label: 'EV通知', type: 'ev', points: series?.ev?.points || []},
+        {key: 'win5', label: 'WIN5', type: 'win5', points: series?.win5?.points || []}];
+    const select = document.getElementById('seriesSelect');
+    const previous = select.value;
+    select.innerHTML = graphSeries.map(item => `<option value="${esc(item.key)}">${esc(item.label)}</option>`).join('');
+    if (graphSeries.some(item => item.key === previous)) select.value = previous;
+    renderGraph();
+}
+
+function setGraphMetric(metric) {
+    graphMetric = metric;
+    document.querySelectorAll('.metric-btn').forEach(button =>
+        button.classList.toggle('active', button.dataset.metric === metric));
+    renderGraph();
+}
+
+function renderGraph() {
+    const svg = document.getElementById('dailyChart');
+    const selected = graphSeries.find(item => item.key === document.getElementById('seriesSelect').value);
+    if (!selected || !selected.points.length) {
+        svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle">表示できる日次データがありません</text>';
+        document.getElementById('graphNote').textContent = '';
+        return;
+    }
+    const isWin5 = selected.type === 'win5';
+    document.querySelectorAll('.metric-btn').forEach(button => button.disabled = isWin5);
+    const metric = isWin5 ? 'hits' : graphMetric;
+    const valueOf = point => {
+        if (isWin5) return point.total ? point.hits : null;
+        if (!point.settled) return null;
+        if (selected.type === 'ev' && metric === 'win_rate') return 100 * point.win / point.settled;
+        return point[metric];
+    };
+    const points = selected.points;
+    const values = points.map(valueOf).filter(value => value != null);
+    const width = Math.max(620, svg.clientWidth || 900), height = 300;
+    const left = 52, right = 18, top = 18, bottom = 46;
+    const maxValue = isWin5
+        ? Math.max(1, ...points.map(point => point.total || 0))
+        : Math.max(metric.endsWith('roi') ? 100 : 0, ...values, 1);
+    const minValue = 0;
+    const x = index => left + (points.length === 1 ? (width-left-right)/2 : index * (width-left-right)/(points.length-1));
+    const y = value => top + (maxValue-value) * (height-top-bottom)/(maxValue-minValue || 1);
+    const labelEvery = Math.max(1, Math.ceil(points.length / 8));
+    const gridValues = [0, maxValue / 2, maxValue];
+    let html = gridValues.map(value => `<line class="grid" x1="${left}" y1="${y(value)}" x2="${width-right}" y2="${y(value)}"/>`
+        + `<text x="${left-7}" y="${y(value)+4}" text-anchor="end">${isWin5 ? value.toFixed(0) : value.toFixed(1)}${isWin5 ? '' : '%'}</text>`).join('');
+    if (!isWin5 && metric.endsWith('roi')) {
+        html += `<line class="baseline" x1="${left}" y1="${y(100)}" x2="${width-right}" y2="${y(100)}"/>`;
+    }
+    let segment = [];
+    const paths = [];
+    points.forEach((point, index) => {
+        const value = valueOf(point);
+        if (value == null) { if (segment.length) paths.push(segment); segment = []; }
+        else segment.push(`${x(index)},${y(value)}`);
+    });
+    if (segment.length) paths.push(segment);
+    html += paths.map(path => `<polyline class="line" points="${path.join(' ')}"/>`).join('');
+    points.forEach((point, index) => {
+        const value = valueOf(point);
+        if (value != null) {
+            const title = isWin5 ? `${point.date} 対象${point.total} / 的中${point.hits}`
+                : `${point.date} 対象${point.settled} / ${Number(value).toFixed(1)}%`;
+            html += `<circle class="point" data-date="${esc(point.date)}" cx="${x(index)}" cy="${y(value)}" r="4"><title>${esc(title)}</title></circle>`;
+        }
+        if (index % labelEvery === 0 || index === points.length - 1) {
+            html += `<text x="${x(index)}" y="${height-18}" text-anchor="middle">${esc(point.date.slice(5))}</text>`;
+        }
+    });
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    svg.innerHTML = html;
+    svg.querySelectorAll('.point').forEach(point => point.addEventListener('click', () => jumpToDate(point.dataset.date)));
+    document.getElementById('graphNote').textContent = isWin5
+        ? 'WIN5は的中数 / 対象数で固定表示します。点をクリックすると開催日に移動します。'
+        : '結果未確定日は欠測として線を描きません。点をクリックすると開催日に移動します。';
 }
 
 function renderDays(days) {
@@ -275,17 +448,7 @@ async function load() {
             `${scope}結果待ちレース: ${d.pending_races}件` +
             (lastSyncMessage ? ` — ${lastSyncMessage}` : ' (レース終了後に公式結果を自動取り込み)');
 
-        document.getElementById('raceBody').innerHTML = (d.race_details || []).map(r => `
-            <tr><td>${esc(dateFmt(r.date))}</td>
-                <td class="left">${esc(r.venue)} ${esc(r.race_no)}R${r.race_name ? ' ' + esc(r.race_name) : ''}</td>
-                <td class="left">${esc(r.app)} / ${esc(r.model)} ${esc(r.version)}</td>
-                <td>${esc(r.horse)}${r.horse_name ? ' ' + esc(r.horse_name) : ''}</td>
-                <td>${r.score != null ? Number(r.score).toFixed(2) : '-'}</td>
-                <td>${r.winner ? esc(r.winner) + (r.winner_name ? ' ' + esc(r.winner_name) : '') : '<span class="pf-meta">待ち</span>'}</td>
-                <td>${finish(r.result)}</td>
-                <td>${r.win_payout ? r.win_payout + '円' : '-'}</td>
-                <td>${r.place_payout ? r.place_payout + '円' : '-'}</td></tr>`).join('')
-            || '<tr><td colspan="9" class="pf-meta">この日の予測記録はありません</td></tr>';
+        renderRaceResults(d);
 
         document.getElementById('sumBody').innerHTML = (d.summary || []).map(s => `
             <tr><td>${esc(s.app)}</td><td class="left">${esc(s.model)}</td>
@@ -325,10 +488,14 @@ async function load() {
             || '<tr><td colspan="8" class="pf-meta">まだWIN5予測の記録がありません</td></tr>';
 
         const daysSection = document.getElementById('daysSection');
+        const graphSection = document.getElementById('graphSection');
         if (d.selected_date) {
             daysSection.style.display = 'none';
+            graphSection.style.display = 'none';
         } else {
             daysSection.style.display = '';
+            graphSection.style.display = '';
+            setupGraph(d.series);
             renderDays(d.days);
         }
 

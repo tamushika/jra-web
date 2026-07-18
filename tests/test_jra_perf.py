@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import jra_perf
 from api.logging_store import LoggingStore
@@ -437,3 +437,77 @@ def test_ability_popularity_fails_soft_when_db_missing_or_unsynced(tmp_path):
     # 該当日未同期は空 (フォールバック)。壊れたrace_idは例外を出さずスキップ
     assert jra_perf._ability_popularity_for(
         ["20260712:小倉:10", "bogus", "a:b:c"], db_path=str(db)) == {}
+
+
+# ---------------------------------------------------------------------------
+# T56: 全期間の日次グラフとレース結果の日付グループ
+# ---------------------------------------------------------------------------
+
+def test_collect_all_period_series_matches_daily_and_has_no_day_cap(tmp_path, monkeypatch):
+    store = LoggingStore(tmp_path / "series.db")
+    start = datetime(2026, 1, 1)
+    for offset in range(61):
+        date = (start + timedelta(days=offset)).strftime("%Y%m%d")
+        _seed_prediction(store, f"{date}:東京:01", date, with_result=True)
+    monkeypatch.setattr(jra_perf, "DB_PATH", str(store.db_path))
+
+    result = jra_perf.collect()
+    assert len(result["daily"]) == 60  # 従来の表は上限を維持
+    points = result["series"]["models"][0]["points"]
+    assert len(points) == 61
+    assert points[0]["date"] == "2026-01-01"
+    assert points[-1]["date"] == "2026-03-02"
+    daily = next(row for row in result["daily"] if row["date"] == "20260302")
+    point = next(row for row in points if row["date"] == "2026-03-02")
+    assert point == {
+        "date": "2026-03-02", "settled": daily["settled"],
+        "win_rate": daily["win_rate"], "tan_roi": daily["tan_roi"],
+        "fuku_roi": daily["fuku_roi"],
+    }
+
+
+def test_collect_all_period_race_details_latest_and_race_dates_aggregate(tmp_path, monkeypatch):
+    store = LoggingStore(tmp_path / "race-dates.db")
+    _seed_prediction(store, "20260711:東京:01", "20260711", with_result=True)
+    _seed_prediction(store, "20260712:函館:01", "20260712", with_result=True)
+    _seed_prediction(store, "20260712:函館:02", "20260712", with_result=False)
+    monkeypatch.setattr(jra_perf, "DB_PATH", str(store.db_path))
+
+    result = jra_perf.collect()
+    assert len(result["race_details"]) == 2
+    assert {row["date"] for row in result["race_details"]} == {"20260712"}
+    assert [row["date"] for row in result["race_dates"]] == ["2026-07-12", "2026-07-11"]
+    assert result["race_dates"][0] == {
+        "date": "2026-07-12", "races": 2, "settled": 1, "win": 1, "top3": 1,
+        "tan_roi": 420.0, "fuku_roi": 150.0, "models": 1,
+    }
+    assert result["race_dates"][1]["races"] == 1
+
+
+def test_collect_date_response_keeps_legacy_shape_and_values(tmp_path, monkeypatch):
+    store = LoggingStore(tmp_path / "date-shape.db")
+    _seed_prediction(store, "20260712:函館:01", "20260712", with_result=True)
+    monkeypatch.setattr(jra_perf, "DB_PATH", str(store.db_path))
+
+    result = jra_perf.collect("2026-07-12")
+    assert "series" not in result
+    assert "race_dates" not in result
+    assert set(result) == {
+        "summary", "daily", "ev", "win5", "race_details", "pending_races",
+        "selected_date", "available_dates", "days",
+    }
+    assert result["selected_date"] == "2026-07-12"
+    assert result["race_details"][0]["date"] == "20260712"
+    assert result["daily"][0]["win_rate"] == 100.0
+
+
+def test_collect_series_preserves_none_metrics_for_unsettled_date(tmp_path, monkeypatch):
+    store = LoggingStore(tmp_path / "unsettled-series.db")
+    _seed_prediction(store, "20260712:函館:01", "20260712", with_result=False)
+    monkeypatch.setattr(jra_perf, "DB_PATH", str(store.db_path))
+
+    point = jra_perf.collect()["series"]["models"][0]["points"][0]
+    assert point["settled"] == 0
+    assert point["win_rate"] is None
+    assert point["tan_roi"] is None
+    assert point["fuku_roi"] is None

@@ -574,14 +574,78 @@ def collect(race_date=None):
         race_details.sort(key=lambda item: (-int(item["date"]), item["venue"], item["race_no"],
                                             item["app"], item["model"]))
 
+    payload = {"summary": out_summary, "daily": out_daily[:60],
+               "ev": {"sum": ev_sum, "rows": ev_rows},
+               "win5": win5, "race_details": race_details[:300],
+               "pending_races": pending,
+               "selected_date": _iso_date(compact_date),
+               "available_dates": [_iso_date(value) for value in available_dates],
+               "days": days[:90]}
+
+    # 日付指定時はT56以前の応答を完全に維持する。以下の全期間向けデータは、
+    # 既存の集計結果を表示用に組み替えるだけで、新しいSQLや母集団は持たない。
+    if compact_date:
+        conn.close()
+        return payload
+
+    model_series = {}
+    for entry in out_daily:
+        group = (entry["app"], entry["model"], entry["version"], entry["config"])
+        series_entry = model_series.setdefault(group, {
+            "app": entry["app"], "model": entry["model"],
+            "version": entry["version"], "config": entry["config"], "points": [],
+        })
+        series_entry["points"].append({
+            "date": _iso_date(entry["date"]), "settled": entry["settled"],
+            "win_rate": entry["win_rate"], "tan_roi": entry["tan_roi"],
+            "fuku_roi": entry["fuku_roi"],
+        })
+    for entry in model_series.values():
+        entry["points"].sort(key=lambda point: point["date"])
+
+    ev_points = []
+    for date, bucket in sorted(ev_by_date.items()):
+        settled = bucket["settled"]
+        ev_points.append({
+            "date": _iso_date(date), "settled": settled, "win": bucket["win"],
+            "tan_roi": round(bucket["tan_ret"] / settled, 1) if settled else None,
+            "fuku_roi": round(bucket["fuku_ret"] / settled, 1) if settled else None,
+        })
+    win5_points = [{
+        "date": _iso_date(date), "hits": bucket["hits"], "total": bucket["total"],
+        "win5_hit": bucket["win5_hit"],
+    } for date, bucket in sorted(win5_by_date.items())]
+
+    race_date_buckets = defaultdict(lambda: {
+        "races": 0, "settled": 0, "win": 0, "top3": 0,
+        "tan_ret": 0, "fuku_ret": 0, "models": 0,
+    })
+    for (_group, date), bucket in daily.items():
+        target = race_date_buckets[date]
+        target["models"] += 1
+        for key in ("races", "settled", "win", "top3", "tan_ret", "fuku_ret"):
+            target[key] += bucket[key]
+    race_dates = []
+    for date, bucket in sorted(race_date_buckets.items(), reverse=True):
+        settled = bucket["settled"]
+        race_dates.append({
+            "date": _iso_date(date), "races": bucket["races"], "settled": settled,
+            "win": bucket["win"], "top3": bucket["top3"],
+            "tan_roi": round(bucket["tan_ret"] / settled, 1) if settled else None,
+            "fuku_roi": round(bucket["fuku_ret"] / settled, 1) if settled else None,
+            "models": bucket["models"],
+        })
+
+    latest_date = race_details[0]["date"] if race_details else None
+    payload["race_details"] = [row for row in race_details if row["date"] == latest_date]
+    payload["race_dates"] = race_dates
+    payload["series"] = {
+        "models": [model_series[group] for group in sorted(model_series)],
+        "ev": {"points": ev_points},
+        "win5": {"points": win5_points},
+    }
     conn.close()
-    return {"summary": out_summary, "daily": out_daily[:60],
-            "ev": {"sum": ev_sum, "rows": ev_rows},
-            "win5": win5, "race_details": race_details[:300],
-            "pending_races": pending,
-            "selected_date": _iso_date(compact_date),
-            "available_dates": [_iso_date(value) for value in available_dates],
-            "days": days[:90]}
+    return payload
 
 
 @bp.route("/api/perf")
