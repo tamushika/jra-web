@@ -290,9 +290,59 @@ def fetch_history_data(c, url, name, mode, is_first):
     }
 
 
+_NON_RUNNER_TEXT = {"取消": "scratched", "出走取消": "scratched",
+                    "除外": "excluded", "競走除外": "excluded", "発走除外": "excluded"}
+_NON_RUNNER_CLASS = re.compile(
+    r"(?:^|[_-])(?:cancel(?:led)?|scratch(?:ed)?|withdrawn|exclude(?:d)?)(?:$|[_-])",
+    re.IGNORECASE,
+)
+
+
+def _current_entry_status(row, cells=None):
+    """現在の出走欄だけから取消・除外を判定する (失敗時は出走扱い)。"""
+    try:
+        cells = list(cells) if cells is not None else row.find_all(["td", "th"])
+        row_classes = row.get("class") or ()
+        if any(_NON_RUNNER_CLASS.search(str(class_name)) for class_name in row_classes):
+            return ("excluded" if any("exclud" in str(name).lower() for name in row_classes)
+                    else "scratched")
+
+        # 過去走セルより後は判定しない。classを優先し、旧HTMLは日付表示を境界にする。
+        history_start = next((index for index, cell in enumerate(cells)
+                              if any(re.search(r"history|past|recent", str(name), re.I)
+                                     for name in (cell.get("class") or ()))), None)
+        if history_start is None:
+            history_start = next((index for index, cell in enumerate(cells)
+                                  if re.search(r"20\d{2}年?", cell.get_text(" ", strip=True))),
+                                 len(cells))
+        for cell in cells[:history_start]:
+            classes = cell.get("class") or ()
+            if any(_NON_RUNNER_CLASS.search(str(class_name)) for class_name in classes):
+                return "excluded" if any("exclud" in str(name).lower() for name in classes) else "scratched"
+            # 部分一致は馬名の誤検知になるため、独立した文字列・画像属性だけを見る。
+            for marker in cell.stripped_strings:
+                status = _NON_RUNNER_TEXT.get(str(marker).strip())
+                if status:
+                    return status
+            for tag in cell.find_all(True):
+                for attr in ("alt", "title", "aria-label"):
+                    status = _NON_RUNNER_TEXT.get(str(tag.get(attr) or "").strip())
+                    if status:
+                        return status
+    except Exception:
+        return "normal"
+    return "normal"
+
+
+def _active_runners(horses):
+    """人気順・field size・採点へ渡す出走馬だけを返す。"""
+    return [horse for horse in horses if not horse.get("scratched")]
+
+
 def parse_horse_row(row, url, curr_date_fmt, mode):
     cells = row.find_all(["td", "th"])
     off = 1 if "着" in cells[0].get_text() or (len(cells) > 2 and cells[2].get_text().isdigit()) else 0
+    entry_status = _current_entry_status(row, cells)
     try:
         num = int(cells[1+off].get_text(strip=True))
         h_cell = cells[2+off].get_text(" ", strip=True)
@@ -344,7 +394,8 @@ def parse_horse_row(row, url, curr_date_fmt, mode):
                 "kyakushitsu": calculate_kyakushitsu(hist_list), "kg": kg, "jock": jock, 
                 "affi": "栗東" if "栗東" in h_cell else "美浦", "sire": sire, "dam": dam,
                 "bms": bms, "current_weight": current_weight, "weight_change": weight_change,
-                "hist": hist_list}
+                "hist": hist_list, "status": entry_status,
+                "scratched": entry_status in ("scratched", "excluded")}
     except Exception as e:
         print("Row parse error:", e)
         return None
@@ -491,6 +542,9 @@ def analyze_race_url(url, mode='簡易'):
             for f in futures:
                 res_horse = f.result()
                 if res_horse: scraped_data.append(res_horse)
+
+        # 取消・除外馬は人気順、field size、確率正規化、採点の全母集団から除く。
+        scraped_data = _active_runners(scraped_data)
 
         scraped_data.sort(key=lambda x: x['odds'])
         for i, h in enumerate(scraped_data): h['pop'] = str(i + 1)

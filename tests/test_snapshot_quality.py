@@ -1,5 +1,6 @@
 import inspect
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from bs4 import BeautifulSoup
@@ -17,42 +18,65 @@ def _horses(valid, field_size=8):
     return rows
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="T47未適用: api/index.py の取消/除外ステータス配線はレース週末を避けて"
-           "適用予定 (backups/t47_codex_partial_scratch_status_20260718.patch)。"
-           "T47適用後にこのマーカーを外すこと (strict=TrueのためXPASSで気づける)",
-)
+def _t47_rows():
+    path = Path(__file__).parent / "fixtures" / "t47" / "runner_status_rows.html"
+    soup = BeautifulSoup(path.read_text(encoding="utf-8"), "html.parser")
+    return {row["id"]: row for row in soup.select("tr[id]")}
+
+
 def test_parse_horse_row_only_uses_current_entry_for_scratched_status(monkeypatch):
     monkeypatch.setattr(api_index, "fetch_history_data", lambda *args, **kwargs: {
         "raw": "2025年7月1日 取消", "corners": "-", "total": "-"})
-    active_html = """
-    <tr>
-      <td>1</td><td>1</td><td class="horse">現役取消馬</td>
-      <td>牡3 56.0 騎手A</td>
-      <td><div class="odds_line"><strong>3.2</strong></div></td>
-      <td class="history">2025年7月1日 <span>取消</span></td>
-    </tr>
-    """
+    rows = _t47_rows()
     active = api_index.parse_horse_row(
-        BeautifulSoup(active_html, "html.parser").tr,
+        rows["past-cancel"],
         "https://example.invalid/race", "2026年7月18日", "簡易")
-    assert active["status"] == ""
+    assert active["status"] == "normal"
     assert active["scratched"] is False
 
-    scratched_html = """
-    <tr class="entry-row">
-      <td>1</td><td>2</td><td class="horse">取消対象馬</td>
-      <td>牝4 55.0 騎手B</td>
-      <td class="entry_status"><span>取消</span></td>
-      <td class="history">2025年8月1日 1着</td>
-    </tr>
-    """
     scratched = api_index.parse_horse_row(
-        BeautifulSoup(scratched_html, "html.parser").tr,
+        rows["scratched"],
         "https://example.invalid/race", "2026年7月18日", "簡易")
-    assert scratched["status"] == "取消"
+    assert scratched["status"] == "scratched"
     assert scratched["scratched"] is True
+
+    excluded = api_index.parse_horse_row(
+        rows["excluded"],
+        "https://example.invalid/race", "2026年7月18日", "簡易")
+    assert excluded["status"] == "excluded"
+    assert excluded["scratched"] is True
+
+    normal = api_index.parse_horse_row(
+        rows["normal"],
+        "https://example.invalid/race", "2026年7月18日", "簡易")
+    quality = jra_ev._snapshot_quality(
+        30, datetime(2026, 7, 18, 12, 0, tzinfo=JST),
+        datetime(2026, 7, 18, 11, 30, tzinfo=JST), 0,
+        [normal, active, scratched, excluded])
+    assert quality["field_size"] == 2
+    assert api_index._active_runners([normal, active, scratched, excluded]) == [normal, active]
+
+
+def test_t47_normal_row_keeps_legacy_parse_values(monkeypatch):
+    monkeypatch.setattr(api_index, "fetch_history_data", lambda *args, **kwargs: {
+        "raw": "2025年7月1日 1着", "corners": "-", "total": "-"})
+    parsed = api_index.parse_horse_row(
+        _t47_rows()["normal"], "https://example.invalid/race", "2026年7月18日", "簡易")
+    legacy = {key: value for key, value in parsed.items() if key not in ("status", "scratched")}
+    assert legacy["num"] == 1
+    assert legacy["name"] == "通常馬"
+    assert legacy["odds"] == 3.2
+    assert legacy["sex_age"] == "牡3"
+    assert legacy["kg"] == "56.0"
+    assert parsed["status"] == "normal" and parsed["scratched"] is False
+
+
+def test_t47_status_detection_is_fail_safe_for_broken_cells():
+    class BrokenRow:
+        def find_all(self, *_args, **_kwargs):
+            raise RuntimeError("broken html")
+
+    assert api_index._current_entry_status(BrokenRow()) == "normal"
 
 
 def test_snapshot_quality_boundaries_and_cross_snapshot_flags():
