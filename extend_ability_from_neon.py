@@ -12,6 +12,7 @@ ability.db (1980.csv由来, 〜2025-12-28で凍結) に、Neonに毎週蓄積さ
 【使い方】 python extend_ability_from_neon.py
 【前提】  C:\\project\\.env に DATABASE_URL (Neon)
 """
+import argparse
 import os
 import re
 import sqlite3
@@ -26,6 +27,12 @@ import past_data_service as pds  # noqa: E402
 from build_ability_db import parse_race_class  # noqa: E402
 
 DB_PATH = os.path.join(BASE_DIR, "ability.db")
+RUN_COLS = [
+    "date", "place", "r", "race_name", "race_class", "horse", "sex", "age",
+    "jockey", "kinryo", "total_horses", "umaban", "popularity", "rank",
+    "track_type", "distance", "condition", "time_sec", "chakusa", "c4",
+    "agari", "pci", "weight", "affi", "win_pay",
+]
 
 
 def compute_pci(time_sec, agari, dist):
@@ -45,7 +52,50 @@ def to_float(v):
         return None
 
 
-def main():
+def restore_supplemental_fields(cursor, saved_fukusho, saved_kinryo):
+    """Restore local backfills after the Neon delete/reinsert sync.
+
+    Neon remains authoritative when it has a weight.  T51's local netkeiba
+    value is restored only when the reinserted Neon row still has NULL kinryo.
+    """
+    cursor.executemany(
+        "UPDATE runs SET fukusho_pay = ? "
+        "WHERE date = ? AND place = ? AND r = ? AND umaban = ?",
+        saved_fukusho,
+    )
+    cursor.executemany(
+        "UPDATE runs SET kinryo = ? "
+        "WHERE date = ? AND place = ? AND r = ? AND umaban = ? "
+        "AND kinryo IS NULL",
+        saved_kinryo,
+    )
+
+
+def insert_new_rows_only(cursor, batch, columns=RUN_COLS):
+    """T45 safe sync: preserve every existing row and insert unseen keys only."""
+    key_positions = tuple(columns.index(name) for name in ("date", "place", "r", "umaban"))
+    incoming_keys = [tuple(row[index] for index in key_positions) for row in batch]
+    if len(incoming_keys) != len(set(incoming_keys)):
+        raise RuntimeError("Neon batch contains duplicate natural keys")
+    existing = set(cursor.execute(
+        "SELECT date, place, r, umaban FROM runs WHERE date > ?",
+        ("20251228",),
+    ))
+    additions = [row for row, key in zip(batch, incoming_keys) if key not in existing]
+    cursor.executemany(
+        f"INSERT INTO runs ({','.join(columns)}) VALUES ({','.join('?' * len(columns))})",
+        additions,
+    )
+    return len(additions), len(batch) - len(additions)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--candidate-safe-sync", action="store_true",
+        help="T45専用: 既存行を変更・削除せず、新しい自然キーだけ追加",
+    )
+    args = parser.parse_args(argv)
     # 凍結境界: 1980.csv (TARGET) 由来データの最終日。これ以降は常にNeonから再同期する
     FROZEN_END = "20251228"
     conn_sq = sqlite3.connect(DB_PATH)
@@ -121,14 +171,25 @@ def main():
             (d.get("affi") or "").strip(), win_pay,
         ))
 
-    # 別スクリプトが埋め戻す列 (fukusho_pay等) はDELETE/再INSERTで消えるため退避して復元する
-    COLS = ["date", "place", "r", "race_name", "race_class", "horse", "sex", "age",
-            "jockey", "kinryo", "total_horses", "umaban", "popularity", "rank",
-            "track_type", "distance", "condition", "time_sec", "chakusa", "c4",
-            "agari", "pci", "weight", "affi", "win_pay"]
+    # 別スクリプトが埋め戻す列はDELETE/再INSERTで消えるため退避して復元する。
+    # kinryoはNeon側がNULLの場合だけT51補完値を戻し、Neonの非NULL値を優先する。
+    COLS = RUN_COLS
+    if args.candidate_safe_sync:
+        added, retained = insert_new_rows_only(cur_sq, batch, COLS)
+        conn_sq.commit()
+        cur_sq.execute("SELECT MAX(date), COUNT(*) FROM runs")
+        new_max, total = cur_sq.fetchone()
+        conn_sq.close()
+        print(f"candidate-safe同期: 追加{added}行 / 既存維持{retained}行 / 削除・更新0")
+        print(f"ability.db: 計{total}行, 最終日 {new_max}")
+        return
     saved_fukusho = list(cur_sq.execute(
         "SELECT fukusho_pay, date, place, r, umaban FROM runs "
         "WHERE date > ? AND fukusho_pay IS NOT NULL AND fukusho_pay != ''",
+        ("20" + cutoff_neon,)))
+    saved_kinryo = list(cur_sq.execute(
+        "SELECT kinryo, date, place, r, umaban FROM runs "
+        "WHERE date > ? AND kinryo IS NOT NULL",
         ("20" + cutoff_neon,)))
 
     # 冪等: 対象期間を消してから挿入 (再実行時は前回追記分を置き換え)
@@ -136,11 +197,10 @@ def main():
     deleted = cur_sq.rowcount
     cur_sq.executemany(
         f"INSERT INTO runs ({','.join(COLS)}) VALUES ({','.join('?' * len(COLS))})", batch)
-    cur_sq.executemany(
-        "UPDATE runs SET fukusho_pay = ? WHERE date = ? AND place = ? AND r = ? AND umaban = ?",
-        saved_fukusho)
+    restore_supplemental_fields(cur_sq, saved_fukusho, saved_kinryo)
     conn_sq.commit()
     print(f"fukusho_pay 復元: {len(saved_fukusho)}行")
+    print(f"kinryo 保護候補: {len(saved_kinryo)}行 (Neon NULL行だけ復元)")
 
     cur_sq.execute("SELECT MAX(date), COUNT(*) FROM runs")
     new_max, total = cur_sq.fetchone()
