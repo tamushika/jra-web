@@ -1,5 +1,6 @@
 import sqlite3
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 import backfill_kinryo_netkeiba as t51
 
@@ -25,6 +26,18 @@ def _db(path):
 def test_parse_result_page_reads_weights_and_separate_handicap_flag():
     weights, handicap = t51.parse_result_page(FIXTURE.read_text(encoding="utf-8"))
     assert weights == {1: 50.0, 2: 57.5}
+    assert handicap is True
+
+
+def test_parse_result_page_accepts_whitespace_in_current_headers():
+    html = FIXTURE.read_text(encoding="utf-8").replace("馬番", "馬 番")
+    weights, _ = t51.parse_result_page(html)
+    assert weights == {1: 50.0, 2: 57.5}
+
+
+def test_parse_result_page_accepts_parenthesized_handicap_marker():
+    html = FIXTURE.read_text(encoding="utf-8").replace(" ハンデ ", "(ハンデ)")
+    _, handicap = t51.parse_result_page(html)
     assert handicap is True
 
 
@@ -67,3 +80,33 @@ def test_apply_plan_changes_only_null_2026_target_and_keeps_other_columns(tmp_pa
     assert next(row for row in rows if row[0] == "20250621")[5] is None
     assert next(row for row in rows if row[0] == "20260621" and row[3] == 2)[5] == 56.0
     assert conn.execute("SELECT handicap FROM netkeiba_race_metadata").fetchone() == (1,)
+
+
+def test_fetch_persists_each_completed_race_for_resume(tmp_path):
+    race = ("20260621", "東京", 11)
+    list_response = Mock(text='<a href="/race/202605030611/">race</a>')
+    result_response = Mock(text=FIXTURE.read_text(encoding="utf-8"))
+    session = Mock()
+    session.get.side_effect = [list_response, result_response]
+    cache_path = tmp_path / "cache.json"
+    with patch.object(t51.time, "sleep"):
+        cache = t51.fetch_targets(
+            [race], {"races": {}}, session=session, sleep_sec=0,
+            cache_path=cache_path,
+        )
+    assert cache["races"]["20260621|東京|11"]["weights"] == {"1": 50.0, "2": 57.5}
+    assert t51._read_cache(cache_path) == cache
+
+
+def test_fetch_retries_cached_race_when_weights_are_empty(tmp_path):
+    race = ("20260621", "東京", 11)
+    list_response = Mock(text='<a href="/race/202605030611/">race</a>')
+    result_response = Mock(text=FIXTURE.read_text(encoding="utf-8"))
+    session = Mock()
+    session.get.side_effect = [list_response, result_response]
+    with patch.object(t51.time, "sleep"):
+        cache = t51.fetch_targets(
+            [race], {"races": {"20260621|東京|11": {"weights": {}}}},
+            session=session, sleep_sec=0, cache_path=tmp_path / "cache.json",
+        )
+    assert cache["races"]["20260621|東京|11"]["weights"]["1"] == 50.0

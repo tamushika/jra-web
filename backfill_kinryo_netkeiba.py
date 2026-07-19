@@ -63,7 +63,10 @@ def parse_result_page(html):
     weights = {}
     if table is not None:
         rows = table.find_all("tr")
-        header = [cell.get_text(" ", strip=True) for cell in rows[0].find_all(["th", "td"])] if rows else []
+        header = [
+            re.sub(r"\s+", "", cell.get_text(" ", strip=True))
+            for cell in rows[0].find_all(["th", "td"])
+        ] if rows else []
         try:
             horse_index, weight_index = header.index("馬番"), header.index("斤量")
         except ValueError:
@@ -79,7 +82,7 @@ def parse_result_page(html):
                     continue
     condition_nodes = soup.select(".data_intro, .RaceData01, .RaceData02")
     condition_text = " ".join(node.get_text(" ", strip=True) for node in condition_nodes)
-    handicap = bool(re.search(r"(?:^|\s)ハンデ(?:\s|$)", condition_text))
+    handicap = "ハンデ" in condition_text
     return weights, handicap
 
 
@@ -97,13 +100,25 @@ def _write_cache(path, data):
     temp = path.with_suffix(path.suffix + ".tmp")
     with temp.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, ensure_ascii=False, indent=2, sort_keys=True)
-    os.replace(temp, path)
+    for attempt in range(5):
+        try:
+            os.replace(temp, path)
+            break
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.1 * (attempt + 1))
 
 
-def fetch_targets(races, cache, *, limit=0, session=None, sleep_sec=SLEEP_SEC):
+def fetch_targets(
+    races, cache, *, limit=0, session=None, sleep_sec=SLEEP_SEC, cache_path=None
+):
     session = session or requests.Session()
     cached = cache.setdefault("races", {})
-    pending = [race for race in races if "|".join(map(str, race)) not in cached]
+    pending = [
+        race for race in races
+        if not cached.get("|".join(map(str, race)), {}).get("weights")
+    ]
     if limit:
         pending = pending[:limit]
     by_date = defaultdict(list)
@@ -128,6 +143,8 @@ def fetch_targets(races, cache, *, limit=0, session=None, sleep_sec=SLEEP_SEC):
                 "handicap": handicap,
                 "source_url": f"https://db.netkeiba.com/race/{race_id}/",
             }
+            if cache_path is not None:
+                _write_cache(cache_path, cache)
             time.sleep(sleep_sec)
     return cache
 
@@ -202,7 +219,9 @@ def main(argv=None):
 
     cache = _read_cache(args.cache)
     if args.fetch:
-        cache = fetch_targets(races, cache, limit=args.limit_races)
+        cache = fetch_targets(
+            races, cache, limit=args.limit_races, cache_path=args.cache
+        )
         _write_cache(args.cache, cache)
     plan = build_plan(targets, cache)
     print(f"取得済みキャッシュからの更新予定: {len(plan)}行")
