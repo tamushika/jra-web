@@ -29,6 +29,9 @@ data/t50/
 # T58 copyrighted scan extraction and rendered QA pages (local research only).
 data/t58/
 
+# T57 copyrighted book transcription and rendered QA pages (local research only).
+data/t57/
+
 # Generated locally after T33 adoption; production snapshot is never committed.
 api/data_files/common/factor_snapshot.json
 
