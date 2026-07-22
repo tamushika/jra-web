@@ -891,11 +891,29 @@ def _ml_features(h, race_context, factor_table, cfg):
     return f
 
 
+def is_debut_horse(h):
+    """学習側 ``if not prior: continue`` と同じ直近履歴ゼロ判定。"""
+    return not any(run for run in (h.get("hist") or [])[:4] if run)
+
+
+def debut_field_warning(horses, race_class, race_label=""):
+    """新馬戦以外で履歴ゼロが過半ならパース異常警告を返す。"""
+    horses = list(horses or [])
+    debut_count = sum(is_debut_horse(horse) for horse in horses)
+    if race_class != "新馬" and horses and debut_count > len(horses) / 2:
+        suffix = f" ({race_label})" if race_label else ""
+        return (f"過半数が過去走ゼロです: {debut_count}/{len(horses)}頭"
+                f"{suffix} — 履歴パース異常の疑い")
+    return None
+
+
 def compute_score_ml(h, race_context, factor_table, cfg):
     """
     MLスコア (ロジスティック回帰の線形結合)。モデル未配置・例外時は手調整スコアへフォールバック。
     戻り値: (score, details)
     """
+    if is_debut_horse(h):
+        return None, ["初出走のためML対象外"]
     model = load_ml_model()
     if model is None:
         return compute_score(h, race_context, factor_table, cfg)
@@ -962,6 +980,8 @@ def compute_place_prob(h, race_context, factor_table, cfg):
         # path receives the private table; old artifacts safely use the caller's.
         place_factor_table = _place_factor_table(
             model, race_context, factor_table)
+        if is_debut_horse(h):
+            return None, ["初出走のため複勝率β対象外"]
         feature_values = _ml_features(
             h, race_context, place_factor_table, cfg)
         raw_score = float(model["intercept"])

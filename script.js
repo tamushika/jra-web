@@ -164,6 +164,7 @@ async function startScraping() {
 
 function applyScrapeData(data, url, mode) {
     document.getElementById('raceInfo').textContent = `${data.race_info} (${mode})` +
+        (data.analysis_message ? ` — ${data.analysis_message}` : '') +
         (data.logging_warning ? ` ⚠ ログ保存失敗: ${data.logging_warning}` : '');
     
     let babaHtml = data.baba_info || "馬場情報：未取得";
@@ -466,9 +467,11 @@ function renderHorsesTable(horses) {
         tdWaku.className = `waku-${h.waku || h.w_num}`;
 
         // Other Cols
+        const isDebutMl = h.score_ml == null && (h.score_ml_details || []).some(x => x.includes('初出走'));
+        const isDebutPlace = h.place_prob == null && (h.place_prob_details || []).some(x => x.includes('初出走'));
         const cols = [
-            h.num, h.grade || '-', (h.score ?? '-'), (h.score_ml ?? '-'),
-            (h.place_prob != null ? (h.place_prob * 100).toFixed(1) + '%' : '-'),
+            h.num, h.grade || '-', (h.score ?? '-'), (isDebutMl ? '初出走' : (h.score_ml ?? '-')),
+            (isDebutPlace ? '初出走' : (h.place_prob != null ? (h.place_prob * 100).toFixed(1) + '%' : '-')),
             h.odds, h.pop || '-', h.iv, h.dist_diff || '-',
             h.name, h.sex_age, h.kyakushitsu, h.kg, h.jock || h.jockey,
             h.affi, h.sire, h.bms

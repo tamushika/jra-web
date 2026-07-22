@@ -32,9 +32,60 @@ def serve_index():
 
 VENUE_MAP = {"06": "中山", "08": "京都", "05": "東京", "09": "阪神", "07": "中京", "04": "新潟", "03": "福島", "10": "小倉", "01": "札幌", "02": "函館"}
 _LIVE_WEIGHT_CACHE = {}
+JUMP_EXCLUSION_MESSAGE = "障害レースは解析対象外 (平地モデルのため)"
+_JUMP_RACE_NAME_RE = re.compile(r"障害|ジャンプ|J[・･\s]?G(?:I{1,3}|[123])", re.IGNORECASE)
 
 def get_base_dir():
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def detect_race_type(page_text, race_name="", distance=0, warn=print):
+    """平地二値化の前に障害競走を検知する共通ライブ契約。"""
+    page_text = str(page_text or "")
+    race_name = str(race_name or "")
+    if "障害" in page_text or _JUMP_RACE_NAME_RE.search(race_name):
+        return "障害"
+    try:
+        distance = int(distance or 0)
+    except (TypeError, ValueError):
+        distance = 0
+    if distance >= 3700:
+        warn(f"[WARN] 障害レース取りこぼし疑い: distance={distance}m race_name={race_name}")
+    return "ダート" if "ダート" in page_text else "芝"
+
+
+def _jump_excluded_result(*, race_label, race_name, race_date, race_num,
+                          venue, dist_val, race_time):
+    """Web/監視がHTTP 200の正常な対象外として扱える最小レスポンス。"""
+    return {
+        "success": True,
+        "analysis_excluded": True,
+        "analysis_message": JUMP_EXCLUSION_MESSAGE,
+        "race_info": race_label,
+        "race_name": race_name,
+        "race_date": race_date,
+        "race_num": race_num,
+        "venue": venue,
+        "race_type": "障害",
+        "dist_val": dist_val,
+        "race_class": "障害",
+        "start_time": race_time,
+        "baba_cond": "",
+        "baba_info": "",
+        "course_record": "",
+        "course_image": "",
+        "criteria_lines": [],
+        "konochichi_lines": [],
+        "course_tips": [],
+        "race_conditions": [],
+        "harab_index": "-",
+        "feature_text": JUMP_EXCLUSION_MESSAGE,
+        "notable_sires": [],
+        "debug_sire": {},
+        "matrix_data": [],
+        "horses": [],
+        "has_double_circle": False,
+    }
 
 def calculate_waku(n, total):
     if total <= 8: return n
@@ -489,12 +540,11 @@ def analyze_race_url(url, mode='簡易'):
         race_num_m = re.search(r'(\d+)\s*レース', page_text)
         race_idx = int(race_num_m.group(1)) if race_num_m else 1
 
-        dist_match = re.search(r'(\d,?\d{2,3})メートル', page_text)
-        dist_val = int(dist_match.group(1).replace(",", "")) if dist_match else 0
-        race_type = "ダート" if "ダート" in page_text else "芝"
-        
         race_name_tag = soup.find(class_="race_name")
         race_name = race_name_tag.get_text(strip=True) if race_name_tag else "レース名不明"
+        dist_match = re.search(r'(\d,?\d{2,3})メートル', page_text)
+        dist_val = int(dist_match.group(1).replace(",", "")) if dist_match else 0
+        race_type = detect_race_type(page_text, race_name, dist_val)
         
         race_time = ""
         # Look for explicit time elements containing 発走 (handles accessS and new layouts)
@@ -529,6 +579,18 @@ def analyze_race_url(url, mode='簡易'):
         
         race_class = get_race_class(race_name)
 
+        if race_type == "障害":
+            return _jump_excluded_result(
+                race_label=race_label,
+                race_name=race_name,
+                race_date=(f"{year_val}{int(curr_date_m.group(1)):02d}"
+                           f"{int(curr_date_m.group(2)):02d}" if curr_date_m else ""),
+                race_num=race_idx,
+                venue=venue,
+                dist_val=dist_val,
+                race_time=race_time,
+            )
+
         baba_info = fetch_baba_info(venue)
         matrix = build_matrix_data(soup)
 
@@ -545,6 +607,13 @@ def analyze_race_url(url, mode='簡易'):
 
         # 取消・除外馬は人気順、field size、確率正規化、採点の全母集団から除く。
         scraped_data = _active_runners(scraped_data)
+
+        data_warnings = []
+        warning = scoring.debut_field_warning(
+            scraped_data, race_class, f"{venue}{race_idx}R {race_name}")
+        if warning:
+            data_warnings.append(warning)
+            print(f"[WARN] {warning}")
 
         scraped_data.sort(key=lambda x: x['odds'])
         for i, h in enumerate(scraped_data): h['pop'] = str(i + 1)
@@ -748,6 +817,7 @@ def analyze_race_url(url, mode='簡易'):
             "matrix_data": matrix,
             "horses": horses_out,
             "has_double_circle": has_double_circle,
+            "data_warnings": data_warnings,
             "race_type": race_type,
             "dist_val": dist_val,
         }
@@ -766,11 +836,12 @@ def scrape():
         try:
             score_cfg = scoring.load_score_weights(get_base_dir())
             win5_cfg = scoring.load_score_weights(get_base_dir(), "win5_weights.json")
-            log_race_prediction(
-                result, app_name="web", config={"web": score_cfg, "win5": win5_cfg},
-                model_name="web_score", model_version=score_cfg.get("version", "unknown"),
-                trigger_type="manual", base_dir=get_base_dir(),
-            )
+            if not result.get("analysis_excluded"):
+                log_race_prediction(
+                    result, app_name="web", config={"web": score_cfg, "win5": win5_cfg},
+                    model_name="web_score", model_version=score_cfg.get("version", "unknown"),
+                    trigger_type="manual", base_dir=get_base_dir(),
+                )
         except Exception as log_exc:
             result["logging_warning"] = f"{type(log_exc).__name__}: {log_exc}"
             print(f"[WARN] web prediction logging failed: {result['logging_warning']}")
@@ -1062,11 +1133,11 @@ def _scrape_race_for_win5(idx, url, fallback_info):
         if url_venue and expected_venue and url_venue != expected_venue:
             return idx, None, f'会場不一致: URLは{url_venue}、期待は{expected_venue}'
         venue = url_venue or expected_venue or '不明'
-        dist_m = re.search(r'(\d,?\d{2,3})メートル', page_text)
-        dist_val = int(dist_m.group(1).replace(',', '')) if dist_m else 0
-        race_type = 'ダート' if 'ダート' in page_text else '芝'
         rn_tag = soup.find(class_='race_name')
         race_name = rn_tag.get_text(strip=True) if rn_tag else ''
+        dist_m = re.search(r'(\d,?\d{2,3})メートル', page_text)
+        dist_val = int(dist_m.group(1).replace(',', '')) if dist_m else 0
+        race_type = detect_race_type(page_text, race_name, dist_val)
 
         tbl = next((t for t in soup.find_all('table') if '馬名' in t.get_text()), None)
         rows = [r for r in tbl.find_all('tr') if len(r.find_all(['td', 'th'])) >= 5

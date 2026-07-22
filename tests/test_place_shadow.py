@@ -58,7 +58,7 @@ def test_live_place_probability_matches_offline_predictor(monkeypatch):
     monkeypatch.setattr(scoring, "load_place_model", lambda: model)
     monkeypatch.setattr(scoring, "_ml_features", fake_features)
     probability, details = scoring.compute_place_prob(
-        {}, {}, None, win5_cfg)
+        {"hist": [{"rank": "4"}]}, {}, None, win5_cfg)
 
     assert probability == pytest.approx(expected, abs=1e-12)
     assert seen == [win5_cfg]
@@ -148,7 +148,7 @@ def test_private_factor_table_is_selected_only_for_place_probability(monkeypatch
     )
 
     probability, _details = scoring.compute_place_prob(
-        {}, {"venue": "東京", "type": "芝", "dist": 1600},
+        {"hist": [{"rank": "4"}]}, {"venue": "東京", "type": "芝", "dist": 1600},
         caller_table, {})
 
     assert probability is not None
@@ -168,7 +168,7 @@ def test_old_artifact_without_private_snapshot_uses_callers_table(monkeypatch):
     )
 
     probability, _details = scoring.compute_place_prob(
-        {}, {"venue": "東京", "type": "芝", "dist": 1600},
+        {"hist": [{"rank": "4"}]}, {"venue": "東京", "type": "芝", "dist": 1600},
         caller_table, {})
 
     assert probability is not None
@@ -220,7 +220,7 @@ def test_private_place_snapshot_cannot_change_existing_ml_score(monkeypatch):
     )
 
     score, _details = scoring.compute_score_ml(
-        {}, {"venue": "東京", "type": "芝", "dist": 1600},
+        {"hist": [{"rank": "4"}]}, {"venue": "東京", "type": "芝", "dist": 1600},
         caller_table, {})
 
     assert score == 1.0

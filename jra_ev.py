@@ -300,6 +300,10 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None,
     fetch_started = time.perf_counter()
     result = analyze_race_url(url, "簡易")
     venue = result.get("venue")
+    if result.get("analysis_excluded") or result.get("race_type") == "障害":
+        race_no = result.get("race_num") or _parse_race_num(result.get("race_info")) or "?"
+        print(f"[INFO] 障害レースのため監視対象外: {venue or '不明'}{race_no}R")
+        return None
     race_type = result.get("race_type")
     dist_val = result.get("dist_val")
     cfg5 = scoring.load_score_weights(API_DIR, "win5_weights.json")
@@ -311,6 +315,8 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None,
     horses = []
     for h in result.get("horses", []):
         ml, _det = scoring.compute_score_ml(h, rc, factor_table, cfg5)
+        if ml is None and scoring.is_debut_horse(h):
+            print(f"[INFO] 初出走のためML/EV対象外: {h.get('name') or '馬名不明'}")
         horses.append({
             "num": h.get("num"), "name": h.get("name"), "jock": h.get("jock"),
             "odds": h.get("odds"), "pop": h.get("pop"), "grade": h.get("grade", ""),
@@ -516,6 +522,8 @@ def worker_analyze_all(params):
             label, url, vdate, dlabel = t
             try:
                 rec = analyze_one(url, params, base_date=vdate, day_label=dlabel)
+                if rec is None:
+                    return
                 with _LOCK:
                     STATE["races"][_rid(rec)] = rec
                 _persist_monitor(rec)
