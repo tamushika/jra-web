@@ -32,6 +32,9 @@ data/t58/
 # T57 copyrighted book transcription and rendered QA pages (local research only).
 data/t57/
 
+# T59b public odds-board PoC fixtures (local research only).
+data/t59/
+
 # Generated locally after T33 adoption; production snapshot is never committed.
 api/data_files/common/factor_snapshot.json
 
