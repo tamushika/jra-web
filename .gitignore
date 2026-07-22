@@ -40,3 +40,6 @@ api/data_files/common/factor_snapshot.json
 
 # T16 scratch place model (regenerated locally, never committed)
 /web_place_model.json
+
+# Direct upper-model<->Codex discussion transcripts (local only, not distributed).
+.agents/
