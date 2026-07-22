@@ -194,6 +194,31 @@ CREATE TABLE IF NOT EXISTS win5_results (
     source_url TEXT,
     source_hash TEXT
 );
+CREATE TABLE IF NOT EXISTS board_odds_snapshots (
+    board_odds_snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    race_id TEXT NOT NULL,
+    date TEXT NOT NULL,
+    place TEXT NOT NULL,
+    r INTEGER NOT NULL,
+    bet_type TEXT NOT NULL CHECK (bet_type IN ('place','wide','umaren')),
+    combo TEXT NOT NULL,
+    model_probability REAL,
+    fair_odds REAL,
+    odds REAL,
+    odds_low REAL,
+    odds_high REAL,
+    gap_ratio REAL,
+    requested_at TEXT,
+    received_at TEXT,
+    source TEXT NOT NULL,
+    stage TEXT,
+    fetch_id TEXT,
+    status TEXT NOT NULL CHECK (status IN ('ok','fetch_failed','book_outside','unavailable')),
+    data_quality_flags_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_board_odds_race_stage
+    ON board_odds_snapshots(race_id, stage, bet_type, combo);
 """
 
 
@@ -324,6 +349,8 @@ class LoggingStore:
             # version 9 (T55): win5_results table (created above via CREATE TABLE IF NOT EXISTS,
             # so this migration is idempotent on both fresh and existing DBs).
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(9, ?)", (utc_now(),))
+            # version 10 (T59d): prospective-ready ticket board snapshots.
+            conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(10, ?)", (utc_now(),))
         self._write(op)
 
     def start_run(self, *, app_name: str, trigger_type: str = "manual", model_name: str | None = None,
@@ -389,6 +416,38 @@ class LoggingStore:
                  place_odds_high,popularity,source,fetch_id,is_stale,data_quality_flags_json,stage,
                  scheduled_post_at,seconds_to_post,fetch_duration_ms,valid_odds_count,field_size)
                  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
+            return conn.total_changes - before
+        return self._write(op)
+
+    def save_board_odds(self, rows: Iterable[Mapping[str, Any]]) -> int:
+        """Append one display-only ticket-board capture without stale fallback."""
+        self.initialize()
+        values = []
+        for row in rows:
+            received = _utc(row.get("received_at"))
+            requested = _utc(row.get("requested_at"))
+            key = row.get("idempotency_key") or config_hash({
+                "race_id": row["race_id"], "stage": row.get("stage"),
+                "bet_type": row["bet_type"], "combo": row["combo"],
+                "requested_at": requested, "fetch_id": row.get("fetch_id"),
+            })
+            values.append((
+                key, str(row["race_id"]), str(row["date"]), str(row["place"]),
+                int(row["r"]), str(row["bet_type"]), str(row["combo"]),
+                row.get("model_probability"), row.get("fair_odds"), row.get("odds"),
+                row.get("odds_low"), row.get("odds_high"), row.get("gap_ratio"),
+                requested, received, row.get("source", "jra_official"),
+                str(row["stage"]) if row.get("stage") is not None else None,
+                row.get("fetch_id"), row.get("status", "ok"),
+                stable_json(row.get("data_quality_flags", [])),
+            ))
+        def op(conn):
+            before = conn.total_changes
+            conn.executemany("""INSERT OR IGNORE INTO board_odds_snapshots
+                (idempotency_key,race_id,date,place,r,bet_type,combo,model_probability,
+                 fair_odds,odds,odds_low,odds_high,gap_ratio,requested_at,received_at,source,
+                 stage,fetch_id,status,data_quality_flags_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
             return conn.total_changes - before
         return self._write(op)
 

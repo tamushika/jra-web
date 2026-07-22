@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>確率・オッズボード</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    body { margin: 0; }
+    .board-wrap { max-width: 1500px; margin: 0 auto; padding: 18px; }
+    .board-note, .board-meta { color: var(--text-muted); font-size: 13px; }
+    .race-board { border: 1px solid var(--border-color); border-radius: 10px;
+                  padding: 14px; margin: 14px 0; background: rgba(0,0,0,.22); }
+    .race-head { font-size: 17px; font-weight: 700; margin-bottom: 5px; }
+    .board-message { border: 1px solid #d98b28; padding: 8px 10px; border-radius: 7px;
+                     color: #efb35e; margin-top: 8px; }
+    details { margin-top: 10px; }
+    summary { cursor: pointer; font-weight: 700; color: var(--primary); }
+    .scroll { overflow: auto; max-height: 430px; margin-top: 7px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border: 1px solid var(--border-color); padding: 5px 7px; text-align: right; }
+    th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+    th { position: sticky; top: 0; background: #20242b; }
+    tr.gap { background: rgba(67, 133, 190, .13); }
+  </style>
+</head>
+<body>
+<main class="board-wrap">
+  <h1>確率・オッズボード</h1>
+  <p class="board-note">市場単勝確率から導出した表示専用情報です。複勝・ワイドは段階λ校正、馬連はλ=1を使用します。</p>
+  <p class="board-note">項目: モデル確率 / 公正オッズ / 実オッズ / 乖離（公正オッズ÷実オッズ） / オッズ取得時刻</p>
+  <div id="boards"><p class="board-meta">読込中</p></div>
+</main>
+<script>
+const labels = {place: '複勝', wide: 'ワイド', umaren: '馬連'};
+const esc = value => String(value ?? '').replace(/[&<>"']/g,
+  char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+const pct = value => value == null ? '—' : (value * 100).toFixed(2) + '%';
+const dec = value => value == null ? '—' : Number(value).toFixed(2);
+const actual = row => row.odds_low == null ? '取得失敗' :
+  (row.odds_low === row.odds_high ? dec(row.odds_low) : `${dec(row.odds_low)}–${dec(row.odds_high)}`);
+
+function section(kind, rows, unavailableReason) {
+  if (unavailableReason) {
+    return `<details><summary>${labels[kind]}（対象外）</summary>
+      <div class="board-note" style="padding:6px 2px;">${esc(unavailableReason)}</div></details>`;
+  }
+  const body = rows.map(row => `<tr class="${row.gap_ratio != null && row.gap_ratio < .8 ? 'gap' : ''}">
+    <td>${esc(row.combo)}</td><td>${esc((row.names || []).join(' / '))}</td>
+    <td>${pct(row.model_probability)}</td><td>${dec(row.fair_odds)}</td>
+    <td>${actual(row)}</td><td>${dec(row.gap_ratio)}</td></tr>`).join('');
+  return `<details><summary>${labels[kind]}（${rows.length}組）</summary><div class="scroll"><table>
+    <thead><tr><th>組合せ</th><th>馬名</th><th>モデル確率</th><th>公正オッズ</th><th>実オッズ</th><th>乖離</th></tr></thead>
+    <tbody>${body}</tbody></table></div></details>`;
+}
+
+function render(payload) {
+  const root = document.getElementById('boards');
+  if (!(payload.races || []).length) {
+    root.innerHTML = '<p class="board-message">対象レースなし</p>'; return;
+  }
+  root.innerHTML = payload.races.map(race => {
+    const board = race.board || {};
+    const message = board.status === 'ok' ? '' : `<div class="board-message">${esc(board.message || '表示不可')}</div>`;
+    const rows = board.rows || {};
+    const unavailable = board.unavailable_kinds || {};
+    const sections = board.status === 'ok'
+      ? ['place','wide','umaren'].map(k => section(k, rows[k] || [], unavailable[k])).join('') : '';
+    return `<article class="race-board"><div class="race-head">${esc(race.venue)} ${esc(race.race_num)}R ${esc(race.start_time)}</div>
+      <div class="board-meta">取得段階: ${esc(board.stage == null ? '取得前' : board.stage + '分前')} / オッズ取得時刻: ${esc(board.received_at || '取得前')}</div>
+      ${message}${sections}</article>`;
+  }).join('');
+}
+
+async function poll() {
+  try { render(await (await fetch('api/boards')).json()); }
+  catch (_) { document.getElementById('boards').innerHTML = '<p class="board-message">取得失敗</p>'; }
+  setTimeout(poll, 20000);
+}
+poll();
+</script>
+</body>
+</html>

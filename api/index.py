@@ -21,6 +21,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import analysis
 import past_data_service
 import scoring
+import board_market
 from prediction_logging import log_race_prediction
 
 app = Flask(__name__, static_folder='../', static_url_path='/')
@@ -525,6 +526,7 @@ def analyze_race_url(url, mode='簡易'):
         res.encoding = 'shift_jis'
         soup = BeautifulSoup(res.text, "html.parser")
         page_text = soup.get_text()
+        board_odds_entry_cname = board_market.extract_entry_cname(soup)
 
         v_code_match = re.search(r'CNAME=pw\d+dde\d{2}(\d{2})', url)
         v_code = v_code_match.group(1) if v_code_match else "00"
@@ -818,6 +820,7 @@ def analyze_race_url(url, mode='簡易'):
             "horses": horses_out,
             "has_double_circle": has_double_circle,
             "data_warnings": data_warnings,
+            "_board_odds_entry_cname": board_odds_entry_cname,
             "race_type": race_type,
             "dist_val": dist_val,
         }

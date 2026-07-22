@@ -48,6 +48,7 @@ except ImportError:
     pass
 
 import scoring  # noqa: E402
+import board_market  # noqa: E402
 from index import analyze_race_url, build_matrix_data  # noqa: E402
 from combo_probs import wide_candidates  # noqa: E402
 from api.port_guard import ensure_port_free  # noqa: E402
@@ -94,6 +95,11 @@ _SCHEDULER_STARTED = [False]
 @bp.route("/")
 def serve_index():
     return send_from_directory(BASE_DIR, "index_ev.html")
+
+
+@bp.route("/boards")
+def serve_boards():
+    return send_from_directory(BASE_DIR, "index_boards.html")
 
 
 # ─── 発見・解析 ──────────────────────────────────────────────────────────────
@@ -442,6 +448,9 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None,
         "_log_context": log_context,
         "_snapshot_quality": snapshot_quality,
         "_snapshot_persisted": snapshot_persisted,
+        "_board_odds_entry_cname": result.get("_board_odds_entry_cname"),
+        "race_date": result.get("race_date") or (
+            (base_date or observed_at).strftime("%Y%m%d")),
     }
 
 
@@ -711,6 +720,45 @@ def refresh_and_alert(rec, stage):
 _SNAPSHOT_STAGES = ((30, 30 * 60, 20 * 60), (10, 10 * 60, 6 * 60), (2, 2 * 60, 0))
 
 
+def _capture_board_snapshot(rec, stage):
+    """Capture the display-only T59d boards on the existing snapshot stage."""
+    parsed = board_market.market_probabilities(
+        [horse.get("odds") for horse in rec.get("horses", [])])
+    if parsed is None:
+        board = board_market.unavailable_board(
+            "表示不可", stage=stage, status="book_outside")
+    else:
+        try:
+            cname = rec.get("_board_odds_entry_cname")
+            if not cname:
+                raise ValueError("JRA odds CNAME unavailable")
+            fetched = board_market.fetch_jra_odds(cname)
+            board = board_market.build_board(rec.get("horses", []), fetched, stage=stage)
+        except Exception as exc:
+            now = datetime.now(timezone.utc).isoformat()
+            board = board_market.unavailable_board(
+                "取得失敗", stage=stage, status="fetch_failed")
+            board["requested_at"] = now
+            board["received_at"] = now
+            board["error_type"] = type(exc).__name__
+            print(f"[WARN] 確率ボード取得失敗 {_rid(rec)} ({stage}分前): "
+                  f"{type(exc).__name__}: {exc}")
+    context = rec.get("_log_context") or {}
+    if LoggingStore is not None and context.get("race_id"):
+        try:
+            rows = board_market.snapshot_rows(
+                board, race_id=context["race_id"],
+                race_date=rec.get("race_date") or context["race_id"][:8],
+                place=rec.get("venue") or "unknown", race_no=rec.get("race_num") or 0,
+                fetch_id=context.get("prediction_run_id"),
+            )
+            LoggingStore().save_board_odds(rows)
+        except Exception as exc:
+            board["storage_warning"] = type(exc).__name__
+            print(f"[WARN] 確率ボード保存失敗 {_rid(rec)}: {type(exc).__name__}: {exc}")
+    return board
+
+
 def snapshot_odds(rec, stage, *, scheduler_restart=False):
     """通知を伴わずオッズだけ再取得して記録する (時点別オッズ特徴量 Phase C 用のデータ蓄積)。
     refresh_and_alert とは完全に独立しており、アラート生成・LINE/Discord/ブラウザ通知の
@@ -732,10 +780,12 @@ def snapshot_odds(rec, stage, *, scheduler_restart=False):
         return None
     quality = new_rec.get("_snapshot_quality") or {}
     persisted = new_rec.get("_snapshot_persisted") is True
+    board = _capture_board_snapshot(new_rec, stage)
     with _LOCK:
         for k in ("horses", "n_picked", "wide_picks", "last_update",
                   "odds_ok", "n_odds"):
             rec[k] = new_rec.get(k, rec.get(k))
+        rec["board"] = board
         if persisted:
             rec.setdefault("_snapshot_history", []).append({
                 "stage": stage,
@@ -959,6 +1009,23 @@ def api_analyze_start():
 def api_state():
     with _LOCK:
         return jsonify(_slim_state())
+
+
+@bp.route("/api/boards")
+def api_boards():
+    with _LOCK:
+        races = []
+        for rid, rec in STATE["races"].items():
+            board = rec.get("board") or board_market.unavailable_board("取得前")
+            races.append({
+                "rid": rid, "venue": rec.get("venue"),
+                "race_num": rec.get("race_num"), "start_time": rec.get("start_time"),
+                "board": board,
+            })
+        races.sort(key=lambda row: (
+            row.get("start_time") or "99:99", row.get("venue") or ""))
+        return jsonify({"generated_at": datetime.now(timezone.utc).isoformat(),
+                        "races": races})
 
 
 @bp.route("/api/alerts")
