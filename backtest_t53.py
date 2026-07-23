@@ -268,8 +268,13 @@ def run(db_path: Path, ledger_path: Path) -> dict:
     with sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True) as connection:
         runs = load_runs(connection, WARMUP_FROM, DATA_TO)
     cfg = load_win5_cfg()
+    # load_runs() always fetches a three-year lookback.  T53 needs that call
+    # shape to obtain the 2018 rating warm-up, but the production/T41 base
+    # dataset for 2021 starts at 2018.  Explicitly remove the incidental
+    # 2015-2017 rows so the pack-OFF baseline stays identical to T41/T54a.
+    base_runs = [row for row in runs if str(row.get("date")) >= WARMUP_FROM]
     base, labels, keys, meta = build_consistent_feature_dataset(
-        runs, cfg, DATA_TO, stats_source="ability", db_path=str(db_path))
+        base_runs, cfg, DATA_TO, stats_source="ability", db_path=str(db_path))
     dates = np.asarray([key[0] for key in keys])
     base_sha = hashlib.sha256(base.tobytes()).hexdigest()
     if model_matrix(base, None) is not base or hashlib.sha256(model_matrix(base, None).tobytes()).hexdigest() != base_sha:

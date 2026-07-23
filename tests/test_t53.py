@@ -71,6 +71,12 @@ def test_pack_off_is_byte_identical():
     assert t53.model_matrix(base, np.ones((3, 2))).shape == (3, 6)
 
 
+def test_base_history_excludes_incidental_pre_warmup_lookback():
+    runs = [_row("20171231", 1, "A", 1), _row("20180101", 1, "A", 1)]
+    base_runs = [row for row in runs if row["date"] >= t53.WARMUP_FROM]
+    assert [row["date"] for row in base_runs] == ["20180101"]
+
+
 def test_evaluation_gate_fails_before_registration(tmp_path):
     db, ledger = tmp_path / "ability.db", tmp_path / "experiments.jsonl"
     db.write_bytes(b"fixture")
