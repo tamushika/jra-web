@@ -39,6 +39,7 @@ data/t59/
 data/t54c/
 /outputs/t54c_*.json
 /outputs/t54c_*.log
+/outputs/t54c_*.ps1
 
 # Generated locally after T33 adoption; production snapshot is never committed.
 api/data_files/common/factor_snapshot.json
