@@ -191,6 +191,9 @@ def _fit_candidate(base, style, labels, keys, meta, dates, enabled, l2):
     secondary = _race_secondary(
         selection_scores, selection_keys, selection_meta, style[selection], temperature)
     metrics["top3"] = _aggregate_top3(secondary)
+    selection_losses = race_level_winner_logloss(
+        selection_scores, labels[selection], selection_keys, selection_meta,
+        temperature=temperature)
     return {
         "config": "style4" if enabled else "baseline",
         "l2": l2,
@@ -200,6 +203,7 @@ def _fit_candidate(base, style, labels, keys, meta, dates, enabled, l2):
         "temperature": temperature,
         "enabled": enabled,
         "selection_secondary": secondary,
+        "selection_losses": selection_losses,
     }
 
 
@@ -352,10 +356,18 @@ def run_evaluation(db_path: Path, ledger_path: Path) -> dict:
     best = min(candidates, key=lambda row: row["selection"]["models"]["model"]["logloss"])
     baseline = min((row for row in candidates if not row["enabled"]),
                    key=lambda row: row["selection"]["models"]["model"]["logloss"])
+    style_best = min((row for row in candidates if row["enabled"]),
+                     key=lambda row: row["selection"]["models"]["model"]["logloss"])
     best_final, baseline_final = (_refit(base, style, labels, keys, dates, row, SELECTION_TO)
                                   for row in (best, baseline))
+    style_final = _refit(base, style, labels, keys, dates, style_best, SELECTION_TO)
     reference = _refit(base, style, labels, keys, dates, best, TRAIN_TO)
-    historical, paired = {}, {}
+    style_reference = _refit(base, style, labels, keys, dates, style_best, TRAIN_TO)
+    historical, paired, style_diagnostic, style_paired = {}, {}, {}, {}
+    paired["2024_selection"] = _paired(
+        best["selection_losses"], baseline["selection_losses"], 5399)
+    style_paired["2024_selection"] = _paired(
+        style_best["selection_losses"], baseline["selection_losses"], 5409)
     for index, (name, (date_from, date_to)) in enumerate(PERIODS.items()):
         selected_metrics, selected_signature, selected_losses, selected_secondary = _score(
             best_final, base, style, labels, keys, meta, dates, date_from, date_to)
@@ -373,6 +385,20 @@ def run_evaluation(db_path: Path, ledger_path: Path) -> dict:
                             "distance_and_style_increment": _increment_breakdown(
                                 selected_secondary, baseline_secondary)}
         paired[name] = _paired(selected_losses, baseline_losses, 5400 + index)
+        style_metrics, style_signature, style_losses, style_secondary = _score(
+            style_final, base, style, labels, keys, meta, dates, date_from, date_to)
+        style_reference_metrics, style_reference_signature, _, _ = _score(
+            style_reference, base, style, labels, keys, meta, dates, date_from, date_to)
+        if style_signature != baseline_signature or style_reference_signature != baseline_signature:
+            raise RuntimeError(f"{name}: style diagnostic populations differ")
+        style_diagnostic[name] = {
+            "style4_final_refit_2021_2024": style_metrics,
+            "style4_trained_2021_2023_reference": style_reference_metrics,
+            "best_baseline_final_refit": baseline_metrics,
+            "distance_and_style_increment": _increment_breakdown(
+                style_secondary, baseline_secondary),
+        }
+        style_paired[name] = _paired(style_losses, baseline_losses, 5410 + index)
     return {
         "spec": "T54a", "experiment_id": EXPERIMENT_ID,
         "ability_db_sha256": sha256_file(db_path),
@@ -383,12 +409,15 @@ def run_evaluation(db_path: Path, ledger_path: Path) -> dict:
         "candidates": [{"config": row["config"], "l2": row["l2"],
                         "selection": row["selection"]} for row in candidates],
         "selected": {"config": best["config"], "l2": best["l2"]},
+        "style4_best_l2": style_best["l2"],
         "baseline_best_l2": baseline["l2"],
         "selection_2024_distance_and_style_increment": _increment_breakdown(
-            best["selection_secondary"], baseline["selection_secondary"]),
+            style_best["selection_secondary"], baseline["selection_secondary"]),
         "coverage": _style_coverage(style, dates),
         "historical_benchmark": historical,
         "win5_day_paired": paired,
+        "style4_diagnostic_benchmark": style_diagnostic,
+        "style4_win5_day_paired": style_paired,
     }
 
 
