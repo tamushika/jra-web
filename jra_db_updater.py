@@ -910,23 +910,37 @@ def main():
         print("\n[警告] .envファイルにDATABASE_URLが設定されていないか、接続できません。")
         print("この状態でも取得はできますが、DBへの追加(INSERT)は機能しません。\n")
 
-    server = HTTPServer(("127.0.0.1", PORT), Handler)
-    url = f"http://localhost:{PORT}"
-
-    print("=" * 50)
-    print("  🏇 JRA レース結果 DB登録アプリ")
-    print("=" * 50)
-    print(f"  サーバー起動: {url}")
-    print("  ブラウザが自動で開きます...")
-    print("  終了するには Ctrl+C を押してください")
-    print("-" * 50)
-
-    threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+    # T54cの長時間backfillと週次結果登録を同時実行しない共通排他契約。
+    from t54c_sectional_laps import ScrapeLockError, scrape_lock
 
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n  サーバーを停止しました。")
+        lock_context = scrape_lock()
+        lock_context.__enter__()
+    except ScrapeLockError as exc:
+        print(f"\n[エラー] {exc}")
+        print("  T54cまたは別のJRA結果取得処理の終了後に再実行してください。")
+        return
+
+    try:
+        server = HTTPServer(("127.0.0.1", PORT), Handler)
+        url = f"http://localhost:{PORT}"
+
+        print("=" * 50)
+        print("  🏇 JRA レース結果 DB登録アプリ")
+        print("=" * 50)
+        print(f"  サーバー起動: {url}")
+        print("  ブラウザが自動で開きます...")
+        print("  終了するには Ctrl+C を押してください")
+        print("-" * 50)
+
+        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\n  サーバーを停止しました。")
+    finally:
+        lock_context.__exit__(None, None, None)
 
 if __name__ == "__main__":
     main()

@@ -35,6 +35,11 @@ data/t57/
 # T59b public odds-board PoC fixtures (local research only).
 data/t59/
 
+# T54c official result HTML cache and local manifest/database artifacts.
+data/t54c/
+/outputs/t54c_*.json
+/outputs/t54c_*.log
+
 # Generated locally after T33 adoption; production snapshot is never committed.
 api/data_files/common/factor_snapshot.json
 
