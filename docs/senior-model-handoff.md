@@ -82,9 +82,16 @@
   ([報告](T54d-sectional-features-report.md))。**prospective評価 (T59e/T17) が実現した際の
   最有力再訪候補として台帳に記録済み**。T54cの`runner_corners`/`race_laps`
   (28,296レース/393,982馬行、2018-2026H1) は再利用可能な恒久資産として保持
+- **次期中心路線はT62 (勝負レース選定)** — 2026-07-24のFable 5×Codex討議
+  ([記録](T62-race-selection-discussion.md)、3往復でCONVERGED) で合意。グローバル精度向上と
+  別軸の「どのレースでモデルを相対的に信じられるか」のas-ofレースレベルスコア (ridge回帰・
+  固定11列・rolling-origin・選定率20%一点)。2025/2026H1は反証専用に格下げ、
+  **正式採否はprospectiveデータのみ**。[SPEC-T62](codex/SPEC-T62-race-selection-score.md)
+  起票済み。優先順: T59e蓄積→T21監査 (4日到達後・監査のみ)→T62足切り→通過時のみ
+  表示+シャドー→T17 D3割り込み→T54d prospective再訪
 - **他の現役路線**: ①**T17 時点別オッズ** — スナップショット蓄積2026-07-12開始、
-  D3先行評価ゲート (~800レース) は9月中旬ごろ見込み ②**T42 調教データ** —
-  費用判断 (月1,390円) はユーザー保留中 ③**T20 LightGBM再評価** — 新特徴確定後
+  D3先行評価ゲート (~800レース) は9月中旬ごろ見込み・**暦優先でT62作業に割り込み**
+  ②**T42 調教データ** — 課金なし前提のため事実上終了 ③**T20 LightGBM再評価** — 新特徴確定後
 - **T45 candidate**: 2026-07-19にT39正式採否 (ACCEPTED) 完了・ユーザー承認・本番artifact
   置換・デプロイ済み (台帳`T45-candidate-retrain-v1-adjudication`)。市場超えではなく
   「劣化した現行の保守置換」という位置づけ。[報告](T45-candidate-retrain-report.md)
