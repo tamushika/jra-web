@@ -40,8 +40,23 @@ def get_base_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _race_header_text(soup, page_text):
+    """レース自身の属性 (名称・条件・コース) を含むヘッダー要素のテキスト。
+
+    「障害」「ダート」をページ全文から検索すると、障害帰り・ダート帰りの
+    出走馬の戦績欄に誤反応する (実例: 2026-07-26 中京6R 木曽川特別が
+    出走馬の「新潟 障害未勝利」で障害と誤判定されWIN5予想から脱落)。
+    判定は div.race_title (出馬表ヘッダー) に限定し、レイアウト変更等で
+    見つからない場合のみ全文へフォールバックする (障害検知を失わない側に倒す)。"""
+    node = soup.select_one("div.race_title")
+    return node.get_text(" ", strip=True) if node else page_text
+
+
 def detect_race_type(page_text, race_name="", distance=0, warn=print):
-    """平地二値化の前に障害競走を検知する共通ライブ契約。"""
+    """平地二値化の前に障害競走を検知する共通ライブ契約。
+
+    page_text には原則 _race_header_text() で絞ったヘッダーテキストを渡すこと
+    (全文を渡すと出走馬の戦績欄の「障害」に誤反応する)。"""
     page_text = str(page_text or "")
     race_name = str(race_name or "")
     if "障害" in page_text or _JUMP_RACE_NAME_RE.search(race_name):
@@ -546,7 +561,8 @@ def analyze_race_url(url, mode='簡易'):
         race_name = race_name_tag.get_text(strip=True) if race_name_tag else "レース名不明"
         dist_match = re.search(r'(\d,?\d{2,3})メートル', page_text)
         dist_val = int(dist_match.group(1).replace(",", "")) if dist_match else 0
-        race_type = detect_race_type(page_text, race_name, dist_val)
+        race_type = detect_race_type(
+            _race_header_text(soup, page_text), race_name, dist_val)
         
         race_time = ""
         # Look for explicit time elements containing 発走 (handles accessS and new layouts)
@@ -1140,7 +1156,8 @@ def _scrape_race_for_win5(idx, url, fallback_info):
         race_name = rn_tag.get_text(strip=True) if rn_tag else ''
         dist_m = re.search(r'(\d,?\d{2,3})メートル', page_text)
         dist_val = int(dist_m.group(1).replace(',', '')) if dist_m else 0
-        race_type = detect_race_type(page_text, race_name, dist_val)
+        race_type = detect_race_type(
+            _race_header_text(soup, page_text), race_name, dist_val)
 
         tbl = next((t for t in soup.find_all('table') if '馬名' in t.get_text()), None)
         rows = [r for r in tbl.find_all('tr') if len(r.find_all(['td', 'th'])) >= 5

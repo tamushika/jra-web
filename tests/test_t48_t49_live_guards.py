@@ -44,6 +44,34 @@ def test_real_jra_jump_fixture_is_fail_closed(monkeypatch):
     assert "障害レースは解析対象外" in result["analysis_message"]
 
 
+def test_jump_returner_in_results_column_keeps_flat_race():
+    # 2026-07-26 中京6R 木曽川特別 (芝2000m 平地): 出走馬の戦績欄に
+    # 「新潟 障害未勝利」があり、全文検索だと障害と誤判定される実ページ。
+    from bs4 import BeautifulSoup
+    raw = (ROOT / "tests" / "fixtures" / "t48"
+           / "flat_race_20260726_chukyo6_jump_returner.html").read_bytes()
+    soup = BeautifulSoup(raw.decode("cp932", errors="replace"), "html.parser")
+    page_text = soup.get_text()
+    assert "障害" in page_text  # 前提: 障害帰りの馬がいる
+    header = api_index._race_header_text(soup, page_text)
+    assert "障害" not in header
+    assert api_index.detect_race_type(header, "木曽川特別", 2000) == "芝"
+
+
+def test_race_header_text_keeps_jump_detection_on_real_fixture():
+    from bs4 import BeautifulSoup
+    raw = JUMP_FIXTURE.read_bytes()
+    soup = BeautifulSoup(raw.decode("cp932", errors="replace"), "html.parser")
+    header = api_index._race_header_text(soup, soup.get_text())
+    assert api_index.detect_race_type(header, "", 2860) == "障害"
+
+
+def test_race_header_text_falls_back_to_page_text():
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup("<html><body>no header</body></html>", "html.parser")
+    assert api_index._race_header_text(soup, "FULL TEXT") == "FULL TEXT"
+
+
 def test_jump_name_in_horse_column_does_not_misclassify_flat_race():
     page = "東京 芝1600 サンライズジャンプ"
     assert api_index.detect_race_type(page, "3歳未勝利", 1600) == "芝"
