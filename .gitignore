@@ -37,6 +37,8 @@ data/t59/
 
 # T54c official result HTML cache and local manifest/database artifacts.
 data/t54c/
+# T42a authenticated netkeiba raw HTML, manifest, and browser cookies.
+data/t42/
 /outputs/t54c_*.json
 /outputs/t54c_*.log
 /outputs/t54c_*.ps1
