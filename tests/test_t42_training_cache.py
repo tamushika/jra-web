@@ -50,6 +50,30 @@ MASKED_HTML = b"""
 """
 
 
+# db.netkeiba.com horse_training pages use race_table_01 tables with a
+# 調教タイム header column (confirmed live 2026-07-26, Stage 0) and a pager
+# such as 18件中1〜10件目.
+HORSE_HTML = """
+<html><head><meta http-equiv="Content-Type"
+ content="text/html; charset=euc-jp"></head><body>
+<a href="/horse/2021106347/">Alpha</a>
+<div class="pager">18件中1〜10件目</div>
+<table class="race_table_01 nk_tb_common">
+<tr><th>日付</th><th>コース</th><th>調教タイム</th></tr>
+<tr><td>2026/07/01</td><td>MihoW</td><td>54.4 (15.1) 39.3</td></tr>
+</table></body></html>
+""".encode("euc-jp")
+HORSE_MASKED_HTML = """
+<html><head><meta http-equiv="Content-Type"
+ content="text/html; charset=euc-jp"></head><body>
+<a href="/horse/2021106347/">Alpha</a>
+<table class="race_table_01 nk_tb_common">
+<tr><th>日付</th><th>コース</th><th>調教タイム</th></tr>
+<tr><td>2026/07/01</td><td>MihoW</td><td>**.* (**.*)</td></tr>
+</table></body></html>
+""".encode("euc-jp")
+
+
 class FakeResponse:
     def __init__(self, content=MEMBER_HTML, status_code=200):
         self.content = content
@@ -260,6 +284,37 @@ def test_parser_extracts_skeleton_fields():
     assert records[0]["laps"] == ["54.4 (15.1)"]
     assert records[0]["load"] == "Strong"
     assert records[0]["rank"] == "B"
+
+
+def test_horse_training_page_is_cached_with_db_dom(tmp_path):
+    session = FakeSession([FakeResponse(HORSE_HTML)])
+    f = fetcher(tmp_path, session)
+    page = f.fetch(t42.horse_target("2021106347"))
+    assert page.body == HORSE_HTML
+    assert (tmp_path / "raw" / "horse" / "2021106347.html").exists()
+    # cache hit needs zero HTTP
+    f.fetch(t42.horse_target("2021106347"))
+    assert len(session.calls) == 1
+
+
+def test_horse_training_masked_values_are_never_cached(tmp_path):
+    session = FakeSession([FakeResponse(HORSE_MASKED_HTML)])
+    f = fetcher(tmp_path, session)
+    with pytest.raises(t42.T42Error):
+        f.fetch(t42.horse_target("2021106347"))
+    assert not (tmp_path / "raw" / "horse" / "2021106347.html").exists()
+
+
+def test_horse_training_rejects_foreign_horse_page(tmp_path):
+    # A page whose tables look right but that belongs to another horse must
+    # not be cached under this horse's key.
+    session = FakeSession([
+        FakeResponse(HORSE_HTML.replace(b"2021106347", b"2019999999")),
+    ])
+    f = fetcher(tmp_path, session)
+    with pytest.raises(t42.T42Error):
+        f.fetch(t42.horse_target("2021106347"))
+    assert not (tmp_path / "raw" / "horse" / "2021106347.html").exists()
 
 
 def test_horse_enumeration_uses_paid_race_cache(tmp_path):

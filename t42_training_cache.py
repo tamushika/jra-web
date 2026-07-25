@@ -252,6 +252,33 @@ def validate_member_content(body: bytes, target: Target) -> dict[str, Any]:
         raise MemberContentError("member_content_missing")
     days = soup.select("td.Training_Day, .Training_Day")
     timings = soup.select(".TrainingTimeDataList")
+    if target.category == "horse":
+        # db.netkeiba.com horse_training pages use a different DOM from the
+        # race oikiri pages: plain race_table_01 tables with a 調教タイム
+        # header column (confirmed live 2026-07-26, Stage 0).
+        tables = [
+            table
+            for table in soup.select("table.race_table_01")
+            if any("調教タイム" in th.get_text() for th in table.select("th"))
+        ]
+        if not tables:
+            raise MemberContentError("training_sentinel_missing")
+        if not any(
+            TIMING_VALUE_RE.search(table.get_text(" ", strip=True))
+            for table in tables
+        ):
+            raise MemberContentError("training_values_masked")
+        if target.key not in str(soup):
+            raise MemberContentError("horse_id_sentinel_missing")
+        # Pagination summary such as 18件中1〜10件目 — recorded so the later
+        # phase-2 budget decision can use real pages-per-horse numbers.
+        pager = re.search(
+            r"(\d+)件中(\d+)〜(\d+)件目", soup.get_text(" ", strip=True)
+        )
+        return {
+            "training_tables": len(tables),
+            "pager": pager.group(0) if pager else None,
+        }
     if target.category == "race_index":
         race_ids = {
             match.group(1)
@@ -268,8 +295,6 @@ def validate_member_content(body: bytes, target: Target) -> dict[str, Any]:
         # member data.  Refuse rather than cache a value-less page forever.
         raise MemberContentError("training_values_masked")
     horse_ids = detailed_horse_ids(soup)
-    if target.category == "horse" and target.key in str(soup):
-        horse_ids.add(target.key)
     if target.category == "race" and not horse_ids:
         raise MemberContentError("race_horse_sentinel_missing")
     if target.expected_horse_ids:
