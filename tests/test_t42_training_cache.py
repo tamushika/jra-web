@@ -317,6 +317,31 @@ def test_horse_training_rejects_foreign_horse_page(tmp_path):
     assert not (tmp_path / "raw" / "horse" / "2021106347.html").exists()
 
 
+def test_http_400_is_permanent_gap_and_does_not_trip_failure_stop(tmp_path):
+    # 2022年の順延開催ではdb.netkeiba由来のrace_idをrace.netkeibaが400で拒否する。
+    # 400の連なりで5連続失敗停止すると再実行デッドロックになるため、
+    # 恒久ギャップとして記録して続行すること。
+    responses = [FakeResponse(b"", status_code=400) for _ in range(6)]
+    responses.append(FakeResponse())  # 7件目は正常ページ
+    session = FakeSession(responses)
+    f = fetcher(tmp_path, session)
+    targets = [
+        t42.race_target(f"2022050408{n:02d}", ["2021106347"]) for n in range(1, 7)
+    ] + [t42.race_target("202603020312", ["2021106347"])]
+    summary = t42.run_targets(f, targets)
+    assert summary["permanent_gaps"] == 6
+    assert summary["failures"] == 0
+    assert summary["stopped"] is None  # 6連続400でも停止しない
+    assert summary["fetched"] == 1  # 後続の正常ページは取得される
+    with sqlite3.connect(tmp_path / "manifest.sqlite") as db:
+        codes = [row[0] for row in db.execute(
+            "SELECT error_code FROM fetch_manifest WHERE error_code IS NOT NULL"
+        )]
+    assert codes.count("http_400_id_not_on_race_site") == 6
+    # 400は1回ずつしかリクエストしない (リトライ3回を浪費しない)
+    assert len(session.calls) == 7
+
+
 def test_horse_enumeration_uses_paid_race_cache(tmp_path):
     race_dir = tmp_path / "race"
     race_dir.mkdir()

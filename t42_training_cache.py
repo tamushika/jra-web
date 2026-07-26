@@ -73,6 +73,10 @@ class MemberContentError(T42Error):
     pass
 
 
+class PermanentPageGap(T42Error):
+    """The remote site permanently rejects this target's URL (HTTP 400)."""
+
+
 class StopAfterFailures(T42Error):
     pass
 
@@ -429,10 +433,20 @@ class TrainingFetcher:
         last_error: Exception | None = None
         status: int | None = None
         body: bytes | None = None
+        permanent_client_error = False
         for attempt in range(self.max_retries):
             try:
                 response = self._request(target)
                 status = response.status_code
+                if status == 400:
+                    # netkeiba answers HTTP 400 for race_ids that exist on
+                    # db.netkeiba but not on race.netkeiba (2022 rescheduled
+                    # meetings renumber kai/nichi).  This is permanent for the
+                    # URL: do not retry, and do not let a block of such races
+                    # trip the consecutive-failure stop (restart deadlock).
+                    permanent_client_error = True
+                    last_error = requests.HTTPError(f"400 for {target.url}")
+                    break
                 response.raise_for_status()
                 body = response.content
                 validate_member_content(body, target)
@@ -448,6 +462,15 @@ class TrainingFetcher:
                 if attempt + 1 < self.max_retries:
                     time.sleep(2 ** attempt)
         if body is None:
+            if permanent_client_error:
+                _record_manifest(
+                    self.manifest_path, target, cache_path=None, status=status,
+                    digest=None, error_code="http_400_id_not_on_race_site",
+                )
+                # Not a health signal: reset nothing, count nothing.
+                raise PermanentPageGap(
+                    f"race site rejects {target.category}/{target.key}"
+                ) from last_error
             code = (
                 str(last_error)
                 if isinstance(last_error, MemberContentError)
@@ -673,7 +696,8 @@ def run_targets(
 ) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "started_at": utc_now(), "processed": 0, "cached": 0, "fetched": 0,
-        "parsed_records": 0, "failures": 0, "stopped": None,
+        "parsed_records": 0, "failures": 0, "permanent_gaps": 0,
+        "stopped": None,
     }
     start_requests = fetcher.network_requests
     try:
@@ -697,6 +721,8 @@ def run_targets(
                 DailyLimitReached, StopAfterFailures,
             ):
                 raise
+            except PermanentPageGap:
+                summary["permanent_gaps"] += 1
             except T42Error:
                 summary["failures"] += 1
     except (DailyLimitReached, StopAfterFailures) as exc:
