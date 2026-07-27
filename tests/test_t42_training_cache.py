@@ -317,45 +317,40 @@ def test_horse_training_rejects_foreign_horse_page(tmp_path):
     assert not (tmp_path / "raw" / "horse" / "2021106347.html").exists()
 
 
-def test_http_400_is_permanent_gap_and_does_not_trip_failure_stop(tmp_path):
-    # 2022年の順延開催ではdb.netkeiba由来のrace_idをrace.netkeibaが400で拒否する。
-    # 400の連なりで5連続失敗停止すると再実行デッドロックになるため、
-    # 恒久ギャップとして記録して続行すること。
-    responses = [FakeResponse(b"", status_code=400) for _ in range(6)]
-    responses.append(FakeResponse())  # 7件目は正常ページ
-    session = FakeSession(responses)
-    f = fetcher(tmp_path, session)
-    targets = [
-        t42.race_target(f"2022050408{n:02d}", ["2021106347"]) for n in range(1, 7)
-    ] + [t42.race_target("202603020312", ["2021106347"])]
-    summary = t42.run_targets(f, targets)
-    assert summary["permanent_gaps"] == 6
-    assert summary["failures"] == 0
-    assert summary["stopped"] is None  # 6連続400でも停止しない
-    assert summary["fetched"] == 1  # 後続の正常ページは取得される
-    with sqlite3.connect(tmp_path / "manifest.sqlite") as db:
-        codes = [row[0] for row in db.execute(
-            "SELECT error_code FROM fetch_manifest WHERE error_code IS NOT NULL"
-        )]
-    assert codes.count("http_400_id_not_on_race_site") == 6
-    # 400は1回ずつしかリクエストしない (リトライ3回を浪費しない)
-    assert len(session.calls) == 7
-
-
-def test_race_index_400_stays_transient(tmp_path):
-    # db.netkeibaのday indexは負荷時に一時的な400を返す (2026-07-27 02:00観測、
-    # 再試行で200)。race_indexカテゴリの400は恒久ギャップにせず、通常の
-    # リトライ+連続失敗カウント経路を通ること。
+def test_http_400_is_blocking_window_with_long_cooldown(tmp_path, monkeypatch):
+    # netkeibaのWAFは累計量に応じ、実在ページにも空の400を返すブロック窓を作る
+    # (2026-07-27観測: Google索引済みの天皇賞秋2023すら400)。400はページの
+    # 恒久属性として扱わず、長いクールダウンで再試行し、続くなら連続失敗停止で
+    # 安全に終了すること (キャッシュ未保存なので再実行で回収される)。
+    sleeps = []
+    monkeypatch.setattr(t42.time, "sleep", lambda s: sleeps.append(s))
     session = FakeSession([FakeResponse(b"", status_code=400) for _ in range(3)])
     f = fetcher(tmp_path, session)
     with pytest.raises(t42.T42Error, match="fetch rejected"):
-        f.fetch(t42.index_target("20221030"))
-    assert len(session.calls) == 3  # リトライ3回 (恒久扱いなら1回で打ち切りのはず)
+        f.fetch(t42.race_target("202305040911", ["2021106347"]))
+    assert len(session.calls) == 3  # リトライはする (恒久スキップにしない)
+    assert sleeps.count(t42.BLOCK_COOLDOWN_SECONDS) == 2  # 通常backoffでなく長い冷却
     with sqlite3.connect(tmp_path / "manifest.sqlite") as db:
         codes = [row[0] for row in db.execute(
             "SELECT error_code FROM fetch_manifest WHERE error_code IS NOT NULL"
         )]
-    assert codes == ["http_or_network_failure"]
+    assert codes == ["http_400_blocked_window"]
+
+
+def test_sustained_400_window_stops_run_cleanly(tmp_path, monkeypatch):
+    monkeypatch.setattr(t42.time, "sleep", lambda s: None)
+    session = FakeSession(
+        [FakeResponse(b"", status_code=400) for _ in range(5 * 3)]
+    )
+    f = fetcher(tmp_path, session)
+    targets = [
+        t42.race_target(f"2023050409{n:02d}", ["2021106347"]) for n in range(1, 8)
+    ]
+    summary = t42.run_targets(f, targets)
+    assert summary["stopped"] == "StopAfterFailures"  # 5連続でクリーン停止
+    assert summary["failures"] == 4  # 5件目はStopAfterFailuresとして送出
+    # どのページもキャッシュに書かれていない (= 後続実行で再取得される)
+    assert not (tmp_path / "raw" / "race").exists()
 
 
 def test_horse_enumeration_uses_paid_race_cache(tmp_path):
