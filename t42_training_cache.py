@@ -438,12 +438,16 @@ class TrainingFetcher:
             try:
                 response = self._request(target)
                 status = response.status_code
-                if status == 400:
-                    # netkeiba answers HTTP 400 for race_ids that exist on
-                    # db.netkeiba but not on race.netkeiba (2022 rescheduled
-                    # meetings renumber kai/nichi).  This is permanent for the
-                    # URL: do not retry, and do not let a block of such races
-                    # trip the consecutive-failure stop (restart deadlock).
+                if status == 400 and target.category == "race":
+                    # race.netkeiba answers HTTP 400 for race_ids that exist
+                    # on db.netkeiba but not there (2022 rescheduled meetings
+                    # renumber kai/nichi; verified stable across runs).  This
+                    # is permanent for the URL: do not retry, and do not let a
+                    # block of such races trip the consecutive-failure stop
+                    # (restart deadlock).  db.netkeiba (race_index) also
+                    # returns transient 400s under load (observed 2026-07-27
+                    # 02:00, 200 on retry), so other categories keep the
+                    # normal retry + failure-count path.
                     permanent_client_error = True
                     last_error = requests.HTTPError(f"400 for {target.url}")
                     break
@@ -636,7 +640,19 @@ def iter_race_targets(
         by_date.setdefault(date8, []).append((place, race_no))
     with sqlite3.connect(db_path) as db:
         for date8, races in by_date.items():
-            resolved = resolve_day(fetcher, date8)
+            try:
+                resolved = resolve_day(fetcher, date8)
+            except (
+                CookieConfigError, LiveGateError,
+                DailyLimitReached, StopAfterFailures,
+            ):
+                raise
+            except T42Error:
+                # 一時的なindex失敗 (db.netkeibaの間欠400等) で無人バックフィル
+                # 全体を落とさない。1回だけ間隔を置いて再試行し、それでも
+                # 駄目なら再送出 (プロセス停止・再開可能)
+                time.sleep(120)
+                resolved = resolve_day(fetcher, date8)
             for place, race_no in races:
                 race_id = resolved.get((place, race_no))
                 if not race_id:

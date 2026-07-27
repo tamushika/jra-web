@@ -342,6 +342,22 @@ def test_http_400_is_permanent_gap_and_does_not_trip_failure_stop(tmp_path):
     assert len(session.calls) == 7
 
 
+def test_race_index_400_stays_transient(tmp_path):
+    # db.netkeibaのday indexは負荷時に一時的な400を返す (2026-07-27 02:00観測、
+    # 再試行で200)。race_indexカテゴリの400は恒久ギャップにせず、通常の
+    # リトライ+連続失敗カウント経路を通ること。
+    session = FakeSession([FakeResponse(b"", status_code=400) for _ in range(3)])
+    f = fetcher(tmp_path, session)
+    with pytest.raises(t42.T42Error, match="fetch rejected"):
+        f.fetch(t42.index_target("20221030"))
+    assert len(session.calls) == 3  # リトライ3回 (恒久扱いなら1回で打ち切りのはず)
+    with sqlite3.connect(tmp_path / "manifest.sqlite") as db:
+        codes = [row[0] for row in db.execute(
+            "SELECT error_code FROM fetch_manifest WHERE error_code IS NOT NULL"
+        )]
+    assert codes == ["http_or_network_failure"]
+
+
 def test_horse_enumeration_uses_paid_race_cache(tmp_path):
     race_dir = tmp_path / "race"
     race_dir.mkdir()
