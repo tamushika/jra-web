@@ -673,14 +673,17 @@ def iter_race_targets(
 
 def planned_targets(
     fetcher: TrainingFetcher, db_path: Path,
-    phases: Iterable[int],
+    phases: Iterable[int], *, phase2_years: set[int] | None = None,
 ) -> Iterable[Target]:
     for phase in phases:
         if phase == 1:
             yield from iter_race_targets(fetcher, db_path, "20210101", "20260630")
         elif phase == 2:
+            # 2026-07-30 Phase 2縮小裁定: 馬別1頁目はレース頁と大部分重複し
+            # (増分は休養中調教のみ)、全年×全頁は残予算に収まらない。
+            # 年集合を絞り、直近年から実行して途中打ち切りの損失を最小化する
             values = horse_ids_from_race_cache(
-                fetcher.cache_root, set(range(2021, 2027))
+                fetcher.cache_root, phase2_years or set(range(2021, 2027))
             )
             if not values:
                 raise T42Error("phase 2 requires completed phase 1 race caches")
@@ -791,6 +794,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stage0", action="store_true")
     parser.add_argument("--target", action="append", type=_explicit_target, default=[])
     parser.add_argument("--phases", type=int, nargs="+", choices=(1, 2, 3, 4))
+    parser.add_argument(
+        "--phase2-years", type=int, nargs="+",
+        help="phase 2の馬ID列挙を、この年のレースキャッシュ出走馬に限定する",
+    )
     parser.add_argument("--summary", type=Path)
     return parser
 
@@ -811,7 +818,8 @@ def main(argv: list[str] | None = None) -> int:
         trial_acknowledged=args.acknowledge_trial_active,
     )
     targets = args.target if args.stage0 else planned_targets(
-        fetcher, args.db, args.phases
+        fetcher, args.db, args.phases,
+        phase2_years=set(args.phase2_years) if args.phase2_years else None,
     )
     try:
         with scrape_lock(args.lock):

@@ -364,6 +364,24 @@ def test_horse_enumeration_uses_paid_race_cache(tmp_path):
     assert t42.horse_ids_from_race_cache(tmp_path, {2020}) == ["2017100001"]
 
 
+def test_phase2_years_narrows_enumeration(tmp_path):
+    race_dir = tmp_path / "raw" / "race"
+    race_dir.mkdir(parents=True)
+    (race_dir / "202603020312.html").write_bytes(MEMBER_HTML)
+    (race_dir / "202503020312.html").write_bytes(
+        MEMBER_HTML.replace(b"2021106347", b"2019100001")
+    )
+    f = fetcher(tmp_path, FakeSession([]))
+    targets = list(t42.planned_targets(
+        f, tmp_path / "none.db", [2], phase2_years={2026},
+    ))
+    assert [t.key for t in targets] == ["2021106347"]
+    both = list(t42.planned_targets(
+        f, tmp_path / "none.db", [2], phase2_years={2025, 2026},
+    ))
+    assert sorted(t.key for t in both) == ["2019100001", "2021106347"]
+
+
 def test_status_does_not_require_cookie_or_network(tmp_path, capsys):
     assert t42.main(["--manifest", str(tmp_path / "m.sqlite"), "--status"]) == 0
     payload = json.loads(capsys.readouterr().out)
