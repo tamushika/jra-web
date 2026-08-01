@@ -219,6 +219,24 @@ CREATE TABLE IF NOT EXISTS board_odds_snapshots (
 );
 CREATE INDEX IF NOT EXISTS ix_board_odds_race_stage
     ON board_odds_snapshots(race_id, stage, bet_type, combo);
+CREATE TABLE IF NOT EXISTS race_confidence_snapshots (
+    race_confidence_snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    place TEXT NOT NULL,
+    r INTEGER NOT NULL,
+    cutoff_at TEXT,
+    snapshot_source TEXT NOT NULL,
+    model_probs_json TEXT,
+    market_odds_json TEXT,
+    features_json TEXT,
+    score REAL,
+    threshold REAL,
+    selected INTEGER CHECK (selected IN (0,1) OR selected IS NULL),
+    manifest_sha256 TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_race_confidence_date_race
+    ON race_confidence_snapshots(date, place, r);
 """
 
 
@@ -351,6 +369,8 @@ class LoggingStore:
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(9, ?)", (utc_now(),))
             # version 10 (T59d): prospective-ready ticket board snapshots.
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(10, ?)", (utc_now(),))
+            # version 11 (T62b): display-only prospective race confidence snapshots.
+            conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(11, ?)", (utc_now(),))
         self._write(op)
 
     def start_run(self, *, app_name: str, trigger_type: str = "manual", model_name: str | None = None,
@@ -449,6 +469,31 @@ class LoggingStore:
                  stage,fetch_id,status,data_quality_flags_json)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
             return conn.total_changes - before
+        return self._write(op)
+
+    def save_race_confidence(self, row: Mapping[str, Any]) -> int:
+        """Append one as-of T62b row; outcome and final-price fields are not accepted."""
+        forbidden = {"winner", "winner_id", "finish_position", "final_win_odds", "result"}
+        overlap = forbidden.intersection(row)
+        if overlap:
+            raise ValueError(f"post-race fields are forbidden: {sorted(overlap)}")
+        self.initialize()
+        values = (
+            str(row["date"]), str(row["place"]), int(row["r"]),
+            _utc(row.get("cutoff_at")), str(row.get("snapshot_source") or "unknown"),
+            stable_json(row["model_probs"]) if row.get("model_probs") is not None else None,
+            stable_json(row["market_odds"]) if row.get("market_odds") is not None else None,
+            stable_json(row["features"]) if row.get("features") is not None else None,
+            row.get("score"), row.get("threshold"),
+            None if row.get("selected") is None else int(bool(row.get("selected"))),
+            row.get("manifest_sha256"), _utc(row.get("created_at")) or utc_now(),
+        )
+        def op(conn):
+            cursor = conn.execute("""INSERT INTO race_confidence_snapshots
+                (date,place,r,cutoff_at,snapshot_source,model_probs_json,market_odds_json,
+                 features_json,score,threshold,selected,manifest_sha256,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
+            return int(cursor.lastrowid)
         return self._write(op)
 
     def save_ev_evaluation(self, *, prediction_run_id: str, race_id: str, horse_id: str,

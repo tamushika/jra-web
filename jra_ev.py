@@ -49,6 +49,7 @@ except ImportError:
 
 import scoring  # noqa: E402
 import board_market  # noqa: E402
+import race_confidence  # noqa: E402
 from index import analyze_race_url, build_matrix_data  # noqa: E402
 from combo_probs import wide_candidates  # noqa: E402
 from api.port_guard import ensure_port_free  # noqa: E402
@@ -298,6 +299,16 @@ def compute_wide_picks(horses, params):
             for i, j, ov, mp in cands]
 
 
+def _t62_history_available(horse):
+    valid = []
+    for run in (horse.get("hist") or [])[:4]:
+        try:
+            valid.append(int(run.get("rank") or 0) > 0)
+        except (AttributeError, TypeError, ValueError):
+            valid.append(False)
+    return sum(valid) >= 2
+
+
 def analyze_one(url, params, base_date=None, day_label="", stage=None,
                 snapshot_context=None):
     """1レースを解析して監視レコードを返す。stage は発走何分前の取得かの識別子
@@ -334,6 +345,7 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None,
             "scratched": bool(h.get("scratched") or h.get("cancelled")
                                or h.get("withdrawn") or h.get("is_scratched")),
             "web_score": h.get("score"), "ml_score": ml,
+            "history_available": _t62_history_available(h),
         })
     n_picked = compute_picks(horses, params)
 
@@ -433,7 +445,7 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None,
         "url": url, "venue": venue,
         "race_num": _parse_race_num(result.get("race_info")),
         "race_info": result.get("race_info", ""),
-        "race_type": race_type, "dist": dist_val,
+        "race_type": race_type, "race_class": result.get("race_class", ""), "dist": dist_val,
         "start_time": start_dt.strftime("%H:%M") if start_dt else "",
         "_start_dt": start_dt,
         "day_label": day_label,
@@ -759,6 +771,58 @@ def _capture_board_snapshot(rec, stage):
     return board
 
 
+def _capture_race_confidence(rec, stage):
+    """Compute and append the display-only T62b row at the fixed 30-minute cutoff."""
+    if str(stage) != "30":
+        return rec.get("race_confidence") or race_confidence.unavailable("30分前cutoff待ち")
+    quality = rec.get("_snapshot_quality") or {}
+    cutoff_at = quality.get("observed_at")
+    confidence = race_confidence.build_live_score(
+        rec.get("horses", []), race_no=rec.get("race_num"),
+        race_type=rec.get("race_type"), race_class=rec.get("race_class"),
+        stage=stage, cutoff_at=cutoff_at, snapshot_source="jra",
+    )
+    if LoggingStore is not None:
+        try:
+            source = confidence.get("snapshot_source") or "jra"
+            if confidence.get("status") != "ok":
+                source = f"failure:{confidence.get('reason') or confidence.get('status')}"
+            LoggingStore().save_race_confidence({
+                "date": rec.get("race_date") or "unknown",
+                "place": rec.get("venue") or "unknown", "r": rec.get("race_num") or 0,
+                "cutoff_at": cutoff_at, "snapshot_source": source,
+                "model_probs": confidence.get("model_probs"),
+                "market_odds": confidence.get("market_odds"),
+                "features": confidence.get("features"), "score": confidence.get("score"),
+                "threshold": confidence.get("threshold"),
+                "selected": confidence.get("selected"),
+                "manifest_sha256": confidence.get("manifest_sha256"),
+            })
+        except Exception as exc:
+            confidence["storage_warning"] = type(exc).__name__
+            print(f"[WARN] T62b snapshot save failed {_rid(rec)}: {type(exc).__name__}: {exc}")
+    return confidence
+
+
+def _record_race_confidence_failure(rec, stage, exc):
+    """Append a null T62b capture; never substitute probabilities from an older fetch."""
+    confidence = race_confidence.unavailable("cutoff取得失敗")
+    if str(stage) == "30" and LoggingStore is not None:
+        try:
+            LoggingStore().save_race_confidence({
+                "date": rec.get("race_date") or "unknown",
+                "place": rec.get("venue") or "unknown", "r": rec.get("race_num") or 0,
+                "cutoff_at": datetime.now(timezone.utc).isoformat(),
+                "snapshot_source": f"failure:{type(exc).__name__}",
+                "model_probs": None, "market_odds": None, "features": None,
+                "score": None, "threshold": None, "selected": None,
+                "manifest_sha256": None,
+            })
+        except Exception as storage_exc:
+            confidence["storage_warning"] = type(storage_exc).__name__
+    return confidence
+
+
 def snapshot_odds(rec, stage, *, scheduler_restart=False):
     """通知を伴わずオッズだけ再取得して記録する (時点別オッズ特徴量 Phase C 用のデータ蓄積)。
     refresh_and_alert とは完全に独立しており、アラート生成・LINE/Discord/ブラウザ通知の
@@ -777,15 +841,19 @@ def snapshot_odds(rec, stage, *, scheduler_restart=False):
         )
     except Exception as e:
         print(f"[WARN] スナップショット取得失敗 {_rid(rec)} ({stage}分前): {e}")
+        with _LOCK:
+            rec["race_confidence"] = _record_race_confidence_failure(rec, stage, e)
         return None
     quality = new_rec.get("_snapshot_quality") or {}
     persisted = new_rec.get("_snapshot_persisted") is True
     board = _capture_board_snapshot(new_rec, stage)
+    confidence = _capture_race_confidence(new_rec, stage)
     with _LOCK:
         for k in ("horses", "n_picked", "wide_picks", "last_update",
                   "odds_ok", "n_odds"):
             rec[k] = new_rec.get(k, rec.get(k))
         rec["board"] = board
+        rec["race_confidence"] = confidence
         if persisted:
             rec.setdefault("_snapshot_history", []).append({
                 "stage": stage,
@@ -1021,6 +1089,8 @@ def api_boards():
                 "rid": rid, "venue": rec.get("venue"),
                 "race_num": rec.get("race_num"), "start_time": rec.get("start_time"),
                 "board": board,
+                "race_confidence": rec.get("race_confidence") or
+                    race_confidence.unavailable("30分前cutoff待ち"),
             })
         races.sort(key=lambda row: (
             row.get("start_time") or "99:99", row.get("venue") or ""))

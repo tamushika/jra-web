@@ -14,6 +14,10 @@
     .race-head { font-size: 17px; font-weight: 700; margin-bottom: 5px; }
     .board-message { border: 1px solid #d98b28; padding: 8px 10px; border-radius: 7px;
                      color: #efb35e; margin-top: 8px; }
+    .confidence { margin: 9px 0; padding: 10px; border-radius: 7px;
+                  border: 1px solid var(--border-color); }
+    .confidence.selected { border-color: #4d9b72; background: rgba(45,120,82,.16); }
+    .confidence-title { font-weight: 700; }
     details { margin-top: 10px; }
     summary { cursor: pointer; font-weight: 700; color: var(--primary); }
     .scroll { overflow: auto; max-height: 430px; margin-top: 7px; }
@@ -30,6 +34,7 @@
   <h1>確率・オッズボード</h1>
   <p class="board-note">市場の単勝オッズから導出した表示専用情報です (MLモデルの勝率ではありません)。馬券判断の根拠にはしないでください。複勝・ワイドは段階λ校正、馬連はλ=1を使用します。</p>
   <p class="board-note"><b>乖離の見方</b>: 乖離 = 公正オッズ ÷ 実オッズ。<b>1より小さいほど</b>実オッズが公正値より高く支払う = 単勝市場基準の「見かけ期待値」が高い (見かけ期待値 ≒ 1÷乖離)。<b>1より大きい場合は過剰人気</b> (実オッズが低すぎる) で期待値は低い。<span style="background:rgba(67,133,190,.35);padding:0 6px;border-radius:4px;">青ハイライト</span> = 乖離 0.8 未満 (見かけ期待値 1.25 以上)。</p>
+  <p class="board-note">「本日の勝負レース度」は、人気上位馬をモデルが市場より正確に評価できている可能性を示す表示専用の指標であり、的中・回収を保証しません。歴史検証では優位が1-3人気帯に集中し、中穴・大穴帯ではむしろ悪化しました。</p>
   <div id="boards"><p class="board-meta">読込中</p></div>
 </main>
 <script>
@@ -65,11 +70,17 @@ function render(payload) {
     const message = board.status === 'ok' ? '' : `<div class="board-message">${esc(board.message || '表示不可')}</div>`;
     const rows = board.rows || {};
     const unavailable = board.unavailable_kinds || {};
+    const confidence = race.race_confidence || {};
+    const confidenceText = confidence.status === 'ok'
+      ? `スコア ${dec(confidence.score)} / ${esc(confidence.label)}`
+      : `対象外 / ${esc(confidence.reason || '30分前cutoff待ち')}`;
+    const confidenceBlock = `<div class="confidence ${confidence.selected ? 'selected' : ''}">
+      <span class="confidence-title">本日の勝負レース度:</span> ${confidenceText}</div>`;
     const sections = board.status === 'ok'
       ? ['place','wide','umaren'].map(k => section(k, rows[k] || [], unavailable[k])).join('') : '';
     return `<article class="race-board"><div class="race-head">${esc(race.venue)} ${esc(race.race_num)}R ${esc(race.start_time)}</div>
       <div class="board-meta">取得段階: ${esc(board.stage == null ? '取得前' : board.stage + '分前')} / オッズ取得時刻: ${esc(board.received_at || '取得前')}</div>
-      ${message}${sections}</article>`;
+      ${confidenceBlock}${message}${sections}</article>`;
   }).join('');
 }
 
