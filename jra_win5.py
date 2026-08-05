@@ -17,6 +17,7 @@ import re
 import sys
 import threading
 
+import requests
 from flask import Blueprint, Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
@@ -359,11 +360,98 @@ def build_kaime(races, points, single_axis):
         return result
 
 
+# ─── WIN5確信度のLINE通知 (SPEC-T68) ──────────────────────────────────────────
+# 締切前監視 (_watch_loop) の再計算完了時のみ、est_hit_rate が2025年実測中央値
+# (win5_weights.json allocation.est_reference) を上回った場合に1通だけ通知する。
+# 手動の /api/win5_kaime では呼ばない (クリックごとのスパム防止)。
+# jra_ev.py は変更しない方針のため、送信コードは _send_line と同じ Messaging API
+# broadcast方式をここに独立してコピーする (共通化のための jra_ev.py リファクタ禁止)。
+
+def _win5_confidence_check(kaime):
+    """est_hit_rateが2025年実測中央値を上回るか判定する。
+    戻り値: (gate_ok, est, median, p75)。gate_ok=Falseの場合は理由を問わず通知しない。"""
+    if kaime.get("alloc_method") != "prob":
+        return False, None, None, None
+    ref = kaime.get("est_reference")
+    if not ref or len(ref) < 2:
+        return False, None, None, None
+    median, p75 = ref[0], ref[1]
+    est = kaime.get("est_hit_rate")
+    if est is None or median is None:
+        return False, None, None, None
+    return est > median, est, median, p75
+
+
+def _win5_confidence_message(date_str, points, formula, est, median, p75):
+    """SPEC-T68 §4 のプレーンテキスト文言を組み立てる。購入推奨の文言は入れない。"""
+    high_p75 = p75 is not None and est >= p75
+    title = "高め (上位25%圏)" if high_p75 else "高め (中央値超え)"
+    p75_suffix = "、上位25%圏" if high_p75 else ""
+    lines = [
+        f"🎯 WIN5確信度: {title}",
+        f"{date_str} {points}点 {formula}",
+        f"推定的中率 {est * 100:.2f}% > 2025年中央値 {median * 100:.1f}%",
+        f"(上位25%点 {p75 * 100:.1f}%{p75_suffix})",
+        "※参考情報です (購入推奨ではありません)",
+    ]
+    return "\n".join(lines)
+
+
+def _send_line_win5(text):
+    """jra_ev._send_line と同じ Messaging API broadcast方式 (コードはコピー、
+    jra_ev.py 自体は変更しない)。戻り値: "sent" | "suppressed" | "failed"。"""
+    token = os.environ.get("EV_LINE_CHANNEL_TOKEN", "").strip()
+    if not token:
+        return "suppressed"
+    try:
+        res = requests.post(
+            "https://api.line.me/v2/bot/message/broadcast",
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json"},
+            json={"messages": [{"type": "text", "text": text}]},
+            timeout=10)
+        if res.status_code != 200:
+            print(f"[WARN] WIN5 LINE通知失敗: HTTP {res.status_code} {res.text[:120]}")
+            return "failed"
+        return "sent"
+    except Exception as e:
+        print(f"[WARN] WIN5 LINE通知失敗: {e}")
+        return "failed"
+
+
+def _notify_win5_confidence(kaime, points, races):
+    """締切前監視の再計算完了時のみ呼ぶこと (手動 /api/win5_kaime では呼ばない)。
+    WIN5_LINE_NOTIFY=0 で無効化可 (既定=有効)。例外を送出しない
+    (監視ループを壊さないため、ここで必ず握りつぶして "failed" を返す)。
+    戻り値: "sent" | "suppressed" | "failed" """
+    try:
+        if os.environ.get("WIN5_LINE_NOTIFY", "1").strip() == "0":
+            return "suppressed"
+        if not os.environ.get("EV_LINE_CHANNEL_TOKEN", "").strip():
+            return "suppressed"
+        gate_ok, est, median, p75 = _win5_confidence_check(kaime)
+        if not gate_ok:
+            return "suppressed"
+        date_str = None
+        if races:
+            race_date = str(races[0].get("race_date") or "")
+            if len(race_date) == 8 and race_date.isdigit():
+                date_str = f"{race_date[:4]}-{race_date[4:6]}-{race_date[6:]}"
+        if not date_str:
+            from datetime import datetime
+            date_str = datetime.now().strftime("%Y-%m-%d")
+        text = _win5_confidence_message(date_str, points, kaime.get("formula", ""), est, median, p75)
+        return _send_line_win5(text)
+    except Exception as e:
+        print(f"[WARN] WIN5確信度通知の処理で例外: {e}")
+        return "failed"
+
+
 # ─── 締切前の自動再スコア (発走15分前にオッズ込みで再計算) ────────────────────
 
 WATCH = {"status": "idle", "deadline": "", "first_time": "", "urls": [],
          "points": 100, "single_axis": False, "result": None, "races": None,
-         "error": "", "updated_at": ""}
+         "error": "", "updated_at": "", "line_notify": ""}
 _WATCH_LOCK = threading.Lock()
 _WATCH_THREAD = [False]
 
@@ -401,11 +489,14 @@ def _watch_loop():
                      "horses": [{k: h.get(k) for k in
                                  ("num", "name", "score", "odds", "pop", "grade")}
                                 for h in r["horses"]]} for r in races]
+            # SPEC-T68: 締切前監視の再計算完了時のみ確信度通知を判定 (手動STEP3では呼ばない)
+            line_notify = _notify_win5_confidence(kaime, points, races)
             with _WATCH_LOCK:
                 WATCH["status"] = "done"
                 WATCH["result"] = kaime
                 WATCH["races"] = slim
                 WATCH["updated_at"] = datetime.now().strftime("%H:%M:%S")
+                WATCH["line_notify"] = line_notify
         except Exception as e:
             with _WATCH_LOCK:
                 WATCH["status"] = "error"
@@ -428,6 +519,7 @@ def win5_watch_arm():
             "points": int(data.get("points", 100)),
             "single_axis": bool(data.get("single_axis")),
             "result": None, "races": None, "error": "", "updated_at": "",
+            "line_notify": "",
         })
         if not _WATCH_THREAD[0]:
             _WATCH_THREAD[0] = True
@@ -439,7 +531,8 @@ def win5_watch_arm():
 def win5_watch_state():
     with _WATCH_LOCK:
         return jsonify({k: WATCH[k] for k in
-                        ("status", "first_time", "result", "races", "error", "updated_at")})
+                        ("status", "first_time", "result", "races", "error", "updated_at",
+                         "line_notify")})
 
 
 # ─── 起動 ────────────────────────────────────────────────────────────────────
