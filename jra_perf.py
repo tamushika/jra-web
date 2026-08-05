@@ -24,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, Flask, jsonify, request, send_from_directory
 
+from api import scoring
 from api.logging_store import LoggingStore
 from api.port_guard import ensure_port_free
 from api.result_service import normalize_race_date, sync_results_for_date
@@ -32,6 +33,11 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "data", "jra_logging.db")
 ABILITY_DB_PATH = os.path.join(BASE_DIR, "ability.db")
 PORT = 5004
+
+# T66: WIN5「500点シャドー」(もし毎回500点prob配分で買っていたら) の予算リスト。
+# DBには一切書き込まず、predictions.ml_score + win5_predictions.prediction_run_ids_json
+# から表示のたびに再計算する導出値 (jra_win5.build_kaime と同一ロジック)。
+WIN5_SHADOW_BUDGETS = [500]
 
 app = Flask(__name__, static_folder=BASE_DIR, static_url_path="/")
 # T38: ルートはBlueprint (bp) に定義し、末尾で app.register_blueprint(bp) して
@@ -286,6 +292,114 @@ def _win5_payout_view(win5_result_row, race_rows):
     }
 
 
+def _win5_shadow_max_picks():
+    """win5_weights.json の allocation.max_picks_per_race を読む (T66)。
+    jra_win5.build_kaime と同一ソース。読めなければ既定値8 (build_kaime既定と同じ)。"""
+    try:
+        cfg5 = scoring.load_score_weights(BASE_DIR, "win5_weights.json")
+        return int((cfg5.get("allocation") or {}).get("max_picks_per_race", 8))
+    except Exception:
+        return 8
+
+
+def _win5_shadow_allocation(cur, prediction_run_ids, budget, max_picks):
+    """T66: 5 run分の predictions.ml_score から500点シャドー配分を導出する
+    (scoring.win_probs_from_ml_scores + scoring.allocate_picks_prob。
+    jra_win5.build_kaime のprob配分パスと同一ロジック・軸固定なし)。
+    いずれかのrunで行が0件 / ml_scoreが1頭でもNULL / prob化不能(非conditional_logitモデル等)
+    なら None (算出不可。代替値のでっち上げをしない)。
+    戻り値: (selections[レース][馬番int...], picks[int...], est_hit_rate) または None。"""
+    sorted_ids_per_race = []
+    prob_lists = []
+    for run_id in prediction_run_ids:
+        rows = cur.execute(
+            "SELECT horse_id, ml_score FROM predictions WHERE prediction_run_id=? "
+            "ORDER BY horse_id ASC", (run_id,)).fetchall()
+        if not rows or any(r["ml_score"] is None for r in rows):
+            return None
+        # ml_score降順 (同値はhorse_id昇順を維持: 決定的な再現性のため安定ソート)
+        rows_sorted = sorted(rows, key=lambda r: -r["ml_score"])
+        sorted_ids_per_race.append([r["horse_id"] for r in rows_sorted])
+        probs = scoring.win_probs_from_ml_scores([r["ml_score"] for r in rows_sorted])
+        if not probs:
+            return None
+        prob_lists.append(probs)
+    picks, est = scoring.allocate_picks_prob(prob_lists, budget, max_picks)
+    selections = []
+    for horse_ids, k in zip(sorted_ids_per_race, picks):
+        kk = min(k, len(horse_ids))
+        selections.append([int(h.split(":")[-1]) for h in horse_ids[:kk]])
+    return selections, picks, est
+
+
+def _win5_shadow_view(cur, race_ids, prediction_run_ids, budget, max_picks,
+                      results, race_meta, pop_by_race, win5_results_by_date):
+    """T66: win5_predictions 1行分の「500点シャドー」表示用dictを返す (算出不可なら None)。
+    的中判定は既存 _win5_hit_flags を再利用。払戻は win5_results.payout_yen をそのまま
+    プロキシとして使う (自票によるパリミュチュエル希薄化は無視。UI側でプロキシ表記する)。"""
+    if len(race_ids) != 5 or len(prediction_run_ids) != 5:
+        return None
+    alloc = _win5_shadow_allocation(cur, prediction_run_ids, budget, max_picks)
+    if alloc is None:
+        return None
+    selections, picks, est = alloc
+    clipped_k = [len(sel) for sel in selections]
+    total_points = 1
+    for k in clipped_k:
+        total_points *= max(k, 1)
+    formula = "×".join(str(max(k, 1)) for k in clipped_k) + f"={total_points}点"
+    hit_flags, settled_all = _win5_hit_flags(race_ids, selections, results)
+    race_rows = _win5_race_details(race_ids, selections, results, race_meta, pop_by_race, hit_flags)
+    plan_date = str(race_ids[0]).split(":")[0] if race_ids else None
+    return {
+        "budget": budget,
+        "points": total_points,
+        "formula": formula,
+        "est": round(est, 5) if est is not None else None,
+        "hits": hit_flags,
+        "all_settled": settled_all,
+        "win5_hit": settled_all and all(hit_flags),
+        "races": race_rows,
+        "payout": _win5_payout_view(win5_results_by_date.get(plan_date), race_rows),
+        "cost_yen": total_points * 100,
+    }
+
+
+def _win5_shadow_summary(win5_by_date, win5_results_by_date, budget):
+    """T66: 「500点シャドー累計」ブロック。公式結果 (win5_results) がある日のみ集計する。
+    シャドーが算出不可 (None) の日は投入・払戻に含めず unavailable_days でカウントする
+    (代替値のでっち上げをしない)。"""
+    target_days = hit_days = unavailable_days = 0
+    cost_total = payout_total = 0
+    dates = []
+    for wdate, entry in win5_by_date.items():
+        if not win5_results_by_date.get(wdate):
+            continue  # 公式結果がある日のみ集計
+        shadow = entry.get("shadow_500")
+        if shadow is None:
+            unavailable_days += 1
+            continue
+        target_days += 1
+        dates.append(wdate)
+        cost_total += shadow["cost_yen"]
+        if shadow["win5_hit"]:
+            hit_days += 1
+            payout_view = shadow["payout"]
+            if payout_view.get("fetched"):
+                payout_total += payout_view.get("payout_yen") or 0
+    return {
+        "budget": budget,
+        "target_days": target_days,
+        "hit_days": hit_days,
+        "unavailable_days": unavailable_days,
+        "cost_yen": cost_total,
+        "payout_yen": payout_total,
+        "roi_pct": round(100.0 * payout_total / cost_total, 1) if cost_total else None,
+        "since": _iso_date(min(dates)) if dates else None,
+        "until": _iso_date(max(dates)) if dates else None,
+    }
+
+
 def collect(race_date=None):
     compact_date = normalize_race_date(race_date) if race_date else None
     conn = _conn()
@@ -475,6 +589,8 @@ def collect(race_date=None):
     # WIN5実績
     pop_by_race = _popularity_by_race(results)
     win5_results_by_date = _load_win5_results(cur, compact_date)
+    shadow_budget = WIN5_SHADOW_BUDGETS[0]
+    shadow_max_picks = _win5_shadow_max_picks()
     win5 = []
     if compact_date:
         win5_sql = """SELECT * FROM win5_predictions WHERE race_ids_json LIKE ?
@@ -506,6 +622,10 @@ def collect(race_date=None):
         hit_flags, settled_all = _win5_hit_flags(race_ids, selections, results)
         plan_date = str(race_ids[0]).split(":")[0] if race_ids else None
         race_rows = _win5_race_details(race_ids, selections, results, race_meta, pop_by_race, hit_flags)
+        try:
+            prediction_run_ids = json.loads(w["prediction_run_ids_json"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            prediction_run_ids = []
         win5.append({
             "created_at": _to_jst(w["created_at"]), "budget": w["budget"],
             "points": w["total_points"], "est": w["estimated_hit_rate"],
@@ -514,6 +634,9 @@ def collect(race_date=None):
             "win5_hit": settled_all and all(hit_flags),
             "races": race_rows,
             "payout": _win5_payout_view(win5_results_by_date.get(plan_date), race_rows),
+            "shadow_500": _win5_shadow_view(
+                cur, race_ids, prediction_run_ids, shadow_budget, shadow_max_picks,
+                results, race_meta, pop_by_race, win5_results_by_date),
         })
 
     # 日別WIN5実績 (T30): 日付ごとに最新プラン (created_at最大) の的中状況を採る
@@ -530,11 +653,18 @@ def collect(race_date=None):
         selections = json.loads(w["selections_json"])
         hit_flags, settled_all = _win5_hit_flags(race_ids, selections, results)
         race_rows = _win5_race_details(race_ids, selections, results, race_meta, pop_by_race, hit_flags)
+        try:
+            prediction_run_ids = json.loads(w["prediction_run_ids_json"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            prediction_run_ids = []
         win5_by_date[wdate] = {
             "hits": sum(1 for h in hit_flags if h), "total": len(hit_flags),
             "all_settled": settled_all, "win5_hit": settled_all and all(hit_flags),
             "races": race_rows,
             "payout": _win5_payout_view(win5_results_by_date.get(wdate), race_rows),
+            "shadow_500": _win5_shadow_view(
+                cur, race_ids, prediction_run_ids, shadow_budget, shadow_max_picks,
+                results, race_meta, pop_by_race, win5_results_by_date),
         }
 
     # 日別実績 (T30): モデル別 + EV通知 + WIN5 を日付単位にまとめる
@@ -580,7 +710,9 @@ def collect(race_date=None):
                "pending_races": pending,
                "selected_date": _iso_date(compact_date),
                "available_dates": [_iso_date(value) for value in available_dates],
-               "days": days[:90]}
+               "days": days[:90],
+               "win5_shadow_summary": _win5_shadow_summary(
+                   win5_by_date, win5_results_by_date, shadow_budget)}
 
     # 日付指定時はT56以前の応答を完全に維持する。以下の全期間向けデータは、
     # 既存の集計結果を表示用に組み替えるだけで、新しいSQLや母集団は持たない。

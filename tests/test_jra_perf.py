@@ -494,7 +494,7 @@ def test_collect_date_response_keeps_legacy_shape_and_values(tmp_path, monkeypat
     assert "race_dates" not in result
     assert set(result) == {
         "summary", "daily", "ev", "win5", "race_details", "pending_races",
-        "selected_date", "available_dates", "days",
+        "selected_date", "available_dates", "days", "win5_shadow_summary",
     }
     assert result["selected_date"] == "2026-07-12"
     assert result["race_details"][0]["date"] == "20260712"
@@ -511,3 +511,134 @@ def test_collect_series_preserves_none_metrics_for_unsettled_date(tmp_path, monk
     assert point["win_rate"] is None
     assert point["tan_roi"] is None
     assert point["fuku_roi"] is None
+
+
+# ---------------------------------------------------------------------------
+# T66: WIN5「500点シャドー」(表示時に predictions.ml_score + win5_predictions
+# .prediction_run_ids_json から再計算する導出表示。DBには一切書き込まない)
+# ---------------------------------------------------------------------------
+
+def _seed_win5_shadow_fixture(store, race_date, *, n_horses=8, null_ml_score=None,
+                              winner_num_per_race=None):
+    """5レース×n_horses頭の predictions (run 1本/レース) + win5_predictions 1行 +
+    race_results を作る。馬番が小さいほど ml_score が高くなるよう構成する
+    (シャドーの「上位k頭選択」を馬番の昇順で検証できるようにするため)。
+    - null_ml_score=(race_idx, horse_num): 該当馬のml_scoreをNoneにする (算出不可ケース)
+    - winner_num_per_race: 各レースの勝ち馬番 (既定は全レース1番=最高ml_score馬)
+    戻り値: race_ids"""
+    venues = ["東京", "中山", "阪神", "小倉", "福島"]
+    if winner_num_per_race is None:
+        winner_num_per_race = [1] * 5
+    race_ids, run_ids = [], []
+    for i, venue in enumerate(venues):
+        race_id = f"{race_date}:{venue}:{i + 1:02d}"
+        store.save_race(race_id=race_id, race_date=race_date, venue=venue, race_no=i + 1)
+        run_id = store.start_run(
+            app_name="win5", model_name="win5_score", model_version="1",
+            started_at=datetime.fromisoformat(
+                f"{race_date[:4]}-{race_date[4:6]}-{race_date[6:]}T01:00:00+00:00"))
+        rows = []
+        for n in range(1, n_horses + 1):
+            score = 100.0 - (n - 1) * 9.0 - i  # 馬番が大きいほどml_scoreが低い (降順)
+            if null_ml_score == (i, n):
+                score = None
+            rows.append({"race_id": race_id, "horse_id": f"{race_id}:{n:02d}", "ml_score": score})
+        store.save_predictions(run_id, rows)
+        store.finish_run(run_id)
+        winner_num = winner_num_per_race[i]
+        store.save_race_results([{
+            "race_id": race_id, "horse_id": f"{race_id}:{winner_num:02d}", "horse_name": f"勝ち馬{i}",
+            "finish_position": 1, "official_status": "official", "win_payout": 300,
+            "place_payout": 130, "result_fetched_at": datetime.now().astimezone(),
+            "source_hash": f"{race_id}:1", "data_quality_flags": [],
+        }])
+        race_ids.append(race_id)
+        run_ids.append(run_id)
+    store.save_win5_prediction(
+        prediction_run_ids=run_ids, race_ids=race_ids, budget=200, total_points=200,
+        selections=[{"race_id": rid, "horse_numbers": [1]} for rid in race_ids],
+        coverage=[0.5] * 5, estimated_hit_rate=0.1, allocation_method="prob",
+        allocation_version=1, single_axis=False, axis_index=None,
+        idempotency_key=f"shadow-{race_date}-{null_ml_score}-{winner_num_per_race}")
+    return race_ids
+
+
+def test_win5_shadow_500_is_deterministic_and_selects_top_ml_score(tmp_path, monkeypatch):
+    # SPEC-T66 §6-1: シャドー配分が決定的に再現され、総点数<=500・各レースk>=1・
+    # 選択馬番がml_score上位であること。
+    store = LoggingStore(tmp_path / "shadow-alloc.db")
+    race_date = "20260713"
+    _seed_win5_shadow_fixture(store, race_date)
+    monkeypatch.setattr(jra_perf, "DB_PATH", str(store.db_path))
+
+    shadow1 = jra_perf.collect("2026-07-13")["win5"][0]["shadow_500"]
+    shadow2 = jra_perf.collect("2026-07-13")["win5"][0]["shadow_500"]
+
+    assert shadow1 is not None
+    assert shadow1 == shadow2  # 同一入力から常に同一結果 (決定的)
+    assert shadow1["budget"] == 500
+    assert shadow1["points"] <= 500
+    assert len(shadow1["races"]) == 5
+    for row in shadow1["races"]:
+        nums = [p["no"] for p in row["picks"]]
+        assert len(nums) >= 1  # 各レースk>=1
+        # fixtureは馬番が小さいほどml_scoreが高いよう構成しているので、
+        # 選択される馬番は常に1番から連番の上位k頭になる
+        assert nums == list(range(1, len(nums) + 1))
+
+
+def test_win5_shadow_500_hit_all_races_uses_payout_yen_in_aggregate(tmp_path, monkeypatch):
+    # SPEC-T66 §6-2: 勝ち馬が全レースのシャドー選択に入るケース -> hit=True、
+    # payout=win5_results.payout_yenが「500点シャドー累計」に載る。
+    store = LoggingStore(tmp_path / "shadow-hit.db")
+    race_date = "20260713"
+    _seed_win5_shadow_fixture(store, race_date, winner_num_per_race=[1, 1, 1, 1, 1])
+    store.save_win5_result(
+        race_date=race_date, payout_yen=6_412_100, hit_ticket_count=3,
+        carryover_flag=False, carryover_amount=None, winning_numbers=[1, 1, 1, 1, 1],
+        source_url="https://race.netkeiba.com/top/win5.html?date=" + race_date,
+        source_hash="shadow-hit-h1")
+    monkeypatch.setattr(jra_perf, "DB_PATH", str(store.db_path))
+
+    result = jra_perf.collect("2026-07-13")
+    shadow = result["win5"][0]["shadow_500"]
+    assert shadow is not None
+    assert shadow["all_settled"] is True
+    assert shadow["win5_hit"] is True
+    assert shadow["payout"]["fetched"] is True
+    assert shadow["payout"]["payout_yen"] == 6_412_100
+
+    summary = result["win5_shadow_summary"]
+    assert summary["budget"] == 500
+    assert summary["target_days"] == 1
+    assert summary["hit_days"] == 1
+    assert summary["unavailable_days"] == 0
+    assert summary["cost_yen"] == shadow["cost_yen"]
+    assert summary["payout_yen"] == 6_412_100
+    assert summary["roi_pct"] == round(100.0 * 6_412_100 / summary["cost_yen"], 1)
+
+
+def test_win5_shadow_500_is_none_when_any_ml_score_missing(tmp_path, monkeypatch):
+    # SPEC-T66 §6-3: 1レースのml_scoreがNULLの馬が1頭でもいれば、シャドーは
+    # None (「算出不可」)。代替値のでっち上げをしない。公式結果があっても
+    # 「500点シャドー累計」の対象日数には含めない (unavailable_daysで計上)。
+    store = LoggingStore(tmp_path / "shadow-null.db")
+    race_date = "20260713"
+    _seed_win5_shadow_fixture(store, race_date, null_ml_score=(2, 3))
+    store.save_win5_result(
+        race_date=race_date, payout_yen=1_000_000, hit_ticket_count=5,
+        carryover_flag=False, carryover_amount=None, winning_numbers=[1, 1, 1, 1, 1],
+        source_url="https://race.netkeiba.com/top/win5.html?date=" + race_date,
+        source_hash="shadow-null-h1")
+    monkeypatch.setattr(jra_perf, "DB_PATH", str(store.db_path))
+
+    result = jra_perf.collect("2026-07-13")
+    assert result["win5"][0]["shadow_500"] is None
+
+    summary = result["win5_shadow_summary"]
+    assert summary["target_days"] == 0
+    assert summary["hit_days"] == 0
+    assert summary["unavailable_days"] == 1
+    assert summary["cost_yen"] == 0
+    assert summary["payout_yen"] == 0
+    assert summary["roi_pct"] is None

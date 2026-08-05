@@ -30,6 +30,12 @@
         .w5-winner-line { color: var(--text-muted); margin-left: 4px; }
         .w5-summary-line { margin-top: 4px; font-weight: bold; }
         .pf-warn { color: #ffb74d; }
+        /* T66: 500点シャドー (仮想・実購入ではない導出表示) */
+        .w5-shadow-row td { text-align: left; background: rgba(255,255,255,0.03); }
+        .w5-shadow-tag { display: inline-block; padding: 0 6px; border-radius: 8px;
+                         font-size: 11px; font-weight: bold; color: var(--text-muted);
+                         border: 1px dashed var(--border-color); margin-right: 6px; }
+        .w5-shadow-summary { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border-color); }
         .pf-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
                        margin: 8px 0 12px; }
         .pf-controls input { background: rgba(0,0,0,0.25); color: var(--text-color);
@@ -109,6 +115,7 @@
             <th>予測日時</th><th>点数</th><th>推定的中率</th><th>配分</th><th>軸</th>
             <th>レース別 (○=勝ち馬を含む)</th><th>WIN5</th><th>詳細</th>
         </tr></thead><tbody id="w5Body"></tbody></table>
+        <div id="w5ShadowSummary" class="w5-shadow-summary pf-meta"></div>
     </div>
 
     <div class="pf-section" id="graphSection">
@@ -204,6 +211,47 @@ function win5DetailHtml(entry) {
         if (p.mismatch) payoutLine += ' <span class="pf-warn">⚠ 勝ち馬の記録が外部結果と不一致</span>';
     }
     return `${rows}<div class="w5-summary-line">WIN5結果: 的中${hitsN}/${totalN} | ${payoutLine}</div>`;
+}
+
+// T66: 「500点シャドー」= もし毎回500点(prob通常配分・軸なし)で買っていたら、を
+// 実購入プランと同じ予測run (predictions.ml_score) から表示のたびに再計算した導出値。
+// DBには一切書き込まない。実購入ではないため強調表示・購入推奨の文言は出さない。
+function win5ShadowLineHtml(shadow) {
+    if (shadow === undefined) return ''; // 旧APIレスポンス (フィールド無し) はfail-soft
+    const label = '<span class="w5-shadow-tag">仮想</span>500点シャドー (実購入ではありません)';
+    if (shadow == null) {
+        return `<tr class="w5-shadow-row"><td colspan="8">${label}: <span class="pf-meta">算出不可 (ml_scoreの欠損等)</span></td></tr>`;
+    }
+    const hitLabel = !shadow.all_settled ? '<span class="pf-meta">未確定</span>'
+        : (shadow.win5_hit ? '<span class="hit-y">的中</span>' : '<span class="hit-n">不的中</span>');
+    const p = shadow.payout || {fetched: false};
+    let payoutLabel = '払戻(プロキシ): 未取得';
+    if (p.fetched) {
+        payoutLabel = `払戻(プロキシ) ${yen(p.payout_yen)}`;
+        if (p.mismatch) payoutLabel += ' <span class="pf-warn">⚠</span>';
+    }
+    return `<tr class="w5-shadow-row"><td colspan="8">${label}: `
+        + `${esc(shadow.formula)} / ${hitLabel} / ${payoutLabel}</td></tr>`;
+}
+
+function win5ShadowSummaryHtml(summary) {
+    if (!summary) return '';
+    const range = summary.since ? `${esc(summary.since)}〜${esc(summary.until)}` : '記録なし';
+    const note = ' <span class="pf-meta">※シャドー=実購入ではありません。仮想の比較記録です。'
+        + '払戻は公式配当額(win5_results.payout_yen)をそのまま使うプロキシで、'
+        + '自票によるパリミュチュエル希薄化は考慮していません。</span>';
+    if (!summary.target_days) {
+        const skipped = summary.unavailable_days
+            ? ` (算出不可 ${summary.unavailable_days}日は対象外)` : '';
+        return `<b>500点シャドー累計 (${range}・仮想)</b>: 公式結果が確定した対象日がまだありません${skipped}${note}`;
+    }
+    const roiHtml = summary.roi_pct == null ? '-' : roi(summary.roi_pct);
+    const skipped = summary.unavailable_days
+        ? ` <span class="pf-meta">(算出不可 ${summary.unavailable_days}日は集計対象外)</span>` : '';
+    return `<b>500点シャドー累計 (${range}・仮想)</b>: `
+        + `対象${summary.target_days}日 / 的中${summary.hit_days}日 / `
+        + `投入計${yen(summary.cost_yen)} / 払戻計(プロキシ)${yen(summary.payout_yen)} / ROI ${roiHtml}`
+        + skipped + note;
 }
 
 let lastSyncMessage = '';
@@ -484,8 +532,10 @@ async function load() {
                 <td>${!w.all_settled ? '<span class="pf-meta">確定待ち</span>'
                      : w.win5_hit ? '<span class="hit-y">的中!</span>' : '<span class="hit-n">不的中</span>'}</td>
                 <td><details class="w5-detail"><summary>詳細</summary>
-                    <div class="w5-detail-body">${win5DetailHtml(w)}</div></details></td></tr>`).join('')
+                    <div class="w5-detail-body">${win5DetailHtml(w)}</div></details></td></tr>
+            ${win5ShadowLineHtml(w.shadow_500)}`).join('')
             || '<tr><td colspan="8" class="pf-meta">まだWIN5予測の記録がありません</td></tr>';
+        document.getElementById('w5ShadowSummary').innerHTML = win5ShadowSummaryHtml(d.win5_shadow_summary);
 
         const daysSection = document.getElementById('daysSection');
         const graphSection = document.getElementById('graphSection');
