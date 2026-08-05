@@ -1435,8 +1435,8 @@ def main():
     prob_races = build_prob_races(scores_cl, te_keys, te_meta, temp=temp)
     report_calibration(prob_races)
     _res, _nd, day_records = simulate_win5_compare(
-        prob_races, upset_map, cov_cl, budgets=[50, 100, 150, 200])
-    report_skip_analysis(day_records, budgets=[100, 150, 200])
+        prob_races, upset_map, cov_cl, budgets=[50, 100, 150, 200, 500])
+    report_skip_analysis(day_records, budgets=[100, 150, 200, 500])
 
     # ── LightGBM LambdaRank (オプション比較) ──
     if args.lgbm:
@@ -1462,7 +1462,7 @@ def main():
         print(f"LGBM 温度: τ = {temp_gb:.2f}")
         prob_races_gb = build_prob_races(scores_gb, te_keys, te_meta, temp=temp_gb)
         report_calibration(prob_races_gb)
-        simulate_win5_compare(prob_races_gb, upset_map, cov_gb, budgets=[50, 100, 150, 200])
+        simulate_win5_compare(prob_races_gb, upset_map, cov_gb, budgets=[50, 100, 150, 200, 500])
 
     # CL はキャリブレーション済み勝率を提供し、レース固有配分 (WIN5的中率+3pt級) の
     # 前提になるため、LR がカバレッジで 1pt 以上明確に勝る場合のみ LR を採用する

@@ -437,7 +437,7 @@ def main():
         print_coverage_table(coverage_base, n_races_base,
                               "勝ち馬カバレッジ (同一レース集団, 人気順ベースライン・参考)")
 
-    budgets = [50, 100, 150, 200]
+    budgets = [50, 100, 150, 200, 500]
     results, results_uni, results_axis, axis_stat = simulate_win5(races, upset_map, coverage, budgets)
     print("\n===== WIN5シミュレーション (土日・R降順5レース近似) =====")
     if axis_stat["n"]:
