@@ -618,6 +618,173 @@ def test_win5_shadow_500_hit_all_races_uses_payout_yen_in_aggregate(tmp_path, mo
     assert summary["roi_pct"] == round(100.0 * 6_412_100 / summary["cost_yen"], 1)
 
 
+# ---------------------------------------------------------------------------
+# T67: perfダッシュボード「EV通知の実績」「WIN5の実績」の日別グルーピング
+# (レース別の予測結果 / race_dates と同じ扱い。既存の ev_by_date / win5_by_date を
+# 組み替えるだけで、新しいSQL・母集団は作らない)
+# ---------------------------------------------------------------------------
+
+def test_collect_ev_dates_and_win5_dates_grouped_by_date_desc(tmp_path, monkeypatch):
+    # SPEC-T67 §5-1: 全期間ビューは ev_dates / win5_dates を日付降順で返し、
+    # 値は既存の days 集計 (ev_by_date/win5_by_date 由来) と整合する。
+    store = LoggingStore(tmp_path / "ev-win5-dates.db")
+    old_date, new_date = "20260710", "20260712"
+
+    for date, ev, payout in ((old_date, 1.4, 300), (new_date, 1.5, 250)):
+        race_id = f"{date}:東京:01"
+        store.save_race(race_id=race_id, race_date=date, venue="東京", race_no=1)
+        run_id = store.start_run(
+            app_name="ev_monitor", model_name="ev_model", model_version="1",
+            started_at=datetime.fromisoformat(f"{date[:4]}-{date[4:6]}-{date[6:]}T02:00:00+00:00"))
+        store.save_odds([{"race_id": race_id, "horse_id": f"{race_id}:01",
+                           "win_odds": 3.0, "popularity": 1, "fetch_id": run_id, "stage": "5min"}])
+        store.save_ev_evaluation(
+            prediction_run_id=run_id, race_id=race_id, horse_id=f"{race_id}:01",
+            win_probability=0.4, ev=ev, threshold=1.1, decision="alert",
+            idempotency_key=f"alert-{race_id}")
+        store.save_race_results([{
+            "race_id": race_id, "horse_id": f"{race_id}:01", "horse_name": "本命馬",
+            "finish_position": 1, "official_status": "official", "win_payout": payout,
+            "place_payout": payout // 2, "result_fetched_at": datetime.now().astimezone(),
+            "source_hash": f"{race_id}:1", "data_quality_flags": [],
+        }])
+        # WIN5選択 [2] は勝ち馬 (01番) を含まないため両日とも不的中になる
+        store.save_win5_prediction(
+            prediction_run_ids=[f"w-{date}"], race_ids=[race_id], budget=100, total_points=100,
+            selections=[{"race_id": race_id, "horse_numbers": [2]}], coverage=[0.5],
+            estimated_hit_rate=0.1, allocation_method="prob", allocation_version=1,
+            single_axis=False, axis_index=None, idempotency_key=f"win5-{date}")
+
+    monkeypatch.setattr(jra_perf, "DB_PATH", str(store.db_path))
+    result = jra_perf.collect()
+
+    assert [e["date"] for e in result["ev_dates"]] == ["2026-07-12", "2026-07-10"]
+    assert [w["date"] for w in result["win5_dates"]] == ["2026-07-12", "2026-07-10"]
+
+    days_by_date = {d["date"]: d for d in result["days"]}
+    for entry in result["ev_dates"]:
+        day = days_by_date[entry["date"]]["ev"]
+        assert entry["n"] == day["n"]
+        assert entry["settled"] == day["settled"]
+        assert entry["win"] == day["win"]
+        assert entry["top3"] == day["top3"]
+        assert entry["tan_roi"] == day["tan_roi"]
+        assert entry["fuku_roi"] == day["fuku_roi"]
+    for entry in result["win5_dates"]:
+        day = days_by_date[entry["date"]]["win5"]
+        assert entry["hits"] == day["hits"]
+        assert entry["total"] == day["total"]
+        assert entry["all_settled"] == day["all_settled"]
+        assert entry["win5_hit"] == day["win5_hit"]
+    # 選択馬番 [2] は常に勝ち馬 (01番) を含まない -> 両日とも不的中
+    assert all(w["win5_hit"] is False for w in result["win5_dates"])
+    # race_ids長=1 (WIN5本来の5レースではない) -> シャドー配分は算出不可 (None)
+    assert all(w["shadow_hit"] is None and w["shadow_points"] is None
+               for w in result["win5_dates"])
+
+
+def test_collect_all_period_ev_rows_and_win5_limited_to_latest_date(tmp_path, monkeypatch):
+    # SPEC-T67 §5-2: 全期間ビューの ev.rows / win5 は、各セクションで
+    # 独立に決めた「最新日」の行のみになる (race_details と同じ扱い)。
+    store = LoggingStore(tmp_path / "ev-win5-latest.db")
+    old_date, new_date = "20260710", "20260712"
+
+    def seed_day(date, horse_nos):
+        race_id = f"{date}:東京:01"
+        store.save_race(race_id=race_id, race_date=date, venue="東京", race_no=1)
+        for idx, horse_no in enumerate(horse_nos):
+            run_id = store.start_run(
+                app_name="ev_monitor", model_name="ev_model", model_version="1",
+                started_at=datetime.fromisoformat(
+                    f"{date[:4]}-{date[4:6]}-{date[6:]}T0{2 + idx}:00:00+00:00"))
+            store.save_odds([{"race_id": race_id, "horse_id": f"{race_id}:{horse_no:02d}",
+                               "win_odds": 4.0, "popularity": idx + 1, "fetch_id": run_id,
+                               "stage": "5min"}])
+            store.save_ev_evaluation(
+                prediction_run_id=run_id, race_id=race_id, horse_id=f"{race_id}:{horse_no:02d}",
+                win_probability=0.3, ev=1.3, threshold=1.1, decision="alert",
+                idempotency_key=f"alert-{race_id}-{horse_no}")
+        store.save_race_results([{
+            "race_id": race_id, "horse_id": f"{race_id}:{horse_nos[0]:02d}", "horse_name": "本命馬",
+            "finish_position": 1, "official_status": "official", "win_payout": 300,
+            "place_payout": 140, "result_fetched_at": datetime.now().astimezone(),
+            "source_hash": f"{race_id}:1", "data_quality_flags": [],
+        }])
+        store.save_win5_prediction(
+            prediction_run_ids=[f"w-{date}"], race_ids=[race_id], budget=100, total_points=100,
+            selections=[{"race_id": race_id, "horse_numbers": [horse_nos[0]]}], coverage=[0.5],
+            estimated_hit_rate=0.1, allocation_method="prob", allocation_version=1,
+            single_axis=False, axis_index=None, idempotency_key=f"win5-{date}")
+        return race_id
+
+    seed_day(old_date, [1, 2])
+    race_id_new = seed_day(new_date, [3, 4])
+
+    monkeypatch.setattr(jra_perf, "DB_PATH", str(store.db_path))
+    result = jra_perf.collect()
+
+    assert result["ev_dates"][0]["date"] == "2026-07-12"
+    assert len(result["ev"]["rows"]) == 2
+    assert {row["race_id"].split(":")[0] for row in result["ev"]["rows"]} == {new_date}
+    assert {row["horse"] for row in result["ev"]["rows"]} == {"03", "04"}
+
+    assert result["win5_dates"][0]["date"] == "2026-07-12"
+    assert len(result["win5"]) == 1
+    assert result["win5"][0]["races"][0]["race_id"] == race_id_new
+
+    # ev.sum / win5_shadow_summary (全期間サマリー) は絞り込みの影響を受けない
+    assert result["ev"]["sum"]["n"] == 4
+    assert result["win5_shadow_summary"]["target_days"] == 0  # race_ids長=1でシャドー算出不可
+
+
+def test_collect_date_view_omits_ev_dates_win5_dates_and_keeps_full_day_rows(tmp_path, monkeypatch):
+    # SPEC-T67 §2.3 / §5-3: 日付指定ビューは応答キー集合を変えない
+    # (ev_dates/win5_datesを含めない)。ev.rows/win5はその日の全行を返す
+    # (全期間ビューのような最新日限定の絞り込みを適用しない)。
+    store = LoggingStore(tmp_path / "date-view.db")
+    old_date, new_date = "20260710", "20260712"
+    race_id_old = f"{old_date}:東京:01"
+    store.save_race(race_id=race_id_old, race_date=old_date, venue="東京", race_no=1)
+    for idx, horse_no in enumerate([1, 2]):
+        run_id = store.start_run(
+            app_name="ev_monitor", model_name="ev_model", model_version="1",
+            started_at=datetime.fromisoformat(f"2026-07-10T0{2 + idx}:00:00+00:00"))
+        store.save_odds([{"race_id": race_id_old, "horse_id": f"{race_id_old}:{horse_no:02d}",
+                           "win_odds": 4.0, "popularity": idx + 1, "fetch_id": run_id,
+                           "stage": "5min"}])
+        store.save_ev_evaluation(
+            prediction_run_id=run_id, race_id=race_id_old, horse_id=f"{race_id_old}:{horse_no:02d}",
+            win_probability=0.3, ev=1.3, threshold=1.1, decision="alert",
+            idempotency_key=f"alert-{race_id_old}-{horse_no}")
+    store.save_race_results([{
+        "race_id": race_id_old, "horse_id": f"{race_id_old}:01", "horse_name": "本命馬",
+        "finish_position": 1, "official_status": "official", "win_payout": 300,
+        "place_payout": 140, "result_fetched_at": datetime.now().astimezone(),
+        "source_hash": f"{race_id_old}:1", "data_quality_flags": [],
+    }])
+    store.save_win5_prediction(
+        prediction_run_ids=["w-old"], race_ids=[race_id_old], budget=100, total_points=100,
+        selections=[{"race_id": race_id_old, "horse_numbers": [1]}], coverage=[0.5],
+        estimated_hit_rate=0.1, allocation_method="prob", allocation_version=1,
+        single_axis=False, axis_index=None, idempotency_key="win5-old")
+    # 別日のレコードも同じDBに存在させ、日付指定ビューが「全期間ビューの最新日限定」
+    # ロジックに引きずられないことを確認する
+    race_id_new = f"{new_date}:東京:01"
+    store.save_race(race_id=race_id_new, race_date=new_date, venue="東京", race_no=1)
+
+    monkeypatch.setattr(jra_perf, "DB_PATH", str(store.db_path))
+    result = jra_perf.collect("2026-07-10")
+
+    assert "ev_dates" not in result
+    assert "win5_dates" not in result
+    assert set(result) == {
+        "summary", "daily", "ev", "win5", "race_details", "pending_races",
+        "selected_date", "available_dates", "days", "win5_shadow_summary",
+    }
+    assert len(result["ev"]["rows"]) == 2
+    assert len(result["win5"]) == 1
+
+
 def test_win5_shadow_500_is_none_when_any_ml_score_missing(tmp_path, monkeypatch):
     # SPEC-T66 §6-3: 1レースのml_scoreがNULLの馬が1頭でもいれば、シャドーは
     # None (「算出不可」)。代替値のでっち上げをしない。公式結果があっても

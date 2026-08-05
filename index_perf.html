@@ -262,7 +262,22 @@ function win5ShadowSummaryHtml(summary) {
 let lastSyncMessage = '';
 let graphSeries = [];
 let graphMetric = 'win_rate';
-const raceRowsByDate = new Map();
+// T67: レース別/EV/WIN5の3セクションで共有する日付別レスポンスキャッシュ
+// (同一日付への重複fetchをしない。値はfetchのPromiseそのものをキャッシュする)。
+const dateDataCache = new Map();
+
+function fetchDateData(date) {
+    if (!dateDataCache.has(date)) {
+        const promise = fetch(`api/perf?date=${encodeURIComponent(date)}`).then(async response => {
+            const data = await response.json();
+            if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
+            return data;
+        });
+        promise.catch(() => dateDataCache.delete(date)); // 失敗時は次回再取得できるようにする
+        dateDataCache.set(date, promise);
+    }
+    return dateDataCache.get(date);
+}
 
 function selectedDate() { return document.getElementById('dateFilter').value; }
 function setUrlDate(value) {
@@ -315,23 +330,135 @@ function raceDateSummary(r) {
 async function loadRaceDate(details, date) {
     if (!details.open) return;
     const body = details.querySelector('.race-date-content');
-    if (raceRowsByDate.has(date)) {
-        body.innerHTML = raceRowsByDate.get(date);
-        return;
-    }
     body.innerHTML = '<span class="pf-meta">読み込み中…</span>';
     try {
-        const response = await fetch(`api/perf?date=${encodeURIComponent(date)}`);
-        const data = await response.json();
-        if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
+        const data = await fetchDateData(date);
         const html = `<table class="pf-table"><thead><tr><th>日付</th><th>レース</th><th>モデル</th>`
             + `<th>予測1位馬</th><th>スコア</th><th>勝ち馬</th><th>着順</th><th>単勝払戻</th><th>複勝払戻</th>`
             + `</tr></thead><tbody>${raceRowsHtml(data.race_details) || '<tr><td colspan="9" class="pf-meta">なし</td></tr>'}</tbody></table>`;
-        raceRowsByDate.set(date, html);
         body.innerHTML = html;
     } catch (error) {
         body.innerHTML = `<span class="hit-n">読み込みエラー: ${esc(error.message)}</span>`;
     }
+}
+
+// T67: EV通知の実績 (evBody) を「レース別の予測結果」と同じ日別グルーピングにする。
+// 明細行テンプレートは既存の1行分レンダリングをそのまま関数化しただけ (列構成は不変)。
+function evRowHtml(r) {
+    return `<tr><td>${esc(r.at)}</td><td class="left">${esc(r.race_id)}</td><td>${esc(r.horse)}</td>
+        <td>${r.ev?.toFixed(2) ?? '-'}</td><td>${r.prob != null ? (r.prob*100).toFixed(0)+'%' : '-'}</td>
+        <td>${r.odds ?? '-'}</td><td>${r.pop ?? '-'}</td>
+        <td>${finish(r.result)}</td>
+        <td>${r.win_payout ? r.win_payout + '円' : '-'}</td>
+        <td>${r.place_payout ? r.place_payout + '円' : '-'}</td></tr>`;
+}
+function evRowsHtml(rows) { return (rows || []).map(evRowHtml).join(''); }
+
+function evDateSummary(e) {
+    const tan = e.tan_roi == null ? '-' : `${Number(e.tan_roi).toFixed(1)}%`;
+    const fuku = e.fuku_roi == null ? '-' : `${Number(e.fuku_roi).toFixed(1)}%`;
+    return `${esc(e.date)} (通知${e.n}頭 / 確定${e.settled} / 単勝的中${e.win} 回収${tan}`
+        + ` / 複勝的中${e.top3} 回収${fuku})`;
+}
+
+async function loadEvDate(details, date) {
+    if (!details.open) return;
+    const body = details.querySelector('.race-date-content');
+    body.innerHTML = '<span class="pf-meta">読み込み中…</span>';
+    try {
+        const data = await fetchDateData(date);
+        const rows = (data.ev || {}).rows;
+        const html = `<table class="pf-table"><thead><tr>
+            <th>通知時刻</th><th>レース</th><th>馬番</th><th>EV</th><th>勝率</th>
+            <th>通知時オッズ</th><th>人気</th><th>着順</th><th>単勝払戻</th><th>複勝払戻</th>
+        </tr></thead><tbody>${evRowsHtml(rows) || '<tr><td colspan="10" class="pf-meta">なし</td></tr>'}</tbody></table>`;
+        body.innerHTML = html;
+    } catch (error) {
+        body.innerHTML = `<span class="hit-n">読み込みエラー: ${esc(error.message)}</span>`;
+    }
+}
+
+function renderEvResults(data) {
+    const body = document.getElementById('evBody');
+    if (data.selected_date || !data.ev_dates) {
+        body.innerHTML = evRowsHtml((data.ev || {}).rows)
+            || '<tr><td colspan="10" class="pf-meta">なし</td></tr>';
+        return;
+    }
+    const dates = data.ev_dates || [];
+    if (!dates.length) {
+        body.innerHTML = '<tr><td colspan="10" class="pf-meta">まだ通知実績がありません</td></tr>';
+        return;
+    }
+    const latest = dates[0];
+    const rows = [`<tr class="race-date-row"><td colspan="10">${evDateSummary(latest)}</td></tr>`,
+                  evRowsHtml((data.ev || {}).rows)];
+    dates.slice(1).forEach(item => rows.push(`<tr><td colspan="10"><details class="race-date-detail"`
+        + ` ontoggle="loadEvDate(this, '${esc(item.date)}')"><summary>${evDateSummary(item)}</summary>`
+        + `<div class="race-date-content"></div></details></td></tr>`));
+    body.innerHTML = rows.join('');
+}
+
+// T67: WIN5の実績 (w5Body) を同じ日別グルーピングにする。行テンプレートは既存の
+// 1プラン分レンダリング (シャドー行含む) をそのまま関数化しただけ (列構成は不変)。
+function win5RowHtml(w) {
+    return `<tr><td>${esc(w.created_at)}</td><td>${w.points}/${w.budget}</td>
+        <td>${w.est != null ? (w.est*100).toFixed(2)+'%' : '-'}</td>
+        <td>${esc(w.method)}</td><td>${w.single_axis ? '軸1頭' : '-'}</td>
+        <td>${w.hits.map(h => h == null ? '<span class="pf-meta">待</span>'
+             : h ? '<span class="hit-y">○</span>' : '<span class="hit-n">×</span>').join(' ')}</td>
+        <td>${!w.all_settled ? '<span class="pf-meta">確定待ち</span>'
+             : w.win5_hit ? '<span class="hit-y">的中!</span>' : '<span class="hit-n">不的中</span>'}</td>
+        <td><details class="w5-detail"><summary>詳細</summary>
+            <div class="w5-detail-body">${win5DetailHtml(w)}</div></details></td></tr>
+    ${win5ShadowLineHtml(w)}`;
+}
+function win5RowsHtml(rows) { return (rows || []).map(win5RowHtml).join(''); }
+
+function win5DateSummary(w) {
+    const mark = !w.all_settled ? '確定待ち' : (w.win5_hit ? '的中!' : '不的中');
+    const payout = !w.payout_fetched ? '払戻未取得' : `払戻${yen(w.payout_yen)}`;
+    const shadowLabel = w.shadow_hit == null ? '算出不可' : (w.shadow_hit ? '的中' : '不的中');
+    return `${esc(w.date)} (的中${w.hits}/${w.total} ${mark} ${payout} / 500点シャドー: ${shadowLabel})`;
+}
+
+async function loadWin5Date(details, date) {
+    if (!details.open) return;
+    const body = details.querySelector('.race-date-content');
+    body.innerHTML = '<span class="pf-meta">読み込み中…</span>';
+    try {
+        const data = await fetchDateData(date);
+        const rows = data.win5 || [];
+        body.innerHTML = rows.length
+            ? `<table class="pf-table"><thead><tr>
+                <th>予測日時</th><th>点数</th><th>推定的中率</th><th>配分</th><th>軸</th>
+                <th>レース別 (○=勝ち馬を含む)</th><th>WIN5</th><th>詳細</th>
+            </tr></thead><tbody>${win5RowsHtml(rows)}</tbody></table>`
+            : '<span class="pf-meta">この日のWIN5予測記録はありません</span>';
+    } catch (error) {
+        body.innerHTML = `<span class="hit-n">読み込みエラー: ${esc(error.message)}</span>`;
+    }
+}
+
+function renderWin5Results(data) {
+    const body = document.getElementById('w5Body');
+    if (data.selected_date || !data.win5_dates) {
+        body.innerHTML = win5RowsHtml(data.win5)
+            || '<tr><td colspan="8" class="pf-meta">まだWIN5予測の記録がありません</td></tr>';
+        return;
+    }
+    const dates = data.win5_dates || [];
+    if (!dates.length) {
+        body.innerHTML = '<tr><td colspan="8" class="pf-meta">まだWIN5予測の記録がありません</td></tr>';
+        return;
+    }
+    const latest = dates[0];
+    const rows = [`<tr class="race-date-row"><td colspan="8">${win5DateSummary(latest)}</td></tr>`,
+                  win5RowsHtml(data.win5)];
+    dates.slice(1).forEach(item => rows.push(`<tr><td colspan="8"><details class="race-date-detail"`
+        + ` ontoggle="loadWin5Date(this, '${esc(item.date)}')"><summary>${win5DateSummary(item)}</summary>`
+        + `<div class="race-date-content"></div></details></td></tr>`));
+    body.innerHTML = rows.join('');
 }
 
 function renderRaceResults(data) {
@@ -519,27 +646,9 @@ async function load() {
                     / 複勝的中 ${(100*es.top3/es.settled).toFixed(1)}% ${roi(es.fuku_ret/es.settled)}
                     <span class="pf-meta">(バックテスト: 単勝回収158.6%/100.1%)</span>` : '')
             : '<span class="pf-meta">まだ通知実績がありません (発走15分/5分前にEV≥閾値の馬が出ると記録されます)</span>';
-        document.getElementById('evBody').innerHTML = (ev.rows || []).map(r => `
-            <tr><td>${esc(r.at)}</td><td class="left">${esc(r.race_id)}</td><td>${esc(r.horse)}</td>
-                <td>${r.ev?.toFixed(2) ?? '-'}</td><td>${r.prob != null ? (r.prob*100).toFixed(0)+'%' : '-'}</td>
-                <td>${r.odds ?? '-'}</td><td>${r.pop ?? '-'}</td>
-                <td>${finish(r.result)}</td>
-                <td>${r.win_payout ? r.win_payout + '円' : '-'}</td>
-                <td>${r.place_payout ? r.place_payout + '円' : '-'}</td></tr>`).join('')
-            || '<tr><td colspan="10" class="pf-meta">なし</td></tr>';
+        renderEvResults(d);
 
-        document.getElementById('w5Body').innerHTML = (d.win5 || []).map(w => `
-            <tr><td>${esc(w.created_at)}</td><td>${w.points}/${w.budget}</td>
-                <td>${w.est != null ? (w.est*100).toFixed(2)+'%' : '-'}</td>
-                <td>${esc(w.method)}</td><td>${w.single_axis ? '軸1頭' : '-'}</td>
-                <td>${w.hits.map(h => h == null ? '<span class="pf-meta">待</span>'
-                     : h ? '<span class="hit-y">○</span>' : '<span class="hit-n">×</span>').join(' ')}</td>
-                <td>${!w.all_settled ? '<span class="pf-meta">確定待ち</span>'
-                     : w.win5_hit ? '<span class="hit-y">的中!</span>' : '<span class="hit-n">不的中</span>'}</td>
-                <td><details class="w5-detail"><summary>詳細</summary>
-                    <div class="w5-detail-body">${win5DetailHtml(w)}</div></details></td></tr>
-            ${win5ShadowLineHtml(w)}`).join('')
-            || '<tr><td colspan="8" class="pf-meta">まだWIN5予測の記録がありません</td></tr>';
+        renderWin5Results(d);
         document.getElementById('w5ShadowSummary').innerHTML = win5ShadowSummaryHtml(d.win5_shadow_summary);
 
         const daysSection = document.getElementById('daysSection');

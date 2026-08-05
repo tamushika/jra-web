@@ -400,6 +400,32 @@ def _win5_shadow_summary(win5_by_date, win5_results_by_date, budget):
     }
 
 
+def _ev_date_entry(date, eb):
+    """T67: ev_by_date の1日分 -> ev_dates 用の表示dict (days集計と同じ算式)。"""
+    n = eb["settled"]
+    return {
+        "date": _iso_date(date), "n": eb["n"], "settled": n, "win": eb["win"], "top3": eb["top3"],
+        "tan_roi": round(eb["tan_ret"] / n, 1) if n else None,
+        "fuku_roi": round(eb["fuku_ret"] / n, 1) if n else None,
+    }
+
+
+def _win5_date_entry(date, entry):
+    """T67: win5_by_date の1日分 -> win5_dates 用の表示dict。
+    shadow_500 (T66) が算出不可 (None) の日は shadow_hit/shadow_points を None にする
+    (代替値のでっち上げをしない)。"""
+    payout = entry.get("payout") or {"fetched": False}
+    shadow = entry.get("shadow_500")
+    return {
+        "date": _iso_date(date), "hits": entry["hits"], "total": entry["total"],
+        "all_settled": entry["all_settled"], "win5_hit": entry["win5_hit"],
+        "payout_fetched": bool(payout.get("fetched")),
+        "payout_yen": payout.get("payout_yen") if payout.get("fetched") else None,
+        "shadow_hit": shadow["win5_hit"] if shadow is not None else None,
+        "shadow_points": shadow["points"] if shadow is not None else None,
+    }
+
+
 def collect(race_date=None):
     compact_date = normalize_race_date(race_date) if race_date else None
     conn = _conn()
@@ -592,6 +618,7 @@ def collect(race_date=None):
     shadow_budget = WIN5_SHADOW_BUDGETS[0]
     shadow_max_picks = _win5_shadow_max_picks()
     win5 = []
+    win5_plan_dates = []  # T67: win5[i] に対応する開催日 (全期間ビューを最新日だけに絞るため)
     if compact_date:
         win5_sql = """SELECT * FROM win5_predictions WHERE race_ids_json LIKE ?
                       ORDER BY created_at DESC"""
@@ -638,6 +665,7 @@ def collect(race_date=None):
                 cur, race_ids, prediction_run_ids, shadow_budget, shadow_max_picks,
                 results, race_meta, pop_by_race, win5_results_by_date),
         })
+        win5_plan_dates.append(plan_date)
 
     # 日別WIN5実績 (T30): 日付ごとに最新プラン (created_at最大) の的中状況を採る
     win5_by_date = {}
@@ -776,6 +804,24 @@ def collect(race_date=None):
         "ev": {"points": ev_points},
         "win5": {"points": win5_points},
     }
+
+    # T67: EV通知の実績 / WIN5の実績 も「レース別の予測結果」と同じ日別グルーピングに。
+    # 既存の ev_by_date / win5_by_date を組み替えるだけ (新しいSQL・母集団は作らない)。
+    ev_dates = [_ev_date_entry(date, eb) for date, eb in sorted(ev_by_date.items(), reverse=True)]
+    win5_dates = [_win5_date_entry(date, entry)
+                  for date, entry in sorted(win5_by_date.items(), reverse=True)]
+    payload["ev_dates"] = ev_dates
+    payload["win5_dates"] = win5_dates
+
+    latest_ev_date = max(ev_by_date) if ev_by_date else None
+    payload["ev"]["rows"] = [row for row in ev_rows
+                              if latest_ev_date is not None
+                              and row["race_id"].split(":")[0] == latest_ev_date]
+
+    latest_win5_date = max(win5_by_date) if win5_by_date else None
+    payload["win5"] = [w for w, plan_date in zip(win5, win5_plan_dates)
+                        if latest_win5_date is not None and plan_date == latest_win5_date]
+
     conn.close()
     return payload
 
