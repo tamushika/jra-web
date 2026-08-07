@@ -1,0 +1,10 @@
+# Vercel Hobby plan allows max 12 serverless functions per deployment.
+# Every non-underscore api/*.py is auto-built as a function, so exclude
+# helper modules that api/index.py's import closure does not need.
+# (Closure: index -> analysis, past_data_service, scoring, board_market,
+#  prediction_logging -> logging_store, pedigree_store, scoring -> factor_snapshot)
+api/combo_probs.py
+api/port_guard.py
+api/race_confidence.py
+api/reporting.py
+api/result_service.py
