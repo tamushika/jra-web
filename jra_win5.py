@@ -382,14 +382,26 @@ def _win5_confidence_check(kaime):
     return est > median, est, median, p75
 
 
-def _win5_confidence_message(date_str, points, formula, est, median, p75):
-    """SPEC-T68 §4 のプレーンテキスト文言を組み立てる。購入推奨の文言は入れない。"""
+def _win5_confidence_message(date_str, points, formula, est, median, p75, picks=None):
+    """SPEC-T68 §4 のプレーンテキスト文言を組み立てる。購入推奨の文言は入れない。
+    picks (build_kaimeのpicks) があればレース別の選択馬番を①〜⑤行で挿入する
+    (2026-08-09 ユーザー要望: 頭数だけでなく馬番も記載)。"""
     high_p75 = p75 is not None and est >= p75
     title = "高め (上位25%圏)" if high_p75 else "高め (中央値超え)"
     p75_suffix = "、上位25%圏" if high_p75 else ""
     lines = [
         f"🎯 WIN5確信度: {title}",
         f"{date_str} {points}点 {formula}",
+    ]
+    marks = "①②③④⑤"
+    for i, p in enumerate(picks or []):
+        nums = ",".join(str(h.get("num")) for h in p.get("horses", []))
+        if not nums:
+            continue
+        mark = marks[i] if i < len(marks) else f"({i + 1})"
+        axis = " (軸)" if p.get("is_axis") else ""
+        lines.append(f"{mark}{p.get('venue') or ''}: {nums}{axis}")
+    lines += [
         f"推定的中率 {est * 100:.2f}% > 2025年中央値 {median * 100:.1f}%",
         f"(上位25%点 {p75 * 100:.1f}%{p75_suffix})",
         "※参考情報です (購入推奨ではありません)",
@@ -440,7 +452,8 @@ def _notify_win5_confidence(kaime, points, races):
         if not date_str:
             from datetime import datetime
             date_str = datetime.now().strftime("%Y-%m-%d")
-        text = _win5_confidence_message(date_str, points, kaime.get("formula", ""), est, median, p75)
+        text = _win5_confidence_message(date_str, points, kaime.get("formula", ""), est, median, p75,
+                                        picks=kaime.get("picks"))
         return _send_line_win5(text)
     except Exception as e:
         print(f"[WARN] WIN5確信度通知の処理で例外: {e}")

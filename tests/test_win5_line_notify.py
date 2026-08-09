@@ -80,6 +80,38 @@ def test_notify_sends_when_est_above_median(monkeypatch):
     assert "全買い" not in text
 
 
+def test_notify_message_includes_horse_numbers_per_race(monkeypatch):
+    # 2026-08-09 ユーザー要望: 頭数だけでなくレース別の選択馬番も記載する。
+    calls = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(json["messages"][0]["text"])
+        return _FakeResponse(200)
+
+    monkeypatch.setattr(jra_win5.requests, "post", fake_post)
+
+    kaime = _base_kaime(est=0.13, median=0.115, p75=0.153)
+    kaime["picks"] = [
+        {"venue": "東京", "is_axis": False, "horses": [{"num": 1}, {"num": 5}, {"num": 8}]},
+        {"venue": "中山", "is_axis": True, "horses": [{"num": 3}]},
+        {"venue": "中京", "is_axis": False, "horses": [{"num": 2}, {"num": 12}]},
+        {"venue": "新潟", "is_axis": False, "horses": [{"num": 7}, {"num": 9}]},
+        {"venue": "札幌", "is_axis": False, "horses": [{"num": 4}, {"num": 6}, {"num": 10}]},
+    ]
+    result = jra_win5._notify_win5_confidence(kaime, 200, [{"race_date": "20260809"}])
+
+    assert result == "sent"
+    text = calls[0]
+    assert "①東京: 1,5,8" in text
+    assert "②中山: 3 (軸)" in text
+    assert "③中京: 2,12" in text
+    assert "④新潟: 7,9" in text
+    assert "⑤札幌: 4,6,10" in text
+    # 推奨文言は引き続き入れない
+    assert "参考情報です" in text
+    assert "買い目" not in text
+
+
 # ─── §6-2: est <= median -> 送信されない ───────────────────────────────────
 
 @pytest.mark.parametrize("est,median", [(0.115, 0.115), (0.10, 0.115)])
