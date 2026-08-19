@@ -495,6 +495,7 @@ def test_collect_date_response_keeps_legacy_shape_and_values(tmp_path, monkeypat
     assert set(result) == {
         "summary", "daily", "ev", "win5", "race_details", "pending_races",
         "selected_date", "available_dates", "days", "win5_shadow_summary",
+        "virtual_betting",  # T70
     }
     assert result["selected_date"] == "2026-07-12"
     assert result["race_details"][0]["date"] == "20260712"
@@ -780,6 +781,7 @@ def test_collect_date_view_omits_ev_dates_win5_dates_and_keeps_full_day_rows(tmp
     assert set(result) == {
         "summary", "daily", "ev", "win5", "race_details", "pending_races",
         "selected_date", "available_dates", "days", "win5_shadow_summary",
+        "virtual_betting",  # T70
     }
     assert len(result["ev"]["rows"]) == 2
     assert len(result["win5"]) == 1

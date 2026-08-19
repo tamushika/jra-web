@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 from flask import Blueprint, Flask, jsonify, request, send_from_directory
 
 from api import scoring
+from api import virtual_betting
 from api.logging_store import LoggingStore
 from api.port_guard import ensure_port_free
 from api.result_service import normalize_race_date, sync_results_for_date
@@ -741,6 +742,17 @@ def collect(race_date=None):
                "days": days[:90],
                "win5_shadow_summary": _win5_shadow_summary(
                    win5_by_date, win5_results_by_date, shadow_budget)}
+
+    # T70: 仮想運用 (paper trading) セクション。表示のたびにlazy精算してから
+    # 日別・累計を集計する (settle_pending_bets自体の失敗はdashboard_payload
+    # 内でfail-softに握りつぶし、表示は結果待ちの実績のまま継続する)。
+    # これは購入推奨・実購入ではない (常に payload 内の disclaimer で明示)。
+    try:
+        payload["virtual_betting"] = virtual_betting.dashboard_payload(
+            date=compact_date, db_path=DB_PATH)
+    except Exception as exc:
+        payload["virtual_betting"] = {"error": f"{type(exc).__name__}: {exc}",
+                                      "disclaimer": virtual_betting.DISCLAIMER_JA}
 
     # 日付指定時はT56以前の応答を完全に維持する。以下の全期間向けデータは、
     # 既存の集計結果を表示用に組み替えるだけで、新しいSQLや母集団は持たない。

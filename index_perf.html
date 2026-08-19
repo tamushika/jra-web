@@ -118,6 +118,20 @@
         <div id="w5ShadowSummary" class="w5-shadow-summary pf-meta"></div>
     </div>
 
+    <div class="pf-section" id="vbSection">
+        <div class="pf-title">🧪 仮想運用 (ポリシー <span id="vbPolicyVersion">-</span>)</div>
+        <div class="pf-meta pf-warn" style="margin-bottom:8px;">
+            ⚠ 仮想運用であり実購入・購入推奨ではありません。T62b選定レースのCL勝率1位馬の複勝¥2,000
+            (日上限¥10,000、超過分は予算超過skipとして記録) を仮想的に記録した計測値です。
+            対照は同じ選定レースの1番人気 (cutoffオッズ最小) 複勝¥2,000 (予算外・実運用対象外)。
+        </div>
+        <div id="vbCumulative" style="margin-bottom:8px;"></div>
+        <table class="pf-table"><thead><tr>
+            <th>日付</th><th>区分</th><th>ベット数</th><th>投入</th><th>払戻</th><th>ROI</th>
+            <th>結果待ち</th><th>予算超過skip</th>
+        </tr></thead><tbody id="vbBody"></tbody></table>
+    </div>
+
     <div class="pf-section" id="graphSection">
         <div class="pf-title">📈 日別成績グラフ</div>
         <div class="pf-graph-controls">
@@ -257,6 +271,50 @@ function win5ShadowSummaryHtml(summary) {
         + `対象${summary.target_days}日 / 的中${summary.hit_days}日 / `
         + `投入計${yen(summary.cost_yen)} / 払戻計(プロキシ)${yen(summary.payout_yen)} / ROI ${roiHtml}`
         + skipped + note;
+}
+
+// T70: 仮想運用 (paper trading) — 購入推奨・実購入ではない計測値の表示。
+// 対象・買い目・賭け金・対照群の定義は api/virtual_betting.py のポリシーv1定数を
+// そのまま反映する (このHTML側では数値をハードコードしない)。
+function vbBucket(bucket) {
+    return bucket || {n_bets: 0, n_settled: 0, n_refunded: 0, n_pending: 0,
+                       n_skipped_budget: 0, stake_yen: 0, payout_yen: 0, roi_pct: null};
+}
+function vbBucketRowHtml(dateCell, kind, bucket) {
+    const b = vbBucket(bucket);
+    return `<tr><td>${dateCell}</td><td class="left">${kind}</td>
+        <td>${b.n_bets}</td><td>${yen(b.stake_yen)}</td><td>${yen(b.payout_yen)}</td>
+        <td>${roi(b.roi_pct)}</td><td>${b.n_pending}</td><td>${b.n_skipped_budget}</td></tr>`;
+}
+function renderVirtualBetting(d) {
+    const vb = d.virtual_betting;
+    const cumEl = document.getElementById('vbCumulative');
+    const bodyEl = document.getElementById('vbBody');
+    if (!vb) {
+        cumEl.innerHTML = '<span class="pf-meta">仮想運用データなし</span>';
+        bodyEl.innerHTML = '<tr><td colspan="8" class="pf-meta">なし</td></tr>';
+        return;
+    }
+    document.getElementById('vbPolicyVersion').textContent = vb.policy_version || '-';
+    if (vb.error) {
+        cumEl.innerHTML = `<span class="pf-warn">仮想運用の集計に失敗しました: ${esc(vb.error)}</span>`;
+        bodyEl.innerHTML = '<tr><td colspan="8" class="pf-meta">なし</td></tr>';
+        return;
+    }
+    const cum = vb.cumulative || {};
+    const main = vbBucket(cum.main);
+    const control = vbBucket(cum.control);
+    cumEl.innerHTML = `<b>累計</b>: 本体 ${main.n_bets}件 投入${yen(main.stake_yen)} `
+        + `払戻${yen(main.payout_yen)} ${roi(main.roi_pct)} / 最大DD ${yen(vb.max_drawdown_yen)} `
+        + `<span class="pf-meta">|</span> 対照 ${control.n_bets}件 投入${yen(control.stake_yen)} `
+        + `払戻${yen(control.payout_yen)} ${roi(control.roi_pct)}`
+        + ` <span class="pf-warn">※${esc(vb.disclaimer || '仮想運用であり実購入・購入推奨ではありません')}</span>`;
+    const rows = [];
+    (vb.days || []).forEach(day => {
+        rows.push(vbBucketRowHtml(esc(dateFmt(day.date)), '本体', day.main));
+        rows.push(vbBucketRowHtml('', '対照', day.control));
+    });
+    bodyEl.innerHTML = rows.join('') || '<tr><td colspan="8" class="pf-meta">記録なし</td></tr>';
 }
 
 let lastSyncMessage = '';
@@ -650,6 +708,8 @@ async function load() {
 
         renderWin5Results(d);
         document.getElementById('w5ShadowSummary').innerHTML = win5ShadowSummaryHtml(d.win5_shadow_summary);
+
+        renderVirtualBetting(d);
 
         const daysSection = document.getElementById('daysSection');
         const graphSection = document.getElementById('graphSection');

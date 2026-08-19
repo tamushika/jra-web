@@ -50,6 +50,7 @@ except ImportError:
 import scoring  # noqa: E402
 import board_market  # noqa: E402
 import race_confidence  # noqa: E402
+import virtual_betting  # noqa: E402 (T70: paper-trading harness, hooked after T62b snapshot writes below)
 from index import analyze_race_url, build_matrix_data  # noqa: E402
 from combo_probs import wide_candidates  # noqa: E402
 from api.port_guard import ensure_port_free  # noqa: E402
@@ -787,7 +788,8 @@ def _capture_race_confidence(rec, stage):
             source = confidence.get("snapshot_source") or "jra"
             if confidence.get("status") != "ok":
                 source = f"failure:{confidence.get('reason') or confidence.get('status')}"
-            LoggingStore().save_race_confidence({
+            store = LoggingStore()
+            snapshot_id = store.save_race_confidence({
                 "date": rec.get("race_date") or "unknown",
                 "place": rec.get("venue") or "unknown", "r": rec.get("race_num") or 0,
                 "cutoff_at": cutoff_at, "snapshot_source": source,
@@ -798,6 +800,15 @@ def _capture_race_confidence(rec, stage):
                 "selected": confidence.get("selected"),
                 "manifest_sha256": confidence.get("manifest_sha256"),
             })
+            # T70: 仮想運用ハーネスの決定フック。T62bスナップショット書込の直後・
+            # 同一loop・同一cutoffで、保存済み行をそのまま読み戻して決定する
+            # (購入推奨・実購入ではない。通知条件・通知関数は一切変更しない)。
+            # db_pathは上のsave_race_confidenceと同一store (=同一DBファイル) を
+            # 明示的に渡し、既定パス解決がどこかで食い違っても分岐しないようにする。
+            try:
+                virtual_betting.record_decision_for_snapshot_id(snapshot_id, db_path=store.db_path)
+            except Exception as exc:
+                print(f"[WARN] T70 virtual bet decision failed {_rid(rec)}: {type(exc).__name__}: {exc}")
         except Exception as exc:
             confidence["storage_warning"] = type(exc).__name__
             print(f"[WARN] T62b snapshot save failed {_rid(rec)}: {type(exc).__name__}: {exc}")

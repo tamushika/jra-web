@@ -237,6 +237,35 @@ CREATE TABLE IF NOT EXISTS race_confidence_snapshots (
 );
 CREATE INDEX IF NOT EXISTS ix_race_confidence_date_race
     ON race_confidence_snapshots(date, place, r);
+CREATE TABLE IF NOT EXISTS virtual_bets (
+    virtual_bet_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    policy_version TEXT NOT NULL,
+    race_id TEXT NOT NULL,
+    date TEXT NOT NULL,
+    bet_type TEXT NOT NULL CHECK (bet_type IN ('fukusho','tansho')),
+    horse_number INTEGER NOT NULL,
+    stake_yen INTEGER NOT NULL,
+    decided_at TEXT NOT NULL,
+    cutoff_source TEXT,
+    decision_odds REAL,
+    decision_prob REAL,
+    is_control INTEGER NOT NULL DEFAULT 0 CHECK (is_control IN (0,1)),
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending','settled','refunded','skipped_budget')),
+    payout_yen INTEGER,
+    settled_at TEXT,
+    created_at TEXT NOT NULL,
+    -- T70: 結果由来列 (payout_yen/settled_at) の事前混入をスキーマレベルで拒否。
+    -- decided時点 (pending/skipped_budget) はpayout=NULL必須。settled/refundedに
+    -- 遷移するのは精算 (settle_pending_bets) のUPDATEのみで、payoutが必ず入る。
+    CHECK (
+        (status IN ('pending','skipped_budget') AND payout_yen IS NULL AND settled_at IS NULL)
+        OR (status IN ('settled','refunded') AND payout_yen IS NOT NULL AND settled_at IS NOT NULL)
+    )
+);
+CREATE INDEX IF NOT EXISTS ix_virtual_bets_date ON virtual_bets(date, race_id);
+CREATE INDEX IF NOT EXISTS ix_virtual_bets_status ON virtual_bets(status);
 """
 
 
@@ -371,6 +400,8 @@ class LoggingStore:
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(10, ?)", (utc_now(),))
             # version 11 (T62b): display-only prospective race confidence snapshots.
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(11, ?)", (utc_now(),))
+            # version 12 (T70): virtual betting harness (paper-trading ledger, append-only).
+            conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(12, ?)", (utc_now(),))
         self._write(op)
 
     def start_run(self, *, app_name: str, trigger_type: str = "manual", model_name: str | None = None,

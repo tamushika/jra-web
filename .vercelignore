@@ -8,3 +8,4 @@ api/port_guard.py
 api/race_confidence.py
 api/reporting.py
 api/result_service.py
+api/virtual_betting.py
