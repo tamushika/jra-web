@@ -119,17 +119,50 @@
     </div>
 
     <div class="pf-section" id="vbSection">
-        <div class="pf-title">🧪 仮想運用 (ポリシー <span id="vbPolicyVersion">-</span>)</div>
+        <div class="pf-title">🧪 仮想運用 (paper trading、P1/P5/P3)</div>
         <div class="pf-meta pf-warn" style="margin-bottom:8px;">
-            ⚠ 仮想運用であり実購入・購入推奨ではありません。T62b選定レースのCL勝率1位馬の複勝¥2,000
-            (日上限¥10,000、超過分は予算超過skipとして記録) を仮想的に記録した計測値です。
-            対照は同じ選定レースの1番人気 (cutoffオッズ最小) 複勝¥2,000 (予算外・実運用対象外)。
+            ⚠ 仮想運用であり実購入・購入推奨ではありません。いずれも紙上の記録にとどまる計測値です。
         </div>
-        <div id="vbCumulative" style="margin-bottom:8px;"></div>
-        <table class="pf-table"><thead><tr>
-            <th>日付</th><th>区分</th><th>ベット数</th><th>投入</th><th>払戻</th><th>ROI</th>
-            <th>結果待ち</th><th>予算超過skip</th>
-        </tr></thead><tbody id="vbBody"></tbody></table>
+
+        <div class="vb-pattern" id="vbBlock-v1">
+            <div class="pf-title" style="font-size:14px;">P1 (ポリシー v1) <span class="pf-badge" id="vbLabel-v1">-</span></div>
+            <div class="pf-meta" style="margin-bottom:6px;">
+                T62b選定レースのCL勝率1位馬の複勝¥2,000 (日上限¥10,000、超過分は予算超過skipとして記録)。
+                対照は同じ選定レースの1番人気 (cutoffオッズ最小) 複勝¥2,000 (予算外・実運用対象外)。
+            </div>
+            <div id="vbCumulative-v1" style="margin-bottom:8px;"></div>
+            <table class="pf-table"><thead><tr>
+                <th>日付</th><th>区分</th><th>ベット数</th><th>投入</th><th>払戻</th><th>ROI</th>
+                <th>結果待ち</th><th>予算超過skip</th>
+            </tr></thead><tbody id="vbBody-v1"></tbody></table>
+        </div>
+
+        <div class="vb-pattern" id="vbBlock-p5-v1" style="margin-top:14px;">
+            <div class="pf-title" style="font-size:14px;">P5 (ポリシー p5-v1、全適格ベースライン) <span class="pf-badge" id="vbLabel-p5-v1">-</span></div>
+            <div class="pf-meta" style="margin-bottom:6px;">
+                selected値を問わず全適格レースのCL勝率1位馬の複勝¥1,000 (独立財布・日上限¥10,000)。
+                対照は同レース1番人気の複勝¥1,000 (予算外)。P5・P3は推定専用であり実運用移行資格はありません。
+            </div>
+            <div id="vbCumulative-p5-v1" style="margin-bottom:8px;"></div>
+            <table class="pf-table"><thead><tr>
+                <th>日付</th><th>区分</th><th>ベット数</th><th>投入</th><th>払戻</th><th>ROI</th>
+                <th>結果待ち</th><th>予算超過skip</th>
+            </tr></thead><tbody id="vbBody-p5-v1"></tbody></table>
+        </div>
+
+        <div class="vb-pattern" id="vbBlock-p3-v1" style="margin-top:14px;">
+            <div class="pf-title" style="font-size:14px;">P3 (ポリシー p3-v1、λ複勝EV) <span class="pf-badge" id="vbLabel-p3-v1">-</span></div>
+            <div class="pf-meta" style="margin-bottom:6px;">
+                cutoff単勝オッズ由来のλ校正複勝確率×複勝下限オッズ (odds_low) が1.00以上かつ最大の1頭を複勝¥1,000
+                (独立財布・日上限¥10,000)。板未取得・7頭以下はskipped_dataとして記録のみ (何も買わない)。対照なし。
+            </div>
+            <div id="vbCalibration-p3-v1" class="pf-meta" style="margin-bottom:6px;"></div>
+            <div id="vbCumulative-p3-v1" style="margin-bottom:8px;"></div>
+            <table class="pf-table"><thead><tr>
+                <th>日付</th><th>区分</th><th>ベット数</th><th>投入</th><th>払戻</th><th>ROI</th>
+                <th>結果待ち</th><th>データ欠測skip</th>
+            </tr></thead><tbody id="vbBody-p3-v1"></tbody></table>
+        </div>
     </div>
 
     <div class="pf-section" id="graphSection">
@@ -273,48 +306,87 @@ function win5ShadowSummaryHtml(summary) {
         + skipped + note;
 }
 
-// T70: 仮想運用 (paper trading) — 購入推奨・実購入ではない計測値の表示。
-// 対象・買い目・賭け金・対照群の定義は api/virtual_betting.py のポリシーv1定数を
-// そのまま反映する (このHTML側では数値をハードコードしない)。
+// T70/T70b: 仮想運用 (paper trading) — 購入推奨・実購入ではない計測値の表示。
+// パターン別 (P1=v1 / P5=p5-v1 / P3=p3-v1) にブロックを分けて表示する
+// (SPEC-T70b §5)。対象・買い目・賭け金・対照群の定義は api/virtual_betting.py
+// の各ポリシー定数をそのまま反映する (このHTML側では数値をハードコードしない)。
+// P1=移行ゲートあり (confirmatory primary)、P5/P3=推定専用 (実運用移行資格なし)。
+const VB_POLICIES = ['v1', 'p5-v1', 'p3-v1'];
 function vbBucket(bucket) {
     return bucket || {n_bets: 0, n_settled: 0, n_refunded: 0, n_pending: 0,
-                       n_skipped_budget: 0, stake_yen: 0, payout_yen: 0, roi_pct: null};
+                       n_skipped_budget: 0, n_skipped_data: 0, stake_yen: 0, payout_yen: 0, roi_pct: null};
 }
-function vbBucketRowHtml(dateCell, kind, bucket) {
+// P1/P5は日予算超過 (skipped_budget)、P3はデータ欠測 (skipped_data、板未取得・
+// 7頭以下) が「見送り」の理由なので、末尾列に表示するskip種別をポリシーで切替える。
+function vbSkipCount(bucket, policyId) {
+    return policyId === 'p3-v1' ? bucket.n_skipped_data : bucket.n_skipped_budget;
+}
+function vbBucketRowHtml(dateCell, kind, bucket, policyId) {
     const b = vbBucket(bucket);
     return `<tr><td>${dateCell}</td><td class="left">${kind}</td>
         <td>${b.n_bets}</td><td>${yen(b.stake_yen)}</td><td>${yen(b.payout_yen)}</td>
-        <td>${roi(b.roi_pct)}</td><td>${b.n_pending}</td><td>${b.n_skipped_budget}</td></tr>`;
+        <td>${roi(b.roi_pct)}</td><td>${b.n_pending}</td><td>${vbSkipCount(b, policyId)}</td></tr>`;
+}
+function vbClearPattern(policyId, message) {
+    const cumEl = document.getElementById(`vbCumulative-${policyId}`);
+    const bodyEl = document.getElementById(`vbBody-${policyId}`);
+    if (cumEl) cumEl.innerHTML = `<span class="pf-meta">${esc(message)}</span>`;
+    if (bodyEl) bodyEl.innerHTML = '<tr><td colspan="8" class="pf-meta">なし</td></tr>';
+}
+function renderVirtualBettingPattern(policyId, pattern, labels) {
+    const labelEl = document.getElementById(`vbLabel-${policyId}`);
+    if (labelEl) labelEl.textContent = (labels && labels[policyId]) || '-';
+    if (!pattern) {
+        vbClearPattern(policyId, '仮想運用データなし');
+        return;
+    }
+    const cumEl = document.getElementById(`vbCumulative-${policyId}`);
+    const bodyEl = document.getElementById(`vbBody-${policyId}`);
+    const cum = pattern.cumulative || {};
+    const main = vbBucket(cum.main);
+    const control = vbBucket(cum.control);
+    // P3は対照なし (SPEC-T70b §3) なので対照列は表示しない。
+    const controlLine = policyId === 'p3-v1' ? '' :
+        ` <span class="pf-meta">|</span> 対照 ${control.n_bets}件 投入${yen(control.stake_yen)} `
+        + `払戻${yen(control.payout_yen)} ${roi(control.roi_pct)}`;
+    cumEl.innerHTML = `<b>累計</b>: 本体 ${main.n_bets}件 投入${yen(main.stake_yen)} `
+        + `払戻${yen(main.payout_yen)} ${roi(main.roi_pct)} / 最大DD ${yen(pattern.max_drawdown_yen)}`
+        + controlLine
+        + ` <span class="pf-warn">※${esc(pattern.disclaimer || '仮想運用であり実購入・購入推奨ではありません')}</span>`;
+    const rows = [];
+    (pattern.days || []).forEach(day => {
+        rows.push(vbBucketRowHtml(esc(dateFmt(day.date)), '本体', day.main, policyId));
+        if (policyId !== 'p3-v1') {
+            rows.push(vbBucketRowHtml('', '対照', day.control, policyId));
+        }
+    });
+    bodyEl.innerHTML = rows.join('') || '<tr><td colspan="8" class="pf-meta">記録なし</td></tr>';
+}
+// T70b §5: P3ブロックにはλ校正の実測乖離 (settledベットのΣ予測複勝確率 vs
+// 実現複勝率) を併記する。精算済みデータが無ければ「算出不可」を表示する
+// (でっち上げ禁止)。
+function vbCalibrationHtml(calibration) {
+    if (!calibration) return 'λ校正の実測乖離: 精算済みデータがまだありません';
+    const predicted = (calibration.predicted_place_rate * 100).toFixed(1);
+    const realized = (calibration.realized_place_rate * 100).toFixed(1);
+    const gapPt = (calibration.gap * 100).toFixed(1);
+    return `λ校正の実測乖離 (精算済みn=${calibration.n}): 予測複勝率${predicted}% / `
+        + `実現複勝率${realized}% / 差分${gapPt}pt`;
 }
 function renderVirtualBetting(d) {
     const vb = d.virtual_betting;
-    const cumEl = document.getElementById('vbCumulative');
-    const bodyEl = document.getElementById('vbBody');
     if (!vb) {
-        cumEl.innerHTML = '<span class="pf-meta">仮想運用データなし</span>';
-        bodyEl.innerHTML = '<tr><td colspan="8" class="pf-meta">なし</td></tr>';
+        VB_POLICIES.forEach(p => vbClearPattern(p, '仮想運用データなし'));
         return;
     }
-    document.getElementById('vbPolicyVersion').textContent = vb.policy_version || '-';
     if (vb.error) {
-        cumEl.innerHTML = `<span class="pf-warn">仮想運用の集計に失敗しました: ${esc(vb.error)}</span>`;
-        bodyEl.innerHTML = '<tr><td colspan="8" class="pf-meta">なし</td></tr>';
+        VB_POLICIES.forEach(p => vbClearPattern(p, `仮想運用の集計に失敗しました: ${vb.error}`));
         return;
     }
-    const cum = vb.cumulative || {};
-    const main = vbBucket(cum.main);
-    const control = vbBucket(cum.control);
-    cumEl.innerHTML = `<b>累計</b>: 本体 ${main.n_bets}件 投入${yen(main.stake_yen)} `
-        + `払戻${yen(main.payout_yen)} ${roi(main.roi_pct)} / 最大DD ${yen(vb.max_drawdown_yen)} `
-        + `<span class="pf-meta">|</span> 対照 ${control.n_bets}件 投入${yen(control.stake_yen)} `
-        + `払戻${yen(control.payout_yen)} ${roi(control.roi_pct)}`
-        + ` <span class="pf-warn">※${esc(vb.disclaimer || '仮想運用であり実購入・購入推奨ではありません')}</span>`;
-    const rows = [];
-    (vb.days || []).forEach(day => {
-        rows.push(vbBucketRowHtml(esc(dateFmt(day.date)), '本体', day.main));
-        rows.push(vbBucketRowHtml('', '対照', day.control));
-    });
-    bodyEl.innerHTML = rows.join('') || '<tr><td colspan="8" class="pf-meta">記録なし</td></tr>';
+    const patterns = vb.patterns || {};
+    VB_POLICIES.forEach(p => renderVirtualBettingPattern(p, patterns[p], vb.labels));
+    const calEl = document.getElementById('vbCalibration-p3-v1');
+    if (calEl) calEl.innerHTML = vbCalibrationHtml(vb.p3_calibration);
 }
 
 let lastSyncMessage = '';

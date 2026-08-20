@@ -252,18 +252,65 @@ CREATE TABLE IF NOT EXISTS virtual_bets (
     decision_prob REAL,
     is_control INTEGER NOT NULL DEFAULT 0 CHECK (is_control IN (0,1)),
     status TEXT NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending','settled','refunded','skipped_budget')),
+        CHECK (status IN ('pending','settled','refunded','skipped_budget','skipped_data')),
     payout_yen INTEGER,
     settled_at TEXT,
     created_at TEXT NOT NULL,
     -- T70: 結果由来列 (payout_yen/settled_at) の事前混入をスキーマレベルで拒否。
-    -- decided時点 (pending/skipped_budget) はpayout=NULL必須。settled/refundedに
-    -- 遷移するのは精算 (settle_pending_bets) のUPDATEのみで、payoutが必ず入る。
+    -- decided時点 (pending/skipped_budget/skipped_data) はpayout=NULL必須。settled/
+    -- refundedに遷移するのは精算 (settle_pending_bets) のUPDATEのみで、payoutが必ず入る。
+    -- T70b: skipped_data (P3のboard未取得・7頭以下等、データが無くベットできず
+    -- 記録だけ残す行) はskipped_budgetと同じくpayout=NULL側に属する。
     CHECK (
-        (status IN ('pending','skipped_budget') AND payout_yen IS NULL AND settled_at IS NULL)
+        (status IN ('pending','skipped_budget','skipped_data') AND payout_yen IS NULL AND settled_at IS NULL)
         OR (status IN ('settled','refunded') AND payout_yen IS NOT NULL AND settled_at IS NOT NULL)
     )
 );
+CREATE INDEX IF NOT EXISTS ix_virtual_bets_date ON virtual_bets(date, race_id);
+CREATE INDEX IF NOT EXISTS ix_virtual_bets_status ON virtual_bets(status);
+"""
+
+# T70b: SQLiteのCHECK制約は列挙値を後から追加できないため、既存DBの virtual_bets
+# は「新テーブル作成→全行コピー→旧テーブル破棄」で再構築して 'skipped_data' を
+# 受理させる (SPEC-T70b §4)。列定義・列順は上のSCHEMA内CREATE TABLEと完全一致
+# させ、SELECT * での列位置ずれによるデータ破損を防ぐ。既存行の値・意味論
+# (pending/settled/refunded/skipped_budget) は一切変更しない。
+_VIRTUAL_BETS_V13_REBUILD_SQL = """
+ALTER TABLE virtual_bets RENAME TO virtual_bets_pre_v13;
+CREATE TABLE virtual_bets (
+    virtual_bet_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    policy_version TEXT NOT NULL,
+    race_id TEXT NOT NULL,
+    date TEXT NOT NULL,
+    bet_type TEXT NOT NULL CHECK (bet_type IN ('fukusho','tansho')),
+    horse_number INTEGER NOT NULL,
+    stake_yen INTEGER NOT NULL,
+    decided_at TEXT NOT NULL,
+    cutoff_source TEXT,
+    decision_odds REAL,
+    decision_prob REAL,
+    is_control INTEGER NOT NULL DEFAULT 0 CHECK (is_control IN (0,1)),
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending','settled','refunded','skipped_budget','skipped_data')),
+    payout_yen INTEGER,
+    settled_at TEXT,
+    created_at TEXT NOT NULL,
+    CHECK (
+        (status IN ('pending','skipped_budget','skipped_data') AND payout_yen IS NULL AND settled_at IS NULL)
+        OR (status IN ('settled','refunded') AND payout_yen IS NOT NULL AND settled_at IS NOT NULL)
+    )
+);
+INSERT INTO virtual_bets (
+    virtual_bet_id, idempotency_key, policy_version, race_id, date, bet_type,
+    horse_number, stake_yen, decided_at, cutoff_source, decision_odds, decision_prob,
+    is_control, status, payout_yen, settled_at, created_at)
+    SELECT
+    virtual_bet_id, idempotency_key, policy_version, race_id, date, bet_type,
+    horse_number, stake_yen, decided_at, cutoff_source, decision_odds, decision_prob,
+    is_control, status, payout_yen, settled_at, created_at
+    FROM virtual_bets_pre_v13;
+DROP TABLE virtual_bets_pre_v13;
 CREATE INDEX IF NOT EXISTS ix_virtual_bets_date ON virtual_bets(date, race_id);
 CREATE INDEX IF NOT EXISTS ix_virtual_bets_status ON virtual_bets(status);
 """
@@ -402,6 +449,16 @@ class LoggingStore:
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(11, ?)", (utc_now(),))
             # version 12 (T70): virtual betting harness (paper-trading ledger, append-only).
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(12, ?)", (utc_now(),))
+            # version 13 (T70b): virtual_bets.status CHECK gains 'skipped_data' (P5/P3
+            # estimation-only patterns). Rebuild is skipped when the table already
+            # accepts skipped_data (fresh DBs get it straight from SCHEMA above), so
+            # this is safe to run on every initialize() call.
+            existing_virtual_bets_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='virtual_bets'"
+            ).fetchone()
+            if existing_virtual_bets_sql and "skipped_data" not in existing_virtual_bets_sql[0]:
+                conn.executescript(_VIRTUAL_BETS_V13_REBUILD_SQL)
+            conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(13, ?)", (utc_now(),))
         self._write(op)
 
     def start_run(self, *, app_name: str, trigger_type: str = "manual", model_name: str | None = None,

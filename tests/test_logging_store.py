@@ -21,7 +21,7 @@ def scalar(store, sql):
 
 
 def test_initialize_is_one_command_and_enables_wal(store):
-    assert scalar(store, "SELECT count(*) FROM schema_migrations") == 12  # T70: +virtual_bets
+    assert scalar(store, "SELECT count(*) FROM schema_migrations") == 13  # T70b: +skipped_data status
     with sqlite3.connect(store.db_path) as conn:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 
@@ -274,3 +274,110 @@ def test_win5_plan_is_idempotent_and_traceable(store):
     second = store.save_win5_prediction(**kwargs)
     assert first == second
     assert scalar(store, "SELECT count(*) FROM win5_predictions") == 1
+
+
+# ─── T70b: migration v13 (virtual_bets.status gains 'skipped_data') ─────────
+
+def test_virtual_bets_v13_migration_preserves_rows_and_accepts_skipped_data(tmp_path):
+    # Simulate a real pre-T70b DB: the OLD virtual_bets CHECK (no 'skipped_data')
+    # with two legacy rows already recorded (one pending, one settled).
+    db_path = tmp_path / "pre-t70b.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)""")
+        conn.executemany("INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)",
+                          [(v, "2026-08-01T00:00:00Z") for v in range(1, 13)])
+        conn.execute("""CREATE TABLE virtual_bets (
+            virtual_bet_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            policy_version TEXT NOT NULL,
+            race_id TEXT NOT NULL,
+            date TEXT NOT NULL,
+            bet_type TEXT NOT NULL CHECK (bet_type IN ('fukusho','tansho')),
+            horse_number INTEGER NOT NULL,
+            stake_yen INTEGER NOT NULL,
+            decided_at TEXT NOT NULL,
+            cutoff_source TEXT,
+            decision_odds REAL,
+            decision_prob REAL,
+            is_control INTEGER NOT NULL DEFAULT 0 CHECK (is_control IN (0,1)),
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','settled','refunded','skipped_budget')),
+            payout_yen INTEGER,
+            settled_at TEXT,
+            created_at TEXT NOT NULL,
+            CHECK (
+                (status IN ('pending','skipped_budget') AND payout_yen IS NULL AND settled_at IS NULL)
+                OR (status IN ('settled','refunded') AND payout_yen IS NOT NULL AND settled_at IS NOT NULL)
+            )
+        )""")
+        conn.execute(
+            """INSERT INTO virtual_bets (idempotency_key,policy_version,race_id,date,bet_type,
+               horse_number,stake_yen,decided_at,is_control,status,payout_yen,settled_at,created_at)
+               VALUES('v1:20260801:x:01:fukusho:main','v1','20260801:x:01','20260801','fukusho',
+               2,2000,'2026-08-01T00:00:00Z',0,'pending',NULL,NULL,'2026-08-01T00:00:00Z')""")
+        conn.execute(
+            """INSERT INTO virtual_bets (idempotency_key,policy_version,race_id,date,bet_type,
+               horse_number,stake_yen,decided_at,is_control,status,payout_yen,settled_at,created_at)
+               VALUES('v1:20260801:x:02:fukusho:main','v1','20260801:x:02','20260801','fukusho',
+               3,2000,'2026-08-01T00:00:00Z',0,'settled',3000,'2026-08-01T00:05:00Z','2026-08-01T00:05:00Z')""")
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """INSERT INTO virtual_bets (idempotency_key,policy_version,race_id,date,bet_type,
+                   horse_number,stake_yen,decided_at,is_control,status,payout_yen,settled_at,created_at)
+                   VALUES('legacy:reject','v1','20260801:x:03','20260801','fukusho',
+                   4,2000,'2026-08-01T00:00:00Z',0,'skipped_data',NULL,NULL,'2026-08-01T00:00:00Z')""")
+
+    migrated = LoggingStore(db_path)
+    migrated.initialize()
+    migrated.initialize()  # rebuild must be a no-op the second time (idempotent)
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT virtual_bet_id, idempotency_key, policy_version, race_id, date, bet_type, "
+            "horse_number, stake_yen, decided_at, is_control, status, payout_yen, settled_at, created_at "
+            "FROM virtual_bets ORDER BY virtual_bet_id").fetchall()
+        assert rows == [
+            (1, "v1:20260801:x:01:fukusho:main", "v1", "20260801:x:01", "20260801", "fukusho",
+             2, 2000, "2026-08-01T00:00:00Z", 0, "pending", None, None, "2026-08-01T00:00:00Z"),
+            (2, "v1:20260801:x:02:fukusho:main", "v1", "20260801:x:02", "20260801", "fukusho",
+             3, 2000, "2026-08-01T00:00:00Z", 0, "settled", 3000, "2026-08-01T00:05:00Z",
+             "2026-08-01T00:05:00Z"),
+        ]
+
+        # New status is now accepted (this is the whole point of the migration).
+        conn.execute(
+            """INSERT INTO virtual_bets (idempotency_key,policy_version,race_id,date,bet_type,
+               horse_number,stake_yen,decided_at,is_control,status,payout_yen,settled_at,created_at)
+               VALUES('p3-v1:20260801:x:03:fukusho:main','p3-v1','20260801:x:03','20260801','fukusho',
+               5,0,'2026-08-01T00:00:00Z',0,'skipped_data',NULL,NULL,'2026-08-01T00:00:00Z')""")
+        new_id = conn.execute(
+            "SELECT virtual_bet_id FROM virtual_bets WHERE idempotency_key='p3-v1:20260801:x:03:fukusho:main'"
+        ).fetchone()[0]
+        # AUTOINCREMENT sequence must continue past the copied rows, not reset.
+        assert new_id > 2
+
+        # Old CHECK semantics (payout_yen/settled_at required together with the
+        # status transition) are unchanged for the pre-existing status values.
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """INSERT INTO virtual_bets (idempotency_key,policy_version,race_id,date,bet_type,
+                   horse_number,stake_yen,decided_at,is_control,status,payout_yen,settled_at,created_at)
+                   VALUES('bad-1','v1','20260801:x:04','20260801','fukusho',
+                   6,2000,'2026-08-01T00:00:00Z',0,'pending',999,NULL,'2026-08-01T00:00:00Z')""")
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """INSERT INTO virtual_bets (idempotency_key,policy_version,race_id,date,bet_type,
+                   horse_number,stake_yen,decided_at,is_control,status,payout_yen,settled_at,created_at)
+                   VALUES('bad-2','v1','20260801:x:05','20260801','fukusho',
+                   6,2000,'2026-08-01T00:00:00Z',0,'skipped_data',999,NULL,'2026-08-01T00:00:00Z')""")
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """INSERT INTO virtual_bets (idempotency_key,policy_version,race_id,date,bet_type,
+                   horse_number,stake_yen,decided_at,is_control,status,payout_yen,settled_at,created_at)
+                   VALUES('bad-3','v1','20260801:x:06','20260801','fukusho',
+                   6,2000,'2026-08-01T00:00:00Z',0,'settled',NULL,NULL,'2026-08-01T00:00:00Z')""")
+
+        migration_rows = conn.execute(
+            "SELECT count(*) FROM schema_migrations WHERE version=13").fetchone()[0]
+    assert migration_rows == 1

@@ -119,7 +119,16 @@ def test_record_decision_for_snapshot_id_reads_back_persisted_row(tmp_path):
         "selected": True, "manifest_sha256": SHA,
     })
     inserted = virtual_betting.record_decision_for_snapshot_id(snapshot_id, db_path=store.db_path)
-    assert len(inserted) == 2
+    # SPEC-T70b §1: 同一フックがP1(v1)+P5(p5-v1)+P3(p3-v1)を全て評価する。この
+    # fixtureは3頭のみ (P3_MIN_RUNNERS=8未満) なのでP3はskipped_dataの1行のみ。
+    by_policy: dict[str, list] = {}
+    for row in inserted:
+        by_policy.setdefault(row["policy_version"], []).append(row)
+    assert len(by_policy[virtual_betting.POLICY_VERSION]) == 2
+    assert len(by_policy[virtual_betting.P5_POLICY_VERSION]) == 2
+    assert len(by_policy[virtual_betting.P3_POLICY_VERSION]) == 1
+    assert by_policy[virtual_betting.P3_POLICY_VERSION][0]["status"] == "skipped_data"
+    assert len(inserted) == 5
     assert virtual_betting.record_decision_for_snapshot_id(None, db_path=store.db_path) == []
     assert virtual_betting.record_decision_for_snapshot_id(999999, db_path=store.db_path) == []
 
@@ -351,7 +360,24 @@ def test_capture_race_confidence_hook_records_virtual_bets_for_selected_race(tmp
     confidence = jra_ev._capture_race_confidence(rec, "30")
     assert confidence["selected"] is True
 
+    # P1 (v1) の記録行はSPEC-T70b追加前と完全一致 (SPEC-T70b §6-1: ポリシー分離)。
     with sqlite3.connect(store.db_path) as conn:
-        bets = conn.execute("SELECT race_id, is_control, horse_number FROM virtual_bets "
-                            "ORDER BY is_control").fetchall()
+        bets = conn.execute(
+            "SELECT race_id, is_control, horse_number FROM virtual_bets "
+            "WHERE policy_version=? ORDER BY is_control",
+            (virtual_betting.POLICY_VERSION,)).fetchall()
     assert bets == [("20260815:小倉:12", 0, 2), ("20260815:小倉:12", 1, 1)]
+
+    # 同一フックでP5 (全適格ベースライン) も評価される (このfixtureはselected=1
+    # だが、P5は selected値を問わないので既定どおり記録される)。P3は3頭のみの
+    # fixtureなのでP3_MIN_RUNNERS未満 = skipped_data。
+    with sqlite3.connect(store.db_path) as conn:
+        p5_bets = conn.execute(
+            "SELECT race_id, is_control, horse_number FROM virtual_bets "
+            "WHERE policy_version=? ORDER BY is_control",
+            (virtual_betting.P5_POLICY_VERSION,)).fetchall()
+        p3_bets = conn.execute(
+            "SELECT status, horse_number FROM virtual_bets WHERE policy_version=?",
+            (virtual_betting.P3_POLICY_VERSION,)).fetchall()
+    assert p5_bets == [("20260815:小倉:12", 0, 2), ("20260815:小倉:12", 1, 1)]
+    assert p3_bets == [("skipped_data", 2)]

@@ -743,12 +743,13 @@ def collect(race_date=None):
                "win5_shadow_summary": _win5_shadow_summary(
                    win5_by_date, win5_results_by_date, shadow_budget)}
 
-    # T70: 仮想運用 (paper trading) セクション。表示のたびにlazy精算してから
-    # 日別・累計を集計する (settle_pending_bets自体の失敗はdashboard_payload
-    # 内でfail-softに握りつぶし、表示は結果待ちの実績のまま継続する)。
-    # これは購入推奨・実購入ではない (常に payload 内の disclaimer で明示)。
+    # T70/T70b: 仮想運用 (paper trading) セクション。表示のたびにlazy精算してから
+    # パターン別 (P1/P5/P3) に日別・累計を集計する (settle_pending_bets自体の
+    # 失敗はmulti_policy_dashboard_payload内でfail-softに握りつぶし、表示は
+    # 結果待ちの実績のまま継続する)。これは購入推奨・実購入ではない
+    # (常に payload 内の disclaimer で明示)。
     try:
-        payload["virtual_betting"] = virtual_betting.dashboard_payload(
+        payload["virtual_betting"] = virtual_betting.multi_policy_dashboard_payload(
             date=compact_date, db_path=DB_PATH)
     except Exception as exc:
         payload["virtual_betting"] = {"error": f"{type(exc).__name__}: {exc}",
