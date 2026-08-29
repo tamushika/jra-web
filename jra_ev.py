@@ -77,6 +77,26 @@ bp = Blueprint("ev", __name__)
 
 _LOCK = threading.RLock()
 _ALERT_SEQ = itertools.count(1)
+
+
+def _load_ev_threshold_from_env():
+    """SPEC-T71 §1.1: 環境変数 EV_THRESHOLD を起動時のピック閾値初期値にする。
+    未設定なら1.3。範囲は /api/analyze_start と同じ0.8〜3.0にクランプ、
+    不正値 (数値変換不可) は1.3にフォールバックし [WARN] を出す。"""
+    raw = os.environ.get("EV_THRESHOLD", "").strip()
+    if not raw:
+        return 1.3
+    try:
+        val = float(raw)
+    except ValueError:
+        print(f"[WARN] EV_THRESHOLD の値 ({raw!r}) が不正なため既定値1.3を使用します")
+        return 1.3
+    clamped = max(0.8, min(3.0, val))
+    if clamped != val:
+        print(f"[WARN] EV_THRESHOLD={val} は範囲外 (0.8〜3.0) のため{clamped}にクランプしました")
+    return clamped
+
+
 STATE = {
     "status": "idle",            # idle | analyzing | ready | error
     "error": "",
@@ -85,7 +105,7 @@ STATE = {
     "warning": "",
     "races": {},                 # rid -> race record
     "alerts": [],                # {id, ts, stage, rid, label, picks}
-    "params": {"ev_threshold": 1.3, "max_odds": 50.0, "min_prob": 0.02,
+    "params": {"ev_threshold": _load_ev_threshold_from_env(), "max_odds": 50.0, "min_prob": 0.02,
                # ワイドは2026-07-13の再検証で運用停止 (2026H1フル期間で回収66.6%。
                # 採用根拠だった110%は4-6月サブセット+2025年統計リークの見かけと判明)。
                # 再開する場合は数値を戻す前に docs/TASKS.md の再検証記録を確認すること。
@@ -579,6 +599,27 @@ def worker_analyze_all(params):
 # ─── 通知の外部連携 (SQLite実測ログ / Discord) ────────────────────────────────
 
 
+def _effective_line_min_ev():
+    """SPEC-T71 §1.2: LINE送信閾値の実効値。EV_LINE_MIN_EV の明示設定があればそれを
+    優先し、未設定/不正値なら STATE["params"]["ev_threshold"] (ピック閾値) に追随する。"""
+    raw = os.environ.get("EV_LINE_MIN_EV", "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            print(f"[WARN] EV_LINE_MIN_EV の値 ({raw!r}) が不正なためピック閾値を使用します")
+    return STATE["params"]["ev_threshold"]
+
+
+def _notice_lines(threshold):
+    """SPEC-T71 §1.3: 通知文末尾の固定行。旧「ワイド110%」記述 (2026-07-13の
+    再検証で否定済み) を廃し、参考情報である旨と実効閾値、暫定閾値なら注記を返す。"""
+    lines = [f"※参考情報です (購入推奨ではありません)・閾値EV≥{threshold}"]
+    if threshold < 1.3:
+        lines.append("※T63裁定前の暫定閾値")
+    return lines
+
+
 def _send_discord(alert):
     """.env の EV_DISCORD_WEBHOOK が設定されていればスマホへも通知"""
     url = os.environ.get("EV_DISCORD_WEBHOOK", "").strip()
@@ -593,7 +634,8 @@ def _send_discord(alert):
         for w in alert.get("wide", []):
             lines.append(f"ワイド {w['nums'][0]}-{w['nums'][1]} ({w['names'][0]}×{w['names'][1]}) "
                          f"overlay{w['overlay']}")
-        lines.append("-# 単勝+複勝の併用が堅い / ワイドはoverlay1.6以上全買いで検証上110%")
+        for note in _notice_lines(STATE["params"]["ev_threshold"]):
+            lines.append(f"-# {note}")
         res = requests.post(url, json={"content": "\n".join(lines)}, timeout=10)
         if 200 <= res.status_code < 300:
             return "sent", res.status_code, None
@@ -607,15 +649,16 @@ def _send_line(alert):
     """.env の EV_LINE_CHANNEL_TOKEN 設定時、「5分前 × EV>=1.3」の通知をLINEへ送る。
     LINE Notify は2025年に終了したため Messaging API のブロードキャストを使用
     (自分だけを友だちにしたボット宛て。無料枠200通/月 → 5分前のみなら十分収まる)。
-    ステージ/閾値は EV_LINE_STAGE / EV_LINE_MIN_EV で変更可 (既定 5 / 1.3)。"""
+    ステージは EV_LINE_STAGE で変更可 (既定5)。閾値は EV_LINE_MIN_EV で明示指定できるが、
+    未設定時は STATE["params"]["ev_threshold"] (ピック閾値) に追随する (SPEC-T71 §1.2)。"""
     token = os.environ.get("EV_LINE_CHANNEL_TOKEN", "").strip()
     if not token:
         return "suppressed", None, None
     try:
         stage_req = int(os.environ.get("EV_LINE_STAGE", "5"))
-        min_ev = float(os.environ.get("EV_LINE_MIN_EV", "1.3"))
     except ValueError:
-        stage_req, min_ev = 5, 1.3
+        stage_req = 5
+    min_ev = _effective_line_min_ev()
     if alert["stage"] != stage_req:
         return "suppressed", None, None
     picks = [p for p in alert["picks"] if (p.get("ev") or 0) >= min_ev]
@@ -628,7 +671,7 @@ def _send_line(alert):
                      + (" [Web妙味]" if p.get("web_value") else ""))
     for w in alert.get("wide", []):
         lines.append(f"ワイド {w['nums'][0]}-{w['nums'][1]} overlay{w['overlay']}")
-    lines.append("※単勝+複勝の併用が堅い / ワイドは1.6以上全買いで110%")
+    lines.extend(_notice_lines(min_ev))
     try:
         res = requests.post(
             "https://api.line.me/v2/bot/message/broadcast",
@@ -1169,11 +1212,13 @@ if __name__ == "__main__":
         print("=" * 55)
         print(f"  URL: {url}")
         print("  ブラウザのタブを開いたままにすると 15分前/5分前に通知します")
+        _th = STATE["params"]["ev_threshold"]
+        print(f"  EV閾値: {_th}" + (" (暫定・T63裁定まで)" if _th < 1.3 else ""))
         if os.environ.get("EV_DISCORD_WEBHOOK", "").strip():
             print("  Discord通知: 有効")
         if os.environ.get("EV_LINE_CHANNEL_TOKEN", "").strip():
             print(f"  LINE通知: 有効 ({os.environ.get('EV_LINE_STAGE', '5')}分前 × "
-                  f"EV>={os.environ.get('EV_LINE_MIN_EV', '1.3')})")
+                  f"EV>={_effective_line_min_ev()})")
         print("  終了: Ctrl+C")
         print("-" * 55)
         _restore_phase2_state()

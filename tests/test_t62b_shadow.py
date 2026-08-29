@@ -115,8 +115,10 @@ def test_notification_function_sources_are_frozen():
         and node.name in ("_send_line", "_send_discord", "refresh_and_alert")
     }
     expected = {
-        "_send_line": "7ee8a4093ac97d0795bcf656a03d38b993e939d7cc443600cdf5d609603c18d3",
-        "_send_discord": "af766d96e28b3254649cf56829d2d6812bb7b7214ea7a684c833b386a1f39454",
+        # 2026-08-30 SPEC-T71 (暫定閾値1.1・参考文言・旧ワイド110%文言の削除) を上位モデルが
+        # 裁定したうえで _send_line/_send_discord のハッシュを更新。refresh_and_alert は不変。
+        "_send_line": "b34eef74cf4d38e8d1344761c50e0d1c91e817175cc48f81bd3e708dbc6b8292",
+        "_send_discord": "41ada625a0e4e87a30c1d125d0657dd5e8fb28b9e867ef42f3b78bd85c78df8f",
         "refresh_and_alert": "4193fbdb992cc192b5d02bdb5118db75dcfb432c8972f796d50143e2a98c6b7c",
     }
     for name, digest in expected.items():

@@ -145,6 +145,13 @@ def test_contract_matches_registered_ledger_and_artifacts():
     assert verified["model_sha256"] == t63.MODEL_SHA256
 
 
+def test_adjudication_gate_notification_count_is_v2_revised_to_100():
+    # SPEC-T63 v2 (2026-08-29): gate (2) count 300 -> 100.
+    assert t63.EXPERIMENT_ID == "T63-ev-threshold-rederivation-v2"
+    assert t63.ADJUDICATION_NOTIFICATIONS == 100
+    assert t63.ADJUDICATION_DAYS == 12
+
+
 def test_database_connection_is_read_only(tmp_path):
     db = tmp_path / "readonly.db"
     with sqlite3.connect(db) as connection:

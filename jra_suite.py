@@ -295,11 +295,13 @@ if __name__ == "__main__":
     print(f"    WIN5予想             : {url}win5/")
     print(f"    実績ダッシュボード   : {url}perf/")
     print("  ブラウザのタブを開いたままにすると 15分前/5分前に通知します (オッズ監視)")
+    _th = jra_ev.STATE["params"]["ev_threshold"]
+    print(f"  EV閾値: {_th}" + (" (暫定・T63裁定まで)" if _th < 1.3 else ""))
     if os.environ.get("EV_DISCORD_WEBHOOK", "").strip():
         print("  Discord通知: 有効")
     if os.environ.get("EV_LINE_CHANNEL_TOKEN", "").strip():
         print(f"  LINE通知: 有効 ({os.environ.get('EV_LINE_STAGE', '5')}分前 × "
-              f"EV>={os.environ.get('EV_LINE_MIN_EV', '1.3')})")
+              f"EV>={jra_ev._effective_line_min_ev()})")
     print("  終了: Ctrl+C")
     print("-" * 55)
     threading.Timer(1.0, lambda: webbrowser.open(url)).start()

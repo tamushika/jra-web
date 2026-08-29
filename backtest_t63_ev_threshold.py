@@ -26,9 +26,9 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_DB = ROOT / "data" / "jra_logging.db"
 DEFAULT_LEDGER = ROOT / "eval" / "experiments.jsonl"
 DEFAULT_MODEL = ROOT / "api" / "data_files" / "common" / "win5_ml_model.json"
-DEFAULT_SPEC = ROOT / "docs" / "codex" / "SPEC-T63-ev-threshold-rederivation.md"
+DEFAULT_SPEC = ROOT / "docs" / "codex" / "SPEC-T63-ev-threshold-rederivation-v2.md"
 DEFAULT_OUTPUT = ROOT / "outputs" / "t63_ev_threshold.json"
-EXPERIMENT_ID = "T63-ev-threshold-rederivation-v1"
+EXPERIMENT_ID = "T63-ev-threshold-rederivation-v2"
 PROSPECTIVE_START = "2026-07-25"
 THRESHOLDS = (1.00, 1.05, 1.10, 1.15, 1.20, 1.30)
 CURRENT_THRESHOLD = 1.30
@@ -37,12 +37,12 @@ MAX_ODDS = 50.0
 DISTRIBUTION_DAYS = 4
 DISTRIBUTION_RACES = 200
 ADJUDICATION_DAYS = 12
-ADJUDICATION_NOTIFICATIONS = 300
+ADJUDICATION_NOTIFICATIONS = 100
 BOOTSTRAP_RESAMPLES = 2_000
 BOOTSTRAP_SEED = 6301
 MODEL_SHA256 = "8687f9bfa2278ed1dcafd9f13c90b08fa6b6d58f993a2c139fd39c9edbf34527"
-SPEC_SHA256 = "10608786693a9c3ae3a4847d10a0c442786b5320d4e30ced88c8859cde2988a8"
-CONTRACT_SHA256 = "6e17c772f0ab0acb926d69856654f2e9966870edc46c9537e1c517f88350f0d0"
+SPEC_SHA256 = "e1077829e5bba06a1fe3ef53bb963ce38bdc86ec33513b8d1bde44dd046726bf"
+CONTRACT_SHA256 = "72d34f149e246abd1bf7bc9d0eb0dd62980de636b8af2968e1b635886e3f4c81"
 BOOK_MIN, BOOK_MAX = 1.15, 1.45
 
 

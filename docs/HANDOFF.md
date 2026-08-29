@@ -89,7 +89,7 @@ Harville 式で組み合わせ馬券の的中確率を導出でき、EV = モデ
 
 - **Discord通知を使う場合**: `jra-web/.env` に `EV_DISCORD_WEBHOOK=<WebhookのURL>` を1行追加。
   (Discord: サーバー→チャンネル設定→連携サービス→Webhook作成でURL取得)。未設定なら通知はブラウザのみ。
-- **LINE通知を使う場合** (5分前 × EV>=1.3 のみ送信。LINE Notifyは2025年終了のため Messaging API):
+- **LINE通知を使う場合** (5分前 × EV>=閾値 のみ送信。閾値は下記 `EV_THRESHOLD`。LINE Notifyは2025年終了のため Messaging API):
   1. https://developers.line.biz/ にLINEアカウントでログイン → プロバイダー作成
   2. 「Messaging APIチャネル」を作成 → Messaging API設定タブで
      **チャネルアクセストークン (長期)** を発行
@@ -97,8 +97,13 @@ Harville 式で組み合わせ馬券の的中確率を導出でき、EV = モデ
      (応答メッセージはオフ推奨。友だちは自分だけにする — broadcast配信のため)
   4. `jra-web/.env` に `EV_LINE_CHANNEL_TOKEN=<トークン>` を1行追加
   5. 疎通確認: `python jra_ev.py --test-line` (スマホにテスト通知が届けばOK)
-  - 送信条件は `EV_LINE_STAGE` (既定5) / `EV_LINE_MIN_EV` (既定1.3) で変更可。
-    無料枠200通/月 — 5分前のみ・閾値1.3なら月数十通で収まる見込み
+  - 送信条件は `EV_LINE_STAGE` (既定5) / `EV_LINE_MIN_EV` (未設定ならピック閾値に追随) で変更可。
+  - **ピック閾値 `EV_THRESHOLD`** (SPEC-T71、2026-08-29): `.env` の `EV_THRESHOLD` が起動時の
+    `STATE["params"]["ev_threshold"]` になる (未設定1.3・0.8〜3.0にクランプ)。**現在は暫定1.1**
+    (T45新モデルではEV≥1.3が分布外 p99≈1.07 で通知0件のため、T63裁定までの参考通知)。
+    通知文には「※参考情報です (購入推奨ではありません)・閾値EV≥1.1」「※T63裁定前の暫定閾値」が付く。
+    T63裁定後は `.env` の値を正式値に置き換える (1.3へ戻す場合は行を削除)。
+    無料枠200通/月 — 閾値1.1なら1開催日≈1〜2通 (T63件数カウント: 1.10で11開催日12件) で余裕あり
 - **.env に必須のもの** (既存): `DATABASE_URL` (Neon)、`GEMINI_API_KEY` (PDF抽出用)。
   これらは git 管理外。別PCで動かす場合は手動でコピーが必要。
 
