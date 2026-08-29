@@ -64,9 +64,9 @@
             EV閾値 (ML勝率×オッズ):
             <select id="evTh" class="ev-select">
                 <option value="1.0">1.0以上</option>
-                <option value="1.1">1.1以上</option>
+                <option value="1.1">1.1以上 (暫定・T63裁定まで)</option>
                 <option value="1.2">1.2以上</option>
-                <option value="1.3" selected>1.3以上 (推奨: 単勝回収158.6%/100.1%)</option>
+                <option value="1.3">1.3以上 (従来値)</option>
                 <option value="1.5">1.5以上</option>
             </select>
             <button class="primary-btn" id="notifBtn" onclick="enableNotif()" style="margin-left:10px;">🔔 通知を許可</button>
@@ -84,7 +84,7 @@
     <div class="ev-section">
         <div class="ev-step-title">🔔 通知ログ</div>
         <div class="ev-meta" style="margin-bottom:6px;">
-            💡 買い方ガイド: <b>単勝+複勝の併用</b>が検証上最も堅い (EV≥1.3: 単勝回収158.6%/100.1%、複勝は両年102-103%)。
+            ※通知は参考情報です (購入推奨ではありません)。EV≥1.3のフル再検証 (2026-07-13) は単勝81.4%で市場同等。閾値は起動時の設定値 (.env EV_THRESHOLD) に自動で合わせます。
             通知内容はNeonに自動記録され、<code>python ev_log_report.py</code> で実測回収率を確認できます。
         </div>
         <div class="ev-alert-log" id="alertLog"><span class="ev-meta">まだ通知はありません</span></div>
@@ -164,10 +164,25 @@ function schedulePoll(ms) {
     pollTimer = setTimeout(poll, ms);
 }
 
+let evThSynced = false;
+function syncEvThreshold(st) {
+    // SPEC-T71: フォーム既定値でサーバー側の閾値 (.env EV_THRESHOLD) を上書きしないよう、
+    // 初回ポーリング時にサーバーの実効値へ同期する (ユーザーが変更した後は触らない)
+    if (evThSynced || !st.params) return;
+    const sel = document.getElementById('evTh');
+    const v = String(st.params.ev_threshold);
+    if (![...sel.options].some(o => o.value === v)) {
+        const o = document.createElement('option'); o.value = v; o.textContent = v + '以上 (設定値)'; sel.appendChild(o);
+    }
+    sel.value = v;
+    evThSynced = true;
+}
+
 async function poll() {
     try {
         const st = await (await fetch('api/state')).json();
         stateCache = st;
+        syncEvThreshold(st);
         const p = document.getElementById('progress');
         if (st.status === 'analyzing') {
             p.textContent = `解析中... ${st.progress.done}/${st.progress.total}`;
