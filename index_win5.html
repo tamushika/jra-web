@@ -169,6 +169,14 @@ async function analyzeAll() {
             const data = await res.json();
             if (data.error) throw new Error(data.error);
             analyzed[i] = data;
+            // 発走時刻の補完: WIN5一覧ページは時刻を持たないため、解析結果の race_info
+            // (例「【中京 6R】ダート1900m 15:01発走」) から取り、STEP4の予約に使う
+            const tm = /(\d{1,2}:\d{2})発走/.exec(data.race_info || '');
+            if (tm && raceList[i] && !raceList[i].time) {
+                raceList[i].time = tm[1];
+                const card = document.querySelectorAll('#raceGrid .win5-race-time')[i];
+                if (card) card.textContent = tm[1];
+            }
             renderRaceScores(area, i, data);
         } catch (e) {
             st.textContent = `WIN5-${i + 1} 解析失敗: ${e.message}`;

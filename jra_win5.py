@@ -139,6 +139,28 @@ def _fill_missing_from_siblings(races, url_map, date8):
     return url_map
 
 
+def _fill_times_from_ev_monitor(races):
+    """JRAのWIN5一覧ページは各レースセルに発走時刻を含まない (含むのは発売締切時刻のみ)。
+    time が空のレースは、同一プロセスのEVモニタ (jra_ev.STATE、解析済みなら全レースの
+    start_time を持つ) から (会場, R) で補完する。EVモニタ未解析なら空のまま
+    (ページ側はSTEP2の race_info からも補完する)。"""
+    try:
+        import jra_ev  # 遅延import (jra_ev 側は jra_win5 を参照しないため循環しない)
+        ev_races = jra_ev.STATE.get("races") or {}
+    except Exception:
+        return races
+    ev_races = ev_races.values() if isinstance(ev_races, dict) else ev_races
+    lookup = {}
+    for rec in ev_races:
+        st = rec.get("start_time") if isinstance(rec, dict) else None
+        if st and re.fullmatch(r"\d{1,2}:\d{2}", str(st)):
+            lookup[(rec.get("venue"), rec.get("race_num"))] = str(st)
+    for r in races:
+        if not r.get("time"):
+            r["time"] = lookup.get((r.get("venue"), r.get("race_num")), "")
+    return races
+
+
 @bp.route("/api/win5_races", methods=["GET"])
 def win5_races():
     """WIN5対象5レースの取得 + カードURL解決 (web版と同形状 + 兄弟レース補完)"""
@@ -152,6 +174,7 @@ def win5_races():
         url_map = _fill_missing_from_siblings(target["races"], url_map, date8)
         for r in target["races"]:
             r["url"] = url_map.get(r["idx"], "")
+        _fill_times_from_ev_monitor(target["races"])
         return jsonify({"success": True, **target})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
