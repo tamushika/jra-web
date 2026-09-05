@@ -1071,16 +1071,36 @@ def _scrape_win5_target():
 
 
 def _find_win5_urls(races, target_date_yyyymmdd=''):
-    """JRAトップページから各WIN5レースのaccessD URLを探す"""
+    """JRAトップページから各WIN5レースのaccessD URLを探す
+
+    トップページには「今日の注目レース」等、一部会場のaccessD/accessSリンクしか
+    無いことがある (例: 2026-09-05は阪神11Rのみで中山のシードが0本)。その場合、
+    トップのシードページ自体 (出馬表ページには通常「他会場・他日」への代表リンクが
+    並ぶナビゲーションがある) を辿って他会場・他日の代表URLを追加収集する
+    (2段目のシード発見)。取得したページはURL単位でキャッシュし、同一URLへの
+    重複リクエストを避ける。
+    """
     results = {}
-    try:
-        res = requests.get('https://www.jra.go.jp/', headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        res.encoding = 'cp932'
-        top_soup = BeautifulSoup(res.text, 'html.parser')
-    except Exception:
+    page_cache = {}
+
+    def _fetch_soup(url):
+        if url in page_cache:
+            return page_cache[url]
+        soup = None
+        try:
+            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+            r.encoding = 'cp932'
+            soup = BeautifulSoup(r.text, 'html.parser')
+        except Exception:
+            soup = None
+        page_cache[url] = soup
+        return soup
+
+    top_soup = _fetch_soup('https://www.jra.go.jp/')
+    if top_soup is None:
         return results
 
-    # 会場別シードURL収集
+    # 会場別シードURL収集 (1段目: トップページ)
     venue_seeds = {}
     for a in top_soup.find_all('a', href=True):
         href = a['href']
@@ -1094,6 +1114,53 @@ def _find_win5_urls(races, target_date_yyyymmdd=''):
             full = ("https://www.jra.go.jp" + href) if href.startswith('/') else href
             venue_seeds.setdefault(venue, []).append(full)
 
+    # 2段目: 1段目のシードページ (重複除去・上限3件) を辿り、そのナビゲーション
+    # リンクから (会場, 日付) ごとの代表URLを集めて venue_seeds に追加する
+    stage1_urls = []
+    seen_stage1 = set()
+    for seeds in venue_seeds.values():
+        for s in seeds:
+            if s not in seen_stage1:
+                seen_stage1.add(s)
+                stage1_urls.append(s)
+
+    seen_repr = set()
+    for seed_url in stage1_urls[:3]:
+        ssoup = _fetch_soup(seed_url)
+        if ssoup is None:
+            continue
+        for a in ssoup.find_all('a', href=True):
+            href = a['href']
+            if 'accessD.html' not in href or 'CNAME=' not in href:
+                continue
+            vc_m = re.search(r'CNAME=pw\d+dde\d{2}(\d{2})', href)
+            date_m = re.search(r'(\d{8})/[0-9A-Fa-f]+$', href)
+            if not vc_m or not date_m:
+                continue
+            venue2 = VENUE_MAP.get(vc_m.group(1))
+            if not venue2:
+                continue
+            href_date = date_m.group(1)
+            if target_date_yyyymmdd and href_date != target_date_yyyymmdd:
+                continue
+            key = (venue2, href_date)
+            if key in seen_repr:
+                continue
+            seen_repr.add(key)
+            venue_seeds.setdefault(venue2, []).append(
+                urljoin('https://www.jra.go.jp/JRADB/', href))
+
+    # target_date と一致するシードを各会場の先頭に並べ替える
+    # (従来 seeds[:2] で打ち切っていたため、他日のシードが先頭に来て
+    #  target_date のシードが漏れる事故を防ぐ)
+    if target_date_yyyymmdd:
+        def _seed_date(u):
+            m = re.search(r'(\d{8})/[0-9A-Fa-f]+', u)
+            return m.group(1) if m else ''
+        for venue_key, seeds in venue_seeds.items():
+            venue_seeds[venue_key] = sorted(
+                seeds, key=lambda u: 0 if _seed_date(u) == target_date_yyyymmdd else 1)
+
     REVERSE_VENUE = {v: k for k, v in VENUE_MAP.items()}
 
     for race in races:
@@ -1101,36 +1168,33 @@ def _find_win5_urls(races, target_date_yyyymmdd=''):
         expected_vcode = REVERSE_VENUE.get(venue)
         seeds = venue_seeds.get(venue, [])
         for seed in seeds[:2]:
-            try:
-                sr = requests.get(seed, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-                sr.encoding = 'cp932'
-                ssoup = BeautifulSoup(sr.text, 'html.parser')
-                for a in ssoup.find_all('a', href=True):
-                    href = a['href']
-                    if 'accessD.html' not in href:
-                        continue
-                    # 会場コード・レース番号・日付の3点を検証
-                    vc_m   = re.search(r'CNAME=pw\d+dde\d{2}(\d{2})', href)
-                    rn_m   = re.search(r'CNAME=pw\d+dde\d+(\d{2})\d{8}', href)
-                    date_m = re.search(r'(\d{8})/[0-9A-Fa-f]+$', href)
-                    if not (vc_m and rn_m):
-                        continue
-                    href_vcode = vc_m.group(1)
-                    href_rnum  = int(rn_m.group(1))
-                    href_date  = date_m.group(1) if date_m else ''
-                    # 会場コード不一致はスキップ
-                    if expected_vcode and href_vcode != expected_vcode:
-                        continue
-                    # 日付不一致はスキップ（5/9のWIN5に5/10のURLが混入するのを防ぐ）
-                    if target_date_yyyymmdd and href_date and href_date != target_date_yyyymmdd:
-                        continue
-                    if href_rnum == rnum:
-                        results[race['idx']] = urljoin('https://www.jra.go.jp/JRADB/', href)
-                        break
-                if race['idx'] in results:
-                    break
-            except Exception:
+            ssoup = _fetch_soup(seed)
+            if ssoup is None:
                 continue
+            for a in ssoup.find_all('a', href=True):
+                href = a['href']
+                if 'accessD.html' not in href:
+                    continue
+                # 会場コード・レース番号・日付の3点を検証
+                vc_m   = re.search(r'CNAME=pw\d+dde\d{2}(\d{2})', href)
+                rn_m   = re.search(r'CNAME=pw\d+dde\d+(\d{2})\d{8}', href)
+                date_m = re.search(r'(\d{8})/[0-9A-Fa-f]+$', href)
+                if not (vc_m and rn_m):
+                    continue
+                href_vcode = vc_m.group(1)
+                href_rnum  = int(rn_m.group(1))
+                href_date  = date_m.group(1) if date_m else ''
+                # 会場コード不一致はスキップ
+                if expected_vcode and href_vcode != expected_vcode:
+                    continue
+                # 日付不一致はスキップ（5/9のWIN5に5/10のURLが混入するのを防ぐ）
+                if target_date_yyyymmdd and href_date and href_date != target_date_yyyymmdd:
+                    continue
+                if href_rnum == rnum:
+                    results[race['idx']] = urljoin('https://www.jra.go.jp/JRADB/', href)
+                    break
+            if race['idx'] in results:
+                break
     return results
 
 
