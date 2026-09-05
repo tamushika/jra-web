@@ -36,6 +36,21 @@ _LIVE_WEIGHT_CACHE = {}
 JUMP_EXCLUSION_MESSAGE = "障害レースは解析対象外 (平地モデルのため)"
 _JUMP_RACE_NAME_RE = re.compile(r"障害|ジャンプ|J[・･\s]?G(?:I{1,3}|[123])", re.IGNORECASE)
 
+
+def get_race_class(name):
+    """レース名からクラス区分を判定する。新馬 (メイクデビュー含む) 判定は
+    オープン判定より前に行う (名前に "OP" 等が含まれていても新馬を優先)。"""
+    name_str = str(name).upper()
+    if "G1" in name_str or "G2" in name_str or "G3" in name_str: return "重賞"
+    if "JG1" in name_str or "JG2" in name_str or "JG3" in name_str: return "重賞"
+    if "新馬" in name_str or "メイクデビュー" in name_str: return "新馬"
+    if "(L)" in name_str or "オープ" in name_str or "OP" in name_str: return "オープン"
+    if "3勝" in name_str or "３勝" in name_str: return "3勝クラス"
+    if "2勝" in name_str or "２勝" in name_str: return "2勝クラス"
+    if "1勝" in name_str or "１勝" in name_str: return "1勝クラス"
+    if "未勝利" in name_str: return "未勝利"
+    return "オープン"
+
 def get_base_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
@@ -583,18 +598,6 @@ def analyze_race_url(url, mode='簡易'):
         time_str = f" {race_time}発走" if race_time else ""
         race_label = f"【{venue} {race_idx}R】{race_type}{dist_val}m{time_str}　{race_name}"
 
-        def get_race_class(name):
-            name_str = str(name).upper()
-            if "G1" in name_str or "G2" in name_str or "G3" in name_str: return "重賞"
-            if "JG1" in name_str or "JG2" in name_str or "JG3" in name_str: return "重賞"
-            if "(L)" in name_str or "オープ" in name_str or "OP" in name_str: return "オープン"
-            if "3勝" in name_str or "３勝" in name_str: return "3勝クラス"
-            if "2勝" in name_str or "２勝" in name_str: return "2勝クラス"
-            if "1勝" in name_str or "１勝" in name_str: return "1勝クラス"
-            if "未勝利" in name_str: return "未勝利"
-            if "新馬" in name_str: return "新馬"
-            return "オープン"
-        
         race_class = get_race_class(race_name)
 
         if race_type == "障害":

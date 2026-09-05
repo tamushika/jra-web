@@ -67,6 +67,12 @@ JST = timezone(timedelta(hours=9))
 HDRS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Referer": "https://www.jra.go.jp/"}
 
+# SPEC (2026-09-05 中山5R メイクデビュー不具合対応): MLスコア付き馬が少なすぎる
+# (新馬戦等でほぼ全馬が履歴ゼロ→ml_score=None) ときは softmax による確率付与を
+# スキップし、EV計算・pickedを全馬None/Falseにする縮退ガード。
+ML_MIN_SCORED_HORSES = 2
+ML_MIN_SCORED_RATIO = 0.5
+
 app = Flask(__name__, static_folder=BASE_DIR, static_url_path="/")
 CORS(app)
 # T38: ルートはBlueprint (bp) に定義し、末尾で app.register_blueprint(bp) して
@@ -266,9 +272,24 @@ def _snapshot_quality(stage, scheduled_post_at, observed_at, fetch_duration_ms, 
     }
 
 
+def _ml_coverage(horses):
+    """母数 (非取消馬) と scored (ml_score有) の数・充足可否を返す。
+    母数=0のときは不足扱い (ok=False) にする。"""
+    total = sum(1 for h in horses if not h.get("scratched"))
+    scored = sum(1 for h in horses if not h.get("scratched") and h.get("ml_score") is not None)
+    ok = (total > 0 and scored >= ML_MIN_SCORED_HORSES
+          and scored >= ML_MIN_SCORED_RATIO * total)
+    return {"scored": scored, "total": total, "ok": ok}
+
+
 def compute_picks(horses, params):
     """slim馬リストに win_prob / ev / picked / web_value を付与し、pick数を返す"""
-    scored = [h for h in horses if h.get("ml_score") is not None]
+    coverage = _ml_coverage(horses)
+    if coverage["ok"]:
+        scored = [h for h in horses if h.get("ml_score") is not None]
+    else:
+        scored = []
+        print(f"[INFO] MLスコア付き馬が不足のためEV対象外: {coverage['scored']}/{coverage['total']}頭")
     probs = scoring.win_probs_from_ml_scores([h["ml_score"] for h in scored]) if scored else None
 
     # Web版スコアの順位 (降順)
@@ -369,6 +390,7 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None,
             "history_available": _t62_history_available(h),
         })
     n_picked = compute_picks(horses, params)
+    ml_coverage = _ml_coverage(horses)
 
     # 既存の監視/通知経路が参照するodds_okは、T40以前の判定を維持する。
     # Phase C用の厳格な有効頭数・不足判定は_snapshot_quality内だけで算出する。
@@ -472,6 +494,7 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None,
         "day_label": day_label,
         "odds_ok": odds_ok, "n_odds": n_odds,
         "horses": horses, "n_picked": n_picked,
+        "ml_coverage": ml_coverage,
         "wide_picks": compute_wide_picks(horses, params),
         "checked15": False, "checked5": False, "finished": False,
         # 通知を伴わないスナップショット専用ステージ (時点別オッズ特徴量 Phase C 用蓄積)。

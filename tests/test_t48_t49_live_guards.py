@@ -172,8 +172,15 @@ def test_ev_debut_is_excluded_from_probability_and_logged(monkeypatch, capsys):
     assert rec["horses"][0]["ml_score"] is None
     assert rec["horses"][0]["ev"] is None
     assert rec["horses"][0]["picked"] is False
-    assert rec["horses"][1]["win_prob"] == 1.0
-    assert "初出走のためML/EV対象外: デビュー" in capsys.readouterr().out
+    # 2026-09-05 中山5R不具合対応: scored=1頭はML_MIN_SCORED_HORSES(2)未満のため
+    # 縮退ガードが発動し、softmax(=1.0)を確率として採用しなくなった。
+    assert rec["horses"][1]["win_prob"] is None
+    assert rec["horses"][1]["ev"] is None
+    assert rec["horses"][1]["picked"] is False
+    assert rec["ml_coverage"] == {"scored": 1, "total": 2, "ok": False}
+    out = capsys.readouterr().out
+    assert "初出走のためML/EV対象外: デビュー" in out
+    assert "MLスコア付き馬が不足のためEV対象外: 1/2頭" in out
 
 
 def test_win5_keeps_debut_runner_and_other_scores(monkeypatch):
