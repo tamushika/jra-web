@@ -305,6 +305,48 @@ def fetch_baba_info(venue):
     except:
         return f"馬場情報 [{venue}]：取得失敗"
 
+
+_VALID_BABA_COND = {"良", "稍重", "重", "不良"}
+
+
+def parse_official_baba(soup):
+    """出馬表ページ (accessD) の公式当日馬場状態 (div.cell.baba) を読む。
+
+    JRA含水率ページ (fetch_baba_info) は朝5:30測定のまま更新されないが、
+    出馬表ヘッダーの馬場情報はレース当日にJRAが随時更新する公式値。
+    発表前・レース終了後のページには div.cell.baba 自体が無いことがあるため、
+    その場合は全てNoneのdictを返す (呼び出し側で含水率ページにフォールバック)。
+    ダートは正式には li.durt (JRA側の綴り) だが、念のため li.dirt も見る。
+    """
+    result = {"weather": None, "turf": None, "dirt": None}
+    node = soup.select_one("div.cell.baba")
+    if not node:
+        return result
+
+    weather_li = node.select_one("li.weather")
+    if weather_li:
+        txt_tag = weather_li.select_one("span.txt")
+        txt = txt_tag.get_text(strip=True) if txt_tag else ""
+        if txt:
+            result["weather"] = txt
+
+    turf_li = node.select_one("li.turf")
+    if turf_li:
+        txt_tag = turf_li.select_one("span.txt")
+        txt = txt_tag.get_text(strip=True) if txt_tag else ""
+        if txt in _VALID_BABA_COND:
+            result["turf"] = txt
+
+    dirt_li = node.select_one("li.durt") or node.select_one("li.dirt")
+    if dirt_li:
+        txt_tag = dirt_li.select_one("span.txt")
+        txt = txt_tag.get_text(strip=True) if txt_tag else ""
+        if txt in _VALID_BABA_COND:
+            result["dirt"] = txt
+
+    return result
+
+
 def fetch_history_data(c, url, name, mode, is_first):
     raw_text = c.get_text(" ", strip=True)
     cond_tag = c.find("span", class_="condition")
@@ -668,13 +710,28 @@ def analyze_race_url(url, mode='簡易'):
             age_digit = age_m.group(1).translate(str.maketrans('２３４', '234'))
             age_cond = "古馬混合" if age_m.group(2) else f"{age_digit}歳限定"
 
-        # 当日馬場状態 (道悪適性スコア用): baba_info文字列から当該レースのsurface分を抽出
+        # 当日馬場状態 (道悪適性スコア用): 出馬表ページの公式値 (当日随時更新) を優先し、
+        # 無ければ含水率ページ (朝5:30測定・baba_info文字列) にフォールバックする。
+        official_baba = parse_official_baba(soup)
+        official_surf_val = official_baba["turf"] if race_type == "芝" else official_baba["dirt"]
+
         baba_cond = ""
-        if baba_info:
+        baba_source = "moisture_page"
+        if official_surf_val:
+            baba_cond = official_surf_val[0]  # 良/稍/重/不
+            baba_source = "race_page"
+        elif baba_info:
             surf_label = "芝" if race_type == "芝" else "ダート"
             cond_m = re.search(rf'{surf_label}:\s*(良|稍重|重|不良)', str(baba_info))
             if cond_m:
                 baba_cond = cond_m.group(1)[0]  # 良/稍/重/不
+        official_baba["source"] = baba_source
+
+        if official_surf_val:
+            surf_label = "芝" if race_type == "芝" else "ダート"
+            weather_part = f"天候 {official_baba['weather']} / " if official_baba.get("weather") else ""
+            official_prefix = f"当日公式: {weather_part}{surf_label} {official_surf_val} ｜ "
+            baba_info = f"{official_prefix}{baba_info}" if baba_info else official_prefix.rstrip("｜ ")
 
         race_context = {"type": race_type, "dist": dist_val, "total_horses": len(scraped_data),
                         "venue": venue, "race_class": race_class, "age_cond": age_cond,
@@ -825,6 +882,7 @@ def analyze_race_url(url, mode='簡易'):
             "race_class": race_class,
             "baba_cond": baba_cond,
             "baba_info": baba_info,
+            "baba_official": official_baba,
             "course_record": course_record_text,
             "course_image": course_image,
             "criteria_lines": criteria_lines,
@@ -847,6 +905,22 @@ def analyze_race_url(url, mode='簡易'):
         raise  # 呼び出し元 (ルート/WIN5アプリ) でハンドリング
 
 
+def _prediction_logging_enabled():
+    """予想ログ保存 (SQLite書き込み) を行ってよいか。
+
+    Vercel本番 (/var/task が読み取り専用) では JRA_LOG_DB で保存先を
+    明示的に上書きしない限り、書き込みは毎回 OSError で失敗し画面に
+    「⚠ ログ保存失敗」が出続けるだけなので、そのケースでは呼び出し自体を
+    スキップする。ローカル/他環境 (JRA_LOG_DB指定あり、またはVERCEL未設定)
+    では従来どおりログを保存する。
+    """
+    if os.environ.get("JRA_LOG_DB"):
+        return True
+    if os.environ.get("VERCEL") in ("1", "true"):
+        return False
+    return True
+
+
 @app.route('/api/scrape', methods=['POST'])
 def scrape():
     data = request.json or {}
@@ -855,18 +929,21 @@ def scrape():
     if not url: return jsonify({"error": "No URL provided"}), 400
     try:
         result = analyze_race_url(url, mode)
-        try:
-            score_cfg = scoring.load_score_weights(get_base_dir())
-            win5_cfg = scoring.load_score_weights(get_base_dir(), "win5_weights.json")
-            if not result.get("analysis_excluded"):
-                log_race_prediction(
-                    result, app_name="web", config={"web": score_cfg, "win5": win5_cfg},
-                    model_name="web_score", model_version=score_cfg.get("version", "unknown"),
-                    trigger_type="manual", base_dir=get_base_dir(),
-                )
-        except Exception as log_exc:
-            result["logging_warning"] = f"{type(log_exc).__name__}: {log_exc}"
-            print(f"[WARN] web prediction logging failed: {result['logging_warning']}")
+        if not _prediction_logging_enabled():
+            result["logging_skipped"] = "vercel_readonly"
+        else:
+            try:
+                score_cfg = scoring.load_score_weights(get_base_dir())
+                win5_cfg = scoring.load_score_weights(get_base_dir(), "win5_weights.json")
+                if not result.get("analysis_excluded"):
+                    log_race_prediction(
+                        result, app_name="web", config={"web": score_cfg, "win5": win5_cfg},
+                        model_name="web_score", model_version=score_cfg.get("version", "unknown"),
+                        trigger_type="manual", base_dir=get_base_dir(),
+                    )
+            except Exception as log_exc:
+                result["logging_warning"] = f"{type(log_exc).__name__}: {log_exc}"
+                print(f"[WARN] web prediction logging failed: {result['logging_warning']}")
         return jsonify(result)
     except Exception as e:
         import traceback
