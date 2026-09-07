@@ -219,6 +219,13 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
                          padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
   #tabbar .loop-badge.alive { background: #e6f7ea; color: #1a7a34; }
   #tabbar .loop-badge.dead { background: #f7e6e6; color: #a31a1a; }
+  #tabbar .global-start { cursor: pointer; margin-right: 10px; height: 32px; padding: 0 14px;
+                           border: none; border-radius: 6px; background: #f5c842; color: #222;
+                           font-weight: bold; font-size: 0.95em; white-space: nowrap; }
+  #tabbar .global-start:disabled { opacity: 0.6; cursor: default; }
+  #tabbar .global-status { font-size: 0.85em; color: #ddd; margin-right: 14px; white-space: nowrap;
+                            max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
+  #tabbar .global-status.error { color: #ffb347; }
   #shell { display: flex; flex-direction: column; height: 100%; }
   #frames { position: relative; flex: 1 1 auto; min-height: 0; }
   #frames iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
@@ -229,6 +236,8 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
 <body>
 <div id="shell">
   <div id="tabbar">
+    <button id="globalStart" class="global-start" title="本日の全レースを解析し、WIN5対象レースも取得します">🏇 解析開始</button>
+    <span id="globalStatus" class="global-status"></span>
     {% for t in tabs %}
     <div class="tab" data-tab="{{ t.prefix }}" role="tab">{{ t.title }}</div>
     {% endfor %}
@@ -293,25 +302,113 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
     activateTab((window.location.hash || "").replace(/^#/, ""));
   });
 
+  // SPEC-T74: タブバー左端の統合「解析開始」ボタン。オッズ監視の解析開始と
+  // WIN5対象レース取得を同時に行い、/ev/api/state のポーリングで状態を表示する。
+  var globalPollTimer = null;
+  var globalWin5Suffix = "";
+
+  function setGlobalStatus(text, isError) {
+    var el = document.getElementById("globalStatus");
+    if (!el) { return; }
+    el.textContent = text;
+    el.classList.toggle("error", !!isError);
+  }
+
+  function pollGlobalStatus() {
+    clearTimeout(globalPollTimer);
+    fetch("/ev/api/state").then(function (res) {
+      return res.json();
+    }).then(function (st) {
+      var btn = document.getElementById("globalStart");
+      var analyzing = st.status === "analyzing";
+      var text = "";
+      var isError = false;
+      if (analyzing) {
+        var done = (st.progress && st.progress.done) || 0;
+        var total = (st.progress && st.progress.total) || 0;
+        text = "解析中 " + done + "/" + total;
+      } else if (st.error) {
+        text = st.error;
+        isError = true;
+      } else if (st.races && st.races.length) {
+        text = "解析完了: " + st.races.length + "レース" +
+               (st.started_at ? " (" + st.started_at + ")" : "");
+        if (st.warning) { text += " ⚠ " + st.warning; }
+      }
+      if (globalWin5Suffix) { text += globalWin5Suffix; }
+      setGlobalStatus(text, isError);
+      if (btn) { btn.disabled = analyzing; }
+      if (analyzing) {
+        globalPollTimer = setTimeout(pollGlobalStatus, 3000);
+      }
+    }).catch(function () { /* サーバー停止中などは次回クリックまで待つ */ });
+  }
+
+  function startAll() {
+    var btn = document.getElementById("globalStart");
+    if (btn) { btn.disabled = true; }
+    globalWin5Suffix = "";
+    setGlobalStatus("解析開始中...", false);
+
+    // WIN5対象レース取得: 未ロードならautofetch付きでロード、ロード済みなら
+    // postMessageで取得を依頼する (オッズ監視の解析開始と同時に実行)。
+    var win5Frame = document.getElementById("frame-win5");
+    if (win5Frame) {
+      if (!win5Frame.getAttribute("src")) {
+        win5Frame.setAttribute("src", "/win5/?autofetch=1");
+      } else {
+        try {
+          win5Frame.contentWindow.postMessage({ type: "jra-win5-fetch" }, window.location.origin);
+        } catch (e) { /* noop */ }
+      }
+    }
+
+    fetch("/ev/api/analyze_start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    }).then(function (res) {
+      if (res.status === 409) {
+        setGlobalStatus("解析実行中です", false);
+      }
+      pollGlobalStatus();
+    }).catch(function () {
+      pollGlobalStatus();
+    });
+  }
+
+  var globalStartBtn = document.getElementById("globalStart");
+  if (globalStartBtn) {
+    globalStartBtn.addEventListener("click", startAll);
+  }
+
   // SPEC-T73 §2.1-3: オッズ監視セルのクリック (子iframeからのpostMessage) を
   // 受けてレース詳細タブへ切り替え、そのレースURLで自動解析させる。
+  // SPEC-T74: WIN5取得完了の通知 (jra-win5-fetched) もここで type 分岐して扱う。
   var RACE_URL_PREFIX = "https://www.jra.go.jp/JRADB/accessD.html?CNAME=";
   window.addEventListener("message", function (event) {
     if (event.origin !== window.location.origin) { return; }
     var data = event.data;
-    if (!data || data.type !== "jra-open-race") { return; }
-    var url = data.url;
-    if (typeof url !== "string" || url.indexOf(RACE_URL_PREFIX) !== 0) { return; }
-    var iframe = document.getElementById("frame-race");
-    if (!iframe) { return; }
-    var nextSrc = "/race/?url=" + encodeURIComponent(url) + "&auto=1";
-    if (iframe.getAttribute("src") !== nextSrc) {
-      iframe.setAttribute("src", nextSrc);
+    if (!data || typeof data.type !== "string") { return; }
+    if (data.type === "jra-open-race") {
+      var url = data.url;
+      if (typeof url !== "string" || url.indexOf(RACE_URL_PREFIX) !== 0) { return; }
+      var iframe = document.getElementById("frame-race");
+      if (!iframe) { return; }
+      var nextSrc = "/race/?url=" + encodeURIComponent(url) + "&auto=1";
+      if (iframe.getAttribute("src") !== nextSrc) {
+        iframe.setAttribute("src", nextSrc);
+      }
+      activateTab("race");
+    } else if (data.type === "jra-win5-fetched") {
+      var msg = data.message != null ? data.message : (data.ok ? "取得完了" : "取得失敗");
+      globalWin5Suffix = " / WIN5: " + msg;
+      pollGlobalStatus();
     }
-    activateTab("race");
   });
 
   activateTab(readInitialTab());
+  pollGlobalStatus();
 })();
 </script>
 </body>

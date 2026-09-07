@@ -330,6 +330,14 @@ function render() {
     area.innerHTML = html + '</table></div>';
 }
 
+// SPEC-T74: タブシェル (iframe埋め込み) 内では、解析開始はタブバー左端の
+// 統合ボタン (#globalStart) に集約するため、この個別ボタンは非表示にする。
+// スタンドアロン (/ev/ を直接開いた場合) では従来どおり表示する。
+if (window.parent !== window) {
+    var startBtnEl = document.getElementById('startBtn');
+    if (startBtnEl) { startBtnEl.style.display = 'none'; }
+}
+
 updateNotifState();
 schedulePoll(500);
 </script>

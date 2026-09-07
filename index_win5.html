@@ -114,6 +114,8 @@ async function loadRaces() {
     const st = document.getElementById('loadStatus');
     st.textContent = '取得中...';
     document.getElementById('loadBtn').disabled = true;
+    let ok = false;
+    let notifyMessage = '';
     try {
         const res = await fetch('api/win5_races');
         const data = await res.json();
@@ -121,9 +123,12 @@ async function loadRaces() {
         grid.innerHTML = '';
         if (!data.success) {
             st.textContent = data.error || '取得失敗';
+            notifyMessage = data.error || '取得失敗';
             raceList = Array.from({length: 5}, (_, i) => ({idx: i, venue: '?', race_num: '?', time: '', url: ''}));
         } else {
             st.textContent = `対象日: ${data.date || ''}`;
+            notifyMessage = `対象日: ${data.date || ''}`;
+            ok = true;
             raceList = data.races;
         }
         raceList.forEach((r, i) => {
@@ -140,8 +145,18 @@ async function loadRaces() {
         document.getElementById('analyzeBtn').disabled = false;
     } catch (e) {
         st.textContent = 'エラー: ' + e.message;
+        notifyMessage = 'エラー: ' + e.message;
     } finally {
         document.getElementById('loadBtn').disabled = false;
+        // SPEC-T74: タブシェル (iframe埋め込み) からの取得依頼に対して、
+        // 成否と文言を親フレームへ通知する (統合解析ボタンの状態表示に使う)。
+        if (window.parent !== window) {
+            try {
+                window.parent.postMessage(
+                    { type: 'jra-win5-fetched', ok: ok, message: notifyMessage },
+                    window.location.origin);
+            } catch (e) { /* noop */ }
+        }
     }
 }
 
@@ -343,6 +358,21 @@ async function pollWatch() {
         }
     } catch (e) { /* サーバー停止中など */ }
 }
+
+// SPEC-T74: タブシェル (jra_suite.py) 統合解析ボタンからの起動用。
+// ?autofetch=1 での初回ロードと、同一オリジンからの {type:'jra-win5-fetch'}
+// postMessage を受けての取得を、単体ページの動作 (loadBtnクリック) と併存させる。
+if (new URLSearchParams(window.location.search).get('autofetch') === '1') {
+    loadRaces();
+}
+window.addEventListener('message', function (event) {
+    if (event.origin !== window.location.origin) { return; }
+    const data = event.data;
+    if (!data || data.type !== 'jra-win5-fetch') { return; }
+    const btn = document.getElementById('loadBtn');
+    if (btn && btn.disabled) { return; } // 取得中は無視
+    loadRaces();
+});
 </script>
 </body>
 </html>
