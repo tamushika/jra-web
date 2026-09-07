@@ -25,7 +25,7 @@ import sys
 import threading
 import webbrowser
 
-from flask import Flask, abort, render_template_string, request, send_from_directory
+from flask import Flask, abort, jsonify, render_template_string, request, send_from_directory
 from flask_cors import CORS
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
 
@@ -114,12 +114,14 @@ _RACE_GUARD_ATTR = "_jra_suite_static_guard_installed"
 
 
 def _install_race_static_guard():
-    """index.app に静的配信ガードの before_request を1回だけ登録する。
-    create_app() が複数回呼ばれても (index.app はモジュール単位のシングルトン
-    なので) フックが重複登録されないようガードする。"""
+    """index.app に静的配信ガード・オッズ監視キャッシュ短絡の before_request を
+    1回だけ登録する。create_app() が複数回呼ばれても (index.app はモジュール
+    単位のシングルトンなので) フックが重複登録されないようガードする
+    (SPEC-T73b §2.2.4: 既存の1回限りガードにキャッシュ短絡フックも統合する)。"""
     if getattr(index.app, _RACE_GUARD_ATTR, False):
         return
     index.app.before_request(_reject_denied_race_static_paths)
+    index.app.before_request(_short_circuit_race_scrape_with_cache)
     setattr(index.app, _RACE_GUARD_ATTR, True)
 
 
@@ -129,6 +131,28 @@ def _reject_denied_race_static_paths():
     # そのまま _is_denied_static_path に渡せる。
     if _is_denied_static_path(request.path):
         abort(404)
+
+
+# ─── /race/api/scrape のオッズ監視キャッシュ短絡 (SPEC-T73b §2.2) ──────────
+def _short_circuit_race_scrape_with_cache():
+    """オッズ監視 (jra_ev.analyze_one) が既に同じURLを解析済みなら、
+    jra_ev.RACE_ANALYSIS_CACHE の結果を即返して index.app の scrape() (実URL
+    再取得) を呼ばせない。mode="詳細" または force 指定時、キャッシュ未ヒット
+    時は None を返して素通しする (before_request はNoneならviewが呼ばれる)。"""
+    if request.path != "/api/scrape" or request.method != "POST":
+        return None
+    data = request.get_json(silent=True) or {}
+    if data.get("mode") == "詳細" or data.get("force"):
+        return None
+    url = data.get("url")
+    if not url:
+        return None
+    cached = jra_ev.get_cached_analysis(url)
+    if cached is None:
+        return None
+    result = cached["result"]
+    return jsonify({**result, "cached_from_monitor": cached.get("cached_at"),
+                    "monitor_stage": cached.get("stage")})
 
 
 # ─── バックグラウンドループの一元管理 (SPEC-T38 §3.3) ──────────────────────

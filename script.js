@@ -1,3 +1,7 @@
+// SPEC-T73b §2.3: 統合版タブシェル (/race/ 配下) に埋め込まれているかどうか。
+// 本番Web (`/` 直下、Vercel) では常に false — DOM・挙動は変えない。
+const IS_EMBEDDED = window.location.pathname.startsWith('/race/');
+
 let globalHorsesData = [];
 let raceCache = {}; // ◎がいるレースのハッシュマップ
 let apiCache = {}; // { URL: { mode: "詳細", data: {...} } }
@@ -99,22 +103,36 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('getUrlBtn').addEventListener('click', () => autoFetchUrl(true));
 
-    // SPEC-T73 §2.3-2: ?url=...&auto=1 で開かれた場合 (オッズ監視からの遷移)、
-    // urlInput にそのURLを設定し、auto=1なら自動で解析を実行する。
+    // SPEC-T73b §2.3-2: 埋め込みモード (統合版タブシェル /race/ 配下) では
+    // URL入力行 (最初の.input-group) を隠し、起動時の最新URL自動取得も呼ばない。
+    if (IS_EMBEDDED) {
+        const firstInputGroup = document.querySelector('.controls .input-group');
+        if (firstInputGroup) firstInputGroup.style.display = 'none';
+    }
+
+    // SPEC-T73 §2.3-2 / T73b §2.3-2: ?url=...&auto=1 で開かれた場合 (オッズ監視
+    // からの遷移)、urlInput にそのURLを設定し解析を自動実行する。埋め込みモード
+    // では auto=1 の有無に関わらず常に自動実行する (モード選択UIが無いため)。
     let queryRaceUrl = null;
     try {
         const qs = new URLSearchParams(window.location.search);
         queryRaceUrl = qs.get('url');
         if (queryRaceUrl) {
             document.getElementById('urlInput').value = queryRaceUrl;
-            if (qs.get('auto') === '1') {
+            if (IS_EMBEDDED || qs.get('auto') === '1') {
                 startScraping();
             }
         }
     } catch (e) { /* noop */ }
 
-    // Auto-fetch on page load (?urlで既に指定されている場合は上書きしない)
-    if (!queryRaceUrl) {
+    if (IS_EMBEDDED) {
+        // SPEC-T73b §2.3-2: ?url= が無ければオッズ監視の解析状況からレース
+        // 一覧を描画する (最新URL自動取得の代わり)。
+        if (!queryRaceUrl) {
+            renderEmbeddedRaceList();
+        }
+    } else if (!queryRaceUrl) {
+        // Auto-fetch on page load (?urlで既に指定されている場合は上書きしない)
         autoFetchUrl(false);
     }
 
@@ -141,10 +159,66 @@ document.addEventListener('DOMContentLoaded', () => {
     if(condCheck) condCheck.addEventListener('change', onToggle);
 });
 
+// SPEC-T73b §2.3-2: 埋め込みモードで ?url= が無いとき、オッズ監視の解析状況
+// (../ev/api/state) から当日のレース一覧を #raceInfo の直下に描画する。
+async function renderEmbeddedRaceList() {
+    const raceInfoEl = document.getElementById('raceInfo');
+    raceInfoEl.textContent = 'オッズ監視でレースを選択してください';
+    const old = document.getElementById('embeddedRaceList');
+    if (old) old.remove();
+
+    let races = [];
+    try {
+        const response = await fetch('../ev/api/state');
+        const state = await response.json();
+        races = (state && state.races) || [];
+    } catch (e) {
+        console.error(e);
+    }
+
+    const container = document.createElement('div');
+    container.id = 'embeddedRaceList';
+
+    const withUrl = races.filter(r => r && r.url);
+    if (races.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'race-label';
+        empty.textContent = 'オッズ監視で「解析開始」を押すと全レースが解析され、ここに一覧が出ます';
+        container.appendChild(empty);
+    } else {
+        const byVenue = {};
+        withUrl.forEach(r => {
+            const venue = r.venue || '';
+            (byVenue[venue] = byVenue[venue] || []).push(r);
+        });
+        Object.keys(byVenue).sort().forEach(venue => {
+            const list = byVenue[venue].slice().sort((a, b) =>
+                (a.start_time || '99:99').localeCompare(b.start_time || '99:99'));
+            const heading = document.createElement('div');
+            heading.textContent = venue;
+            heading.style.fontWeight = 'bold';
+            heading.style.marginTop = '8px';
+            container.appendChild(heading);
+            list.forEach(r => {
+                const link = document.createElement('a');
+                link.href = '?url=' + encodeURIComponent(r.url) + '&auto=1';
+                link.textContent = r.race_info || `${r.race_num || ''}R ${r.start_time || ''}`;
+                link.style.display = 'block';
+                link.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    location.href = '?url=' + encodeURIComponent(r.url) + '&auto=1';
+                });
+                container.appendChild(link);
+            });
+        });
+    }
+    raceInfoEl.insertAdjacentElement('afterend', container);
+}
+
 async function startScraping() {
     const url = document.getElementById('urlInput').value.trim();
-    const mode = document.getElementById('modeSelect').value;
-    
+    const mode = IS_EMBEDDED ? '簡易' : document.getElementById('modeSelect').value;
+
     if(!url) {
         alert("URLを入力してください");
         return;
@@ -179,10 +253,22 @@ async function startScraping() {
 }
 
 function applyScrapeData(data, url, mode) {
-    document.getElementById('raceInfo').textContent = `${data.race_info} (${mode})` +
+    const raceInfoEl = document.getElementById('raceInfo');
+    raceInfoEl.textContent = `${data.race_info} (${mode})` +
         (data.analysis_message ? ` — ${data.analysis_message}` : '') +
         (data.logging_warning ? ` ⚠ ログ保存失敗: ${data.logging_warning}` : '');
-    
+    // SPEC-T73b §2.3-4: オッズ監視キャッシュから返った場合、取得時刻・ステージを
+    // 小さく併記する (stage が無ければ初回解析)。
+    if (data.cached_from_monitor) {
+        const stageLabel = (data.monitor_stage === null || data.monitor_stage === undefined)
+            ? '初回解析' : `${data.monitor_stage}分前ステージ`;
+        const small = document.createElement('small');
+        small.style.marginLeft = '6px';
+        small.style.opacity = '0.75';
+        small.textContent = `(オッズ監視 ${data.cached_from_monitor} 取得・${stageLabel})`;
+        raceInfoEl.appendChild(small);
+    }
+
     let babaHtml = data.baba_info || "馬場情報：未取得";
     if (data.course_record) {
         babaHtml += `<br><span style="color:#e0e0e0; font-size:12px; font-weight:normal;">${data.course_record}</span>`;

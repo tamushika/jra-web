@@ -84,6 +84,14 @@ bp = Blueprint("ev", __name__)
 _LOCK = threading.RLock()
 _ALERT_SEQ = itertools.count(1)
 
+# SPEC-T73b §2.1: analyze_one() が取得した analyze_race_url() の結果を
+# プロセス内キャッシュしておき、レース詳細タブ (/race/api/scrape) が
+# 追加のネットワークアクセス無しで即座に返せるようにする。
+# {url: {"result": <analyze_race_url の返却dict>, "cached_at": "HH:MM:SS",
+#        "stage": stage or None, "race_date": ...}}
+RACE_ANALYSIS_CACHE = {}
+_RACE_ANALYSIS_CACHE_LOCK = threading.Lock()
+
 
 def _load_ev_threshold_from_env():
     """SPEC-T71 §1.1: 環境変数 EV_THRESHOLD を起動時のピック閾値初期値にする。
@@ -363,6 +371,13 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None,
         race_no = result.get("race_num") or _parse_race_num(result.get("race_info")) or "?"
         print(f"[INFO] 障害レースのため監視対象外: {venue or '不明'}{race_no}R")
         return None
+    with _RACE_ANALYSIS_CACHE_LOCK:
+        RACE_ANALYSIS_CACHE[url] = {
+            "result": result,
+            "cached_at": datetime.now().strftime("%H:%M:%S"),
+            "stage": stage,
+            "race_date": result.get("race_date"),
+        }
     race_type = result.get("race_type")
     dist_val = result.get("dist_val")
     cfg5 = scoring.load_score_weights(API_DIR, "win5_weights.json")
@@ -508,6 +523,14 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None,
         "race_date": result.get("race_date") or (
             (base_date or observed_at).strftime("%Y%m%d")),
     }
+
+
+def get_cached_analysis(url):
+    """SPEC-T73b §2.1: RACE_ANALYSIS_CACHE から url に対応するキャッシュ
+    エントリ ({"result", "cached_at", "stage", "race_date"}) を返す。無ければNone。"""
+    with _RACE_ANALYSIS_CACHE_LOCK:
+        entry = RACE_ANALYSIS_CACHE.get(url)
+        return dict(entry) if entry is not None else None
 
 
 def _data_version():
@@ -1143,6 +1166,8 @@ def api_analyze_start():
         STATE["error"] = ""
         STATE["warning"] = ""
         STATE["races"] = {}
+        with _RACE_ANALYSIS_CACHE_LOCK:
+            RACE_ANALYSIS_CACHE.clear()
         STATE["alerts"] = []
         STATE["started_at"] = datetime.now().strftime("%H:%M:%S")
     threading.Thread(target=worker_analyze_all,
@@ -1191,6 +1216,8 @@ def _auto_start():
         STATE["error"] = ""
         STATE["warning"] = ""
         STATE["races"] = {}
+        with _RACE_ANALYSIS_CACHE_LOCK:
+            RACE_ANALYSIS_CACHE.clear()
         STATE["alerts"] = []
         STATE["started_at"] = datetime.now().strftime("%H:%M:%S")
     threading.Thread(target=worker_analyze_all, args=(STATE["params"],), daemon=True).start()
