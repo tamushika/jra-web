@@ -468,11 +468,17 @@ def eval_wet_aptitude(h, race_context, cfg):
     cond = str(race_context.get("baba_cond", ""))[:1]
     if cond not in ("稍", "重", "不"):
         return 0.0, []
+    same_surface_only = bool(params.get("same_surface_only", False))
+    cur_surface = race_context.get("type") if same_surface_only else None
 
     wet_ranks, dry_ranks = [], []
     for run in (h.get("hist") or [])[:4]:
         if not run:
             continue
+        if same_surface_only:
+            info = _run_course_info(run)
+            if info is None or info[1] != cur_surface:
+                continue
         c = ""
         for ch in str(run.get("condition", "")):
             if ch in "良稍重不":
@@ -495,8 +501,9 @@ def eval_wet_aptitude(h, race_context, cfg):
         label = "道悪の方が悪い"
     else:
         return 0.0, []
+    surface_note = "(同surfaceのみ)" if same_surface_only else ""
     detail = (f"道悪適性: 道悪ベスト{min(wet_ranks)}着 vs 良ベスト{min(dry_ranks)}着 "
-              f"({label}) 当日{cond} → {pts:+.1f}")
+              f"({label}) 当日{cond} → {pts:+.1f}{surface_note}")
     return pts, [detail]
 
 
