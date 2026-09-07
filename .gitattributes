@@ -1,0 +1,7 @@
+# Hash-verified artifacts must keep their exact bytes across checkouts
+# (T39 ledger checkpoint = byte prefix sha256; SPEC sha256 registered in the ledger).
+# Without this, core.autocrlf=true rewrote them to CRLF on rebase/checkout (2026-09-06 incident).
+eval/experiments.jsonl -text
+eval/experiments.jsonl.verify-state.json -text
+docs/codex/*.md text eol=lf
+docs/codex/SPEC-T70-virtual-betting-harness.md text eol=crlf
