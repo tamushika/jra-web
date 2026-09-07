@@ -25,8 +25,9 @@ import sys
 import threading
 import webbrowser
 
-from flask import Flask, abort, render_template_string, send_from_directory
+from flask import Flask, abort, render_template_string, request, send_from_directory
 from flask_cors import CORS
+from werkzeug.middleware.dispatcher import DispatcherMiddleware
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 API_DIR = os.path.join(BASE_DIR, "api")
@@ -38,6 +39,12 @@ import jra_ev  # noqa: E402
 import jra_win5  # noqa: E402
 import jra_perf  # noqa: E402
 
+# jra_win5 が `from index import analyze_race_url, ...` で既に api/index.py を
+# import 済み (sys.modules["index"]) のため、ここでの `import index` は
+# 再実行されず同じモジュールオブジェクト (= 同じ index.app) を再利用する
+# (SPEC-T73 §2.1: 二重importで別モジュールオブジェクトになることを避ける)。
+import index  # noqa: E402
+
 PORT = int(os.environ.get("JRA_SUITE_PORT", "5005"))
 
 _SECTIONS = (
@@ -46,6 +53,8 @@ _SECTIONS = (
     {"prefix": "win5", "title": "WIN5予想", "desc": "スコアリング + 荒れ度配分 (旧 jra_win5.py, port 5002)",
      "loop": "win5-watch-loop"},
     {"prefix": "perf", "title": "実績ダッシュボード", "desc": "予測実績の集計表示 (旧 jra_perf.py, port 5004)",
+     "loop": None},
+    {"prefix": "race", "title": "レース詳細", "desc": "個別レース解析 (本番Webと同じ画面)",
      "loop": None},
 )
 
@@ -69,7 +78,12 @@ _LOOP_THREAD_NAMES = {"ev-scheduler-loop": _EV_LOOP_THREAD_NAME,
 def _is_denied_static_path(rel_path):
     norm = rel_path.replace("\\", "/")
     parts = [p for p in norm.split("/") if p not in ("", ".")]
-    if not parts or ".." in parts:
+    if not parts:
+        # ルート ("" / "/") は静的ファイル配信ではない (index.app の "/" 等) ので
+        # 拒否しない。SPEC-T73 §2.1: この関数を index.app の before_request でも
+        # 使うため、既存の prefix 静的配信 (filename は常に非空) の挙動は変えない。
+        return False
+    if ".." in parts:
         return True
     # SPEC §3.2の .env / *.db / backups/ に加え、レビューで .git / *.sqlite* /
     # *.log も拒否 (リポジトリ直下配信のためgit内部情報・database.sqlite・
@@ -89,6 +103,32 @@ def _serve_prefixed_static(filename):
     if _is_denied_static_path(filename):
         abort(404)
     return send_from_directory(BASE_DIR, filename)
+
+
+# ─── /race/ マウント (SPEC-T73 §2.1) ────────────────────────────────────────
+# api/index.py の Flask アプリ (index.app) をそのまま DispatcherMiddleware で
+# /race にマウントする。index.app は static_folder='../' でリポジトリ直下を
+# 配信するため、_is_denied_static_path と同等の拒否を before_request で効かせる
+# (index.py 自体は変更しない = フックを外側から登録するだけ)。
+_RACE_GUARD_ATTR = "_jra_suite_static_guard_installed"
+
+
+def _install_race_static_guard():
+    """index.app に静的配信ガードの before_request を1回だけ登録する。
+    create_app() が複数回呼ばれても (index.app はモジュール単位のシングルトン
+    なので) フックが重複登録されないようガードする。"""
+    if getattr(index.app, _RACE_GUARD_ATTR, False):
+        return
+    index.app.before_request(_reject_denied_race_static_paths)
+    setattr(index.app, _RACE_GUARD_ATTR, True)
+
+
+def _reject_denied_race_static_paths():
+    # DispatcherMiddlewareでマウントされた index.app 内では request.path は
+    # "/race" を含まない (SCRIPT_NAME="/race", PATH_INFO=残り) ので、
+    # そのまま _is_denied_static_path に渡せる。
+    if _is_denied_static_path(request.path):
+        abort(404)
 
 
 # ─── バックグラウンドループの一元管理 (SPEC-T38 §3.3) ──────────────────────
@@ -229,6 +269,24 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
     activateTab((window.location.hash || "").replace(/^#/, ""));
   });
 
+  // SPEC-T73 §2.1-3: オッズ監視セルのクリック (子iframeからのpostMessage) を
+  // 受けてレース詳細タブへ切り替え、そのレースURLで自動解析させる。
+  var RACE_URL_PREFIX = "https://www.jra.go.jp/JRADB/accessD.html?CNAME=";
+  window.addEventListener("message", function (event) {
+    if (event.origin !== window.location.origin) { return; }
+    var data = event.data;
+    if (!data || data.type !== "jra-open-race") { return; }
+    var url = data.url;
+    if (typeof url !== "string" || url.indexOf(RACE_URL_PREFIX) !== 0) { return; }
+    var iframe = document.getElementById("frame-race");
+    if (!iframe) { return; }
+    var nextSrc = "/race/?url=" + encodeURIComponent(url) + "&auto=1";
+    if (iframe.getAttribute("src") !== nextSrc) {
+      iframe.setAttribute("src", nextSrc);
+    }
+    activateTab("race");
+  });
+
   activateTab(readInitialTab());
 })();
 </script>
@@ -266,6 +324,14 @@ def create_app():
         app.add_url_rule(f"/{prefix}/<path:filename>",
                          endpoint=f"{prefix}_static",
                          view_func=_serve_prefixed_static)
+
+    # /race/ : api/index.py の Flask アプリ (本番Webと同じ画面) を丸ごとマウント
+    # (SPEC-T73 §2.1)。jra_ev/jra_win5/jra_perf の Blueprint 化とは異なり、
+    # index.py 自体は変更禁止のため DispatcherMiddleware でサブアプリとして
+    # 接続する。/race (末尾スラッシュ無し) は werkzeug の既定動作で index.app の
+    # "/" ルールへの 308 リダイレクトになる (SPEC §2.3-1 実測確認済み)。
+    _install_race_static_guard()
+    app.wsgi_app = DispatcherMiddleware(app.wsgi_app, {"/race": index.app.wsgi_app})
 
     @app.route("/")
     def portal():

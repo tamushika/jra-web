@@ -1119,7 +1119,7 @@ def _slim_state():
         races.append({k: rec.get(k) for k in
                       ("venue", "race_num", "race_info", "start_time", "horses",
                        "n_picked", "wide_picks", "checked15", "checked5", "finished", "last_update",
-                       "odds_ok", "day_label")}
+                       "odds_ok", "day_label", "url", "ml_coverage")}
                      | {"rid": rid})
     races.sort(key=lambda r: (r["start_time"] or "99:99", r["venue"]))
     return {"status": STATE["status"], "error": STATE["error"],

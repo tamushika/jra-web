@@ -76,7 +76,7 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.textContent = "取得中...";
         try {
             const day = new Date().getDay();
-            const response = await fetch(`/api/latest_url?day=${day}`);
+            const response = await fetch(`api/latest_url?day=${day}`);
             const data = await response.json();
             if (data.error) throw new Error(data.error);
             if (data.url) {
@@ -98,9 +98,25 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     document.getElementById('getUrlBtn').addEventListener('click', () => autoFetchUrl(true));
-    
-    // Auto-fetch on page load
-    autoFetchUrl(false);
+
+    // SPEC-T73 §2.3-2: ?url=...&auto=1 で開かれた場合 (オッズ監視からの遷移)、
+    // urlInput にそのURLを設定し、auto=1なら自動で解析を実行する。
+    let queryRaceUrl = null;
+    try {
+        const qs = new URLSearchParams(window.location.search);
+        queryRaceUrl = qs.get('url');
+        if (queryRaceUrl) {
+            document.getElementById('urlInput').value = queryRaceUrl;
+            if (qs.get('auto') === '1') {
+                startScraping();
+            }
+        }
+    } catch (e) { /* noop */ }
+
+    // Auto-fetch on page load (?urlで既に指定されている場合は上書きしない)
+    if (!queryRaceUrl) {
+        autoFetchUrl(false);
+    }
 
     document.getElementById('historyHorseSelect').addEventListener('change', updateHistoryTable);
     document.getElementById('runAiBtn').addEventListener('click', runAiPrediction);
@@ -142,7 +158,7 @@ async function startScraping() {
 
     showLoading("JRAデータを解析中... (APIリクエスト中)");
     try {
-        const response = await fetch('/api/scrape', {
+        const response = await fetch('api/scrape', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ url, mode })
@@ -277,6 +293,68 @@ function applyScrapeData(data, url, mode) {
 
     // Fetch Wind Data
     fetchWindData(data.venue);
+
+    // SPEC-T73 §2.4: オッズ監視の評価 (統合版のみ。本番Webでは/ev/が存在しないため無視される)
+    renderEvSummary(data);
+}
+
+async function renderEvSummary(data) {
+    let evState;
+    try {
+        const res = await fetch('../ev/api/state');
+        if (!res.ok) throw new Error('ev/api/state not available');
+        evState = await res.json();
+    } catch (e) {
+        return; // 本番Web/未起動時などは静かにスキップ
+    }
+
+    let box = document.getElementById('evSummary');
+    const races = (evState && evState.races) || [];
+    const race = races.find(r => r.venue === data.venue &&
+        Number(r.race_num) === Number(data.race_num));
+
+    if (!race) {
+        if (box) box.remove();
+        return;
+    }
+    if (!box) {
+        box = document.createElement('div');
+        box.id = 'evSummary';
+        box.style.margin = '6px 0 10px';
+        box.style.fontSize = '13px';
+        const raceInfoEl = document.getElementById('raceInfo');
+        raceInfoEl.insertAdjacentElement('afterend', box);
+    }
+
+    const coverage = race.ml_coverage;
+    if (coverage && coverage.ok === false) {
+        box.innerHTML = `<div style="font-weight:bold;">オッズ監視の評価</div>` +
+            `<div>MLスコア付き馬が不足のためEV対象外 (${coverage.scored}/${coverage.total}頭)</div>`;
+        return;
+    }
+
+    const horses = (race.horses || []).slice()
+        .sort((a, b) => (b.win_prob ?? -1) - (a.win_prob ?? -1));
+    const rows = horses.map(h => `<tr>
+        <td>${h.num ?? ''}</td>
+        <td>${h.name ?? ''}</td>
+        <td>${h.odds ?? ''}</td>
+        <td>${h.win_prob != null ? (h.win_prob * 100).toFixed(1) + '%' : ''}</td>
+        <td>${h.ev != null ? h.ev : ''}</td>
+        <td>${h.picked ? '★' : ''}</td>
+        <td>${h.place_prob != null ? (h.place_prob * 100).toFixed(1) + '%' : ''}</td>
+    </tr>`).join('');
+
+    box.innerHTML = `<div style="font-weight:bold;">オッズ監視の評価</div>
+        <table style="border-collapse:collapse;width:100%;">
+            <thead><tr>
+                <th style="text-align:left;">馬番</th><th style="text-align:left;">馬名</th>
+                <th style="text-align:left;">単勝</th><th style="text-align:left;">CL勝率</th>
+                <th style="text-align:left;">EV</th><th style="text-align:left;">EV対象</th>
+                <th style="text-align:left;">複勝率β</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+        </table>`;
 }
 
 function renderBookData(data) {
@@ -731,7 +809,7 @@ async function runAiPrediction() {
     
     try {
         const pwd = document.getElementById('aiPassword') ? document.getElementById('aiPassword').value : "";
-        const res = await fetch('/api/ai_predict', {
+        const res = await fetch('api/ai_predict', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ prompt: prompt, password: pwd })
@@ -762,7 +840,7 @@ function hideLoading() {
 function _buildPastDataUrl() {
     const matchClass = document.getElementById('matchClassCheckbox').checked;
     const matchCond  = document.getElementById('matchConditionCheckbox').checked;
-    let url = `/api/past_data?place=${encodeURIComponent(currentRaceContext.venue)}&track_type=${encodeURIComponent(currentRaceContext.track_type)}&distance=${currentRaceContext.distance}`;
+    let url = `api/past_data?place=${encodeURIComponent(currentRaceContext.venue)}&track_type=${encodeURIComponent(currentRaceContext.track_type)}&distance=${currentRaceContext.distance}`;
     if (matchCond && currentRaceContext.condition)  url += `&condition=${encodeURIComponent(currentRaceContext.condition)}`;
     if (matchClass && currentRaceContext.race_class) url += `&race_class=${encodeURIComponent(currentRaceContext.race_class)}`;
     return url;
@@ -911,7 +989,7 @@ async function fetchTrackBias(venueOverride) {
             return;
         }
 
-        const response = await fetch(`/api/track_bias?place=${encodeURIComponent(place)}`);
+        const response = await fetch(`api/track_bias?place=${encodeURIComponent(place)}`);
         const data = await response.json();
         trackBiasCache[place] = data;
         renderTrackBias(data);

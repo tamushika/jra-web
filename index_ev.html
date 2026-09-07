@@ -44,6 +44,9 @@
                             outline: 1px solid #f5c842; }
         .ev-cell.finished { opacity: 0.4; }
         .ev-cell-head { font-size: 11px; color: var(--text-muted); }
+        .ev-cell-head.ev-clickable { cursor: pointer; }
+        .ev-cell-head.ev-clickable:hover { color: var(--text-color, #eee); text-decoration: underline; }
+        .ev-cell-venue { margin-right: 4px; }
         .ev-cell-horse { margin-top: 2px; line-height: 1.35; }
         .ev-cell-sub { font-size: 11px; color: var(--text-muted); }
         .ev-cell-horse b { color: var(--primary); }
@@ -247,6 +250,21 @@ function horseLine(h, picked) {
     </div>`;
 }
 
+// SPEC-T73 §2.2: セルのヘッダー (発走時刻部分) クリックでレース詳細タブへ遷移する。
+// cellHtml() は文字列テンプレートで組み立てるため、埋め込むのは rid のみにし、
+// クリック時に racesByRid から実オブジェクト (url を含む) を引く。
+let racesByRid = {};
+
+function openRace(rid) {
+    const r = racesByRid[rid];
+    if (!r || !r.url) return; // urlが無い (旧stateの互換) 場合は何もしない
+    if (window.parent !== window) {
+        window.parent.postMessage({ type: 'jra-open-race', url: r.url }, window.location.origin);
+    } else {
+        window.open('../race/?url=' + encodeURIComponent(r.url) + '&auto=1', '_blank');
+    }
+}
+
 function cellHtml(r) {
     const picks = r.horses.filter(h => h.picked);
     let body;
@@ -266,8 +284,11 @@ function cellHtml(r) {
     const marks = (r.checked15 ? ' ✓15' : '') + (r.checked5 ? ' ✓5' : '');
     const oddsBadge = r.odds_ok === false
         ? ' <span class="ev-badge" style="background:#f57c00;color:#fff;">オッズ未</span>' : '';
+    const clickable = r.url ? ' ev-clickable' : '';
     return `<div class="ev-cell ${picks.length ? 'has-pick' : ''} ${r.finished ? 'finished' : ''}">
-        <div class="ev-cell-head">${esc(r.start_time)}<span class="ev-meta">${marks}</span>${oddsBadge}</div>
+        <div class="ev-cell-head${clickable}" onclick="openRace('${esc(r.rid)}')" title="レース詳細を開く">
+            <span class="ev-cell-venue ev-meta">${esc(r.venue)}${esc(r.race_num)}R</span>${esc(r.start_time)}<span class="ev-meta">${marks}</span>${oddsBadge}
+        </div>
         ${body}${(r.wide_picks || []).map(w =>
             `<div class="ev-cell-sub ev-wide">W ${esc(w.nums[0])}-${esc(w.nums[1])} <span class="ev-meta">×${w.overlay}</span></div>`).join('')}</div>`;
 }
@@ -281,6 +302,8 @@ function render() {
         races.length ? `期待値馬のいるレース: <b>${nPick}</b> / ${races.length}レース${esc(dayLabel)}
             <span class="ev-meta">金枠=期待値馬あり / 薄色=EV最上位馬 (2026-07-13 ワイド候補表示は再検証により停止中)</span>` : '';
     const area = document.getElementById('raceArea');
+    racesByRid = {};
+    races.forEach(r => { racesByRid[r.rid] = r; });
     if (!races.length) { area.innerHTML = ''; return; }
 
     // 会場ごとの列 (初戦の発走が早い順)、行はレース番号で揃える
