@@ -351,6 +351,8 @@ button {
 .tb-verdict.outer  { background: rgba(244,63,94,0.2);   color: #fda4af; }
 .tb-verdict.flat         { background: rgba(255,255,255,0.08); color: var(--text-muted); }
 .tb-verdict.nodata       { background: rgba(255,255,255,0.04); color: var(--text-muted); }
+.tb-verdict.strong       { background: rgba(255,51,102,0.2);   color: #ff3366; }
+.tb-verdict.medium       { background: rgba(251,146,60,0.2);   color: #fb923c; }
 .tb-verdict.slightly_fast { background: rgba(16,185,129,0.15);  color: #86efac; }
 .tb-verdict.slightly_slow { background: rgba(244,63,94,0.15);   color: #fca5a5; }
 .tb-speed-row {

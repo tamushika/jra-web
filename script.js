@@ -1151,6 +1151,20 @@ function renderTrackBias(data) {
         const kyakuCls = ev.kyaku.includes('前') ? 'front' : ev.kyaku.includes('差') ? 'sashi' : 'flat';
         const wakuCls  = ev.waku.includes('イン') ? 'inner' : ev.waku.includes('外') ? 'outer' : 'flat';
 
+        // 枠バイアス強度バッジHTML (T75)
+        let wakuBiasHtml = '';
+        const wb = (data.waku_bias || {})[key];
+        if (wb) {
+            const wbCls = wb.level === '強' ? 'strong' : wb.level === '中' ? 'medium' : 'flat';
+            const dirLevelText = wb.direction === 'なし'
+                ? (wb.level === 'データ不足' ? 'データ不足' : '弱 (フラット)')
+                : `${wb.direction}${wb.level}`;
+            wakuBiasHtml = `<div class="tb-waku-bias">
+                <span class="tb-verdict ${wbCls}">枠バイアス: ${dirLevelText}</span>
+                <span class="tb-speed-diff">内 ${wb.in.index}倍 / 外 ${wb.out.index}倍 (3着内/期待, ${wb.races}R)</span>
+            </div>`;
+        }
+
         return `<div class="tb-panel">
             <div class="tb-panel-title" style="color:${titleColor}">${label}</div>
             ${speedHtml}
@@ -1182,6 +1196,7 @@ function renderTrackBias(data) {
                 </div>
                 <div>→ <span class="tb-verdict ${wakuCls}">${ev.waku}</span></div>
             </div>
+            ${wakuBiasHtml}
         </div>`;
     }).join('');
 

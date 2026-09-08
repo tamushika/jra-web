@@ -488,6 +488,117 @@ def get_past_data(base_dir, place, track_type, distance, condition=None, race_cl
         "results": res
     }
 
+def _waku_bias_empty(races=0):
+    """データ不足時のsurface別デフォルト値。"""
+    empty_grp = {"n": 0, "top3": 0, "expected": 0.0, "index": 0.0}
+    return {
+        "level": "データ不足", "direction": "なし", "z": 0.0, "races": races,
+        "in": dict(empty_grp), "mid": dict(empty_grp), "out": dict(empty_grp),
+        "label": f"枠バイアス: データ不足 ({races}R)",
+    }
+
+def _compute_waku_bias_one(rows, track_type):
+    """1surface分の内外バイアス強度を算出する。"""
+    def _to_float(v):
+        try: return float(v)
+        except (TypeError, ValueError): return None
+
+    raw = {
+        "in":  {"n": 0, "top3": 0, "expected": 0.0},
+        "mid": {"n": 0, "top3": 0, "expected": 0.0},
+        "out": {"n": 0, "top3": 0, "expected": 0.0},
+    }
+    race_keys = set()
+
+    for r in rows:
+        if r.get('track_type') != track_type:
+            continue
+        race_name = r.get('race_name') or ''
+        if '障' in str(race_name):
+            continue
+        rank = _to_float(r.get('rank'))
+        if rank is None:
+            continue
+        try:
+            t_horses = int(r.get('total_horses'))
+        except (TypeError, ValueError):
+            continue
+        if t_horses <= 0:
+            continue
+        waku = calculate_waku(r.get('horse_number'), t_horses)
+        if not waku:
+            continue
+        grp = "in" if waku <= 3 else ("mid" if waku <= 5 else "out")
+
+        race_keys.add((r.get('kaisai'), race_name, r.get('distance')))
+        raw[grp]["n"] += 1
+        raw[grp]["expected"] += 3.0 / t_horses
+        if rank <= 3:
+            raw[grp]["top3"] += 1
+
+    races = len(race_keys)
+    n_in, n_out = raw["in"]["n"], raw["out"]["n"]
+    exp_in, exp_out = raw["in"]["expected"], raw["out"]["expected"]
+    obs_in, obs_out = raw["in"]["top3"], raw["out"]["top3"]
+
+    def _fmt(g):
+        exp = g["expected"]
+        return {
+            "n": g["n"], "top3": g["top3"],
+            "expected": round(exp, 2),
+            "index": round(g["top3"] / exp, 2) if exp > 0 else 0.0,
+        }
+
+    groups_out = {k: _fmt(v) for k, v in raw.items()}
+
+    if races < 3 or n_in < 10 or n_out < 10:
+        return {
+            "level": "データ不足", "direction": "なし", "z": 0.0, "races": races,
+            "in": groups_out["in"], "mid": groups_out["mid"], "out": groups_out["out"],
+            "label": f"枠バイアス: データ不足 ({races}R)",
+        }
+
+    z_in  = (obs_in  - exp_in)  / math.sqrt(exp_in)  if exp_in  > 0 else 0.0
+    z_out = (obs_out - exp_out) / math.sqrt(exp_out) if exp_out > 0 else 0.0
+    bias_z = (z_in - z_out) / math.sqrt(2)
+    abs_z = abs(bias_z)
+
+    if abs_z < 1.0:
+        level, direction = "弱", "なし"
+    elif abs_z < 2.0:
+        level = "中"
+        direction = "内" if bias_z > 0 else "外"
+    else:
+        level = "強"
+        direction = "内" if bias_z > 0 else "外"
+
+    in_idx, out_idx = groups_out["in"]["index"], groups_out["out"]["index"]
+    if direction == "なし":
+        label = f"枠バイアス: 弱 (フラット) (内 {in_idx}倍 / 外 {out_idx}倍, {races}R)"
+    else:
+        label = f"{direction}枠バイアス {level} (内 {in_idx}倍 / 外 {out_idx}倍, {races}R)"
+
+    return {
+        "level": level, "direction": direction, "z": round(bias_z, 2), "races": races,
+        "in": groups_out["in"], "mid": groups_out["mid"], "out": groups_out["out"],
+        "label": label,
+    }
+
+def compute_waku_bias(rows):
+    """
+    直近開催日の全出走馬 (dictのlist) から surface (芝/ダート) ごとの
+    内外枠バイアス強度 (弱/中/強) を算出する純関数。
+    rows は rank/track_type/horse_number/total_horses/race_name/kaisai/distance を含むこと。
+    """
+    result = {}
+    for tt in ("芝", "ダート"):
+        try:
+            result[tt] = _compute_waku_bias_one(rows, tt)
+        except Exception as e:
+            print(f"compute_waku_bias error ({tt}): {e}")
+            result[tt] = _waku_bias_empty()
+    return result
+
 def get_track_bias_data(base_dir, place):
     conn = get_db_connection(base_dir)
     if not conn:
@@ -678,6 +789,7 @@ def get_track_bias_data(base_dir, place):
             "evaluations": evaluations,
             "track_speed": track_speed,
             "race_details": race_details,
+            "waku_bias": compute_waku_bias(rows),
         }
     except Exception as e:
         print(f"Track bias error: {e}")
