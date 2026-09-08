@@ -661,6 +661,217 @@ def _compute_waku_bias_one(rows, track_type, latest_date=None, half_life_days=7.
         "days": days_list, "window_days": window_days, "half_life_days": half_life_days,
     }
 
+def _extract_race_num(kaisai_str):
+    """kaisai から 'Nレース' の番号を抽出。取得できなければ None"""
+    m = re.search(r'(\d+)レース', str(kaisai_str or ''))
+    return int(m.group(1)) if m else None
+
+
+def _kyaku_from_c4(c4):
+    """corner_4 (4角位置) から脚質ラベルを判定する (SPEC-T75c)。
+    1=逃げ, 2〜4=先行, 5〜9=差し, 10以上=追込, 不明="?"。
+    """
+    if c4 is None:
+        return "?"
+    try:
+        pos = int(float(c4))
+    except (TypeError, ValueError):
+        return "?"
+    if pos <= 1:
+        return "逃げ"
+    if pos <= 4:
+        return "先行"
+    if pos <= 9:
+        return "差し"
+    return "追込"
+
+
+def _waku_group_t75c(waku):
+    """枠番から内/中/外グループを判定する (T75と同じ区分: 内=1〜3, 中=4〜5, 外=6〜8)。"""
+    if not waku:
+        return None
+    if waku <= 3:
+        return "内"
+    if waku <= 5:
+        return "中"
+    return "外"
+
+
+def _finish_kyaku(top3):
+    """1〜3着の脚質(c4)から決着パターンを判定する。不明な馬は除外して判定し、
+    全て不明なら'?'。"""
+    known = sorted(
+        ((e['rank'], e['c4']) for e in top3 if e.get('c4') is not None),
+        key=lambda x: x[0],
+    )
+    if not known:
+        return "?"
+    c4_values = [c for _, c in known]
+    if all(c <= 4 for c in c4_values):
+        return "前残り"
+    if all(c >= 5 for c in c4_values):
+        return "差し決着"
+    first_c4 = known[0][1]
+    return "先行勝ち・差し届く" if first_c4 <= 4 else "差し勝ち"
+
+
+def _finish_waku(top3):
+    """1〜3着の枠グループから決着パターンを判定する。"""
+    groups = [e['group'] for e in top3 if e.get('group')]
+    if not groups:
+        return "混合"
+    if all(g == "内" for g in groups):
+        return "内決着"
+    if all(g == "外" for g in groups):
+        return "外決着"
+    if groups.count("内") >= 2:
+        return "内寄り"
+    if groups.count("外") >= 2:
+        return "外寄り"
+    return "混合"
+
+
+def build_result_table(rows, latest_date=None, window_days=14, half_life_days=7.0):
+    """直近window_days日以内の全レースについて、1〜3着馬の情報をsurfaceごとに集計する
+    純関数 (SPEC-T75c)。rows は T75b と同じ複数日rows (date列付き)。
+
+    戻り値: {"芝": [race_entry, ...], "ダート": [race_entry, ...]}
+    race_entry は date/weight/race_num/race_name/distance/condition/total_horses/
+    win_odds/top3(list)/finish_kyaku/finish_waku を持つ。
+    """
+    def _to_float(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    latest_dt = _parse_yymmdd(latest_date) if latest_date else None
+    if latest_dt is None:
+        dates_found = [dt for dt in (
+            _parse_yymmdd(r.get('date')) for r in rows if isinstance(r, dict) and r.get('date')
+        ) if dt is not None]
+        if dates_found:
+            latest_dt = max(dates_found)
+
+    # race_key -> race情報 (date/weight/kaisai/race_name/distance/条件など) と top3行
+    races = {}
+
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        tt = r.get('track_type')
+        if tt not in ('芝', 'ダート'):
+            continue
+        race_name = r.get('race_name') or ''
+        if '障' in str(race_name):
+            continue
+        rank = _to_float(r.get('rank'))
+        if rank is None or rank > 3:
+            continue
+
+        date_val = r.get('date')
+        weight = 1.0
+        if date_val and latest_dt is not None:
+            dt = _parse_yymmdd(date_val)
+            if dt is not None:
+                delta_days = (latest_dt - dt).days
+                if delta_days < 0 or delta_days > window_days - 1:
+                    continue  # ウィンドウ外の日付は除外
+                weight = 0.5 ** (delta_days / half_life_days)
+
+        kaisai = r.get('kaisai')
+        distance = r.get('distance')
+        race_key = (tt, date_val, kaisai, race_name, distance)
+
+        race = races.get(race_key)
+        if race is None:
+            race_num = r.get('race_num')
+            if race_num is None or race_num == '':
+                race_num = _extract_race_num(kaisai)
+            else:
+                try:
+                    race_num = int(race_num)
+                except (TypeError, ValueError):
+                    race_num = _extract_race_num(kaisai)
+            try:
+                total_horses = int(r.get('total_horses'))
+            except (TypeError, ValueError):
+                total_horses = None
+            try:
+                dist_val = int(distance)
+            except (TypeError, ValueError):
+                dist_val = distance
+            race = {
+                "track_type": tt,
+                "date": date_val,
+                "weight": round(weight, 2),
+                "race_num": race_num,
+                "race_name": race_name,
+                "distance": dist_val,
+                "condition": r.get('condition'),
+                "total_horses": total_horses,
+                "win_odds": None,
+                "top3": [],
+            }
+            races[race_key] = race
+
+        try:
+            h_num = int(r.get('horse_number'))
+        except (TypeError, ValueError):
+            h_num = None
+        waku = calculate_waku(r.get('horse_number'), race["total_horses"])
+        group = _waku_group_t75c(waku)
+        try:
+            pop = int(float(r.get('popularity')))
+        except (TypeError, ValueError):
+            pop = None
+        c4_raw = r.get('corner_4')
+        try:
+            c4 = int(float(c4_raw)) if c4_raw is not None and str(c4_raw) != 'nan' else None
+        except (TypeError, ValueError):
+            c4 = None
+        kyaku = _kyaku_from_c4(c4_raw)
+
+        race["top3"].append({
+            "rank": int(rank),
+            "num": h_num,
+            "waku": waku,
+            "group": group,
+            "pop": pop,
+            "c4": c4,
+            "kyaku": kyaku,
+            "name": r.get('馬名'),
+            "jockey": r.get('jockey'),
+        })
+
+        if int(rank) == 1:
+            race["win_odds"] = r.get('odds')
+
+    result = {"芝": [], "ダート": []}
+    for race in races.values():
+        race["top3"].sort(key=lambda e: (e['rank'], e['num'] if e['num'] is not None else 0))
+        race["finish_kyaku"] = _finish_kyaku(race["top3"])
+        race["finish_waku"] = _finish_waku(race["top3"])
+        tt = race.pop("track_type")
+        result[tt].append(race)
+
+    for tt in result:
+        # date 降順 → race_num 昇順 (None は末尾)
+        result[tt].sort(key=lambda r: (
+            _r_date_sort_key(r["date"]), r["race_num"] is None, r["race_num"] or 0
+        ))
+
+    return result
+
+
+def _r_date_sort_key(date_val):
+    """date降順ソート用のキー (日付文字列を反転比較できるように負数化)。"""
+    dt = _parse_yymmdd(date_val)
+    if dt is None:
+        return 0
+    return -dt.toordinal()
+
+
 def compute_waku_bias(rows, latest_date=None, half_life_days=7.0, window_days=14):
     """
     直近 (最大window_days日以内・半減期half_life_daysで加重) の全出走馬 (dictのlist) から
@@ -727,11 +938,6 @@ def get_track_bias_data(base_dir, place):
         def _to_float(v):
             try: return float(v)
             except: return None
-
-        def _extract_race_num(kaisai_str):
-            """kaisai から 'Nレース' の番号を抽出。取得できなければ None"""
-            m = re.search(r'(\d+)レース', str(kaisai_str or ''))
-            return int(m.group(1)) if m else None
 
         top3_rows   = [r for r in rows if (_to_float(r.get('rank')) or 99) <= 3]
         winner_rows = [r for r in rows if (_to_float(r.get('rank')) or 99) == 1]
@@ -886,9 +1092,12 @@ def get_track_bias_data(base_dir, place):
             if not window_dates:
                 window_dates = [latest_date]
 
+            # SPEC-T75c: result_table 用に race_num/馬名/condition/odds も必要だが、
+            # 列の有無が DB (SQLite/PG) により異なるため SELECT * で取得する
+            # (行数は数百件程度なので問題ない)。
             placeholders = ", ".join(["?"] * len(window_dates))
             q_multi = f"""
-                SELECT rank, track_type, horse_number, total_horses, race_name, kaisai, distance, date
+                SELECT *
                 FROM races
                 WHERE place = ? AND date IN ({placeholders})
                   AND race_name NOT LIKE '{like_pct}障{like_pct}'
@@ -908,6 +1117,7 @@ def get_track_bias_data(base_dir, place):
             "track_speed": track_speed,
             "race_details": race_details,
             "waku_bias": compute_waku_bias(multiday_rows, latest_date=latest_date),
+            "result_table": build_result_table(multiday_rows, latest_date=latest_date),
         }
     except Exception as e:
         print(f"Track bias error: {e}")

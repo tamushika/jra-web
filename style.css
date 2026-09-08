@@ -267,6 +267,25 @@ button {
 .tbd-name   { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
 .tb-score-pos { color: #4ade80; font-weight: 700; margin-right: 4px; font-size: 11px; }
 .tbd-empty { color: var(--text-muted); font-size: 12px; padding: 8px; }
+/* SPEC-T75c: 結果表 (1〜3着の馬番・人気・枠・脚質、決着パターン) */
+.tbd-in    { color: #6ee7b7; }
+.tbd-out   { color: #fda4af; }
+.tbd-pop-hi { color: #fb923c; font-weight: 700; }
+.tbd-front  { background: rgba(245,158,11,0.18); color: #fbbf24; }
+.tbd-closer { background: rgba(99,102,241,0.18); color: #a5b4fc; }
+.tbd-w-sub  { font-size: 10px; color: var(--text-muted); }
+.tbd-sub-toggle-wrap { margin-top: 10px; }
+.tbd-sub-toggle {
+    padding: 3px 10px;
+    font-size: 11px;
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background .15s;
+}
+.tbd-sub-toggle:hover { background: rgba(99,179,237,.12); }
 .tb-title {
     font-size: 13px;
     font-weight: bold;

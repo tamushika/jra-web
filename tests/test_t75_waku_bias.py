@@ -428,3 +428,137 @@ def test_get_track_bias_data_aggregates_multiday_but_evaluations_stay_latest_onl
     # 最新日は6レース×3着=18行のみが top3 として race_details に残るはず
     assert len(data["race_details"]) == 18
     assert all(d["race_name"].endswith(f"_{date_d0}") for d in data["race_details"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SPEC-T75c: 結果表 (1〜3着の馬番・人気・枠・脚質、決着パターン)
+#   対応する仕様: docs/codex/SPEC-T75c-result-table.md §3
+# ═══════════════════════════════════════════════════════════════════════════
+
+_DATE_1 = "260906"  # 最新日
+_DATE_2 = "260905"  # 前日
+
+
+def _row(rank, horse_number, c4, pop, date, race_name, kaisai, race_num=None,
+         distance=1600, condition="良", odds=None, name=None, jockey="テスト騎手",
+         total_horses=16, track_type="芝"):
+    r = {
+        "rank": rank, "horse_number": horse_number, "corner_4": c4,
+        "popularity": pop, "date": date, "race_name": race_name,
+        "kaisai": kaisai, "distance": distance, "condition": condition,
+        "odds": odds, "馬名": name, "jockey": jockey,
+        "total_horses": total_horses, "track_type": track_type,
+    }
+    if race_num is not None:
+        r["race_num"] = race_num
+    return r
+
+
+def _build_result_table_fixture_rows():
+    rows = []
+
+    # Day1 (最新日) / Race1: 前残り・内決着。race_num は列で直接指定。
+    # わざと rank2,rank1,rank3 の順で追加し、top3内のソートを検証する。
+    rows.append(_row(2, 2, 3, 5, _DATE_1, "テストR1", "1回中山1日", race_num=1,
+                      odds=None, name="馬2"))
+    rows.append(_row(1, 1, 1, 1, _DATE_1, "テストR1", "1回中山1日", race_num=1,
+                      odds="260", name="馬1"))
+    rows.append(_row(3, 3, 2, 8, _DATE_1, "テストR1", "1回中山1日", race_num=1,
+                      name="馬3"))
+
+    # Day1 / Race2: 差し勝ち・内寄り
+    rows.append(_row(1, 14, 6, 2, _DATE_1, "テストR2", "1回中山1日", race_num=2))
+    rows.append(_row(2, 2, 12, 4, _DATE_1, "テストR2", "1回中山1日", race_num=2))
+    rows.append(_row(3, 1, 3, 6, _DATE_1, "テストR2", "1回中山1日", race_num=2))
+
+    # Day2 (前日) / Race1 (race_num は kaisai から抽出): 差し決着・混合
+    rows.append(_row(1, 8, 5, 3, _DATE_2, "テストR3", "2回中山2日 1レース"))
+    rows.append(_row(2, 5, 7, 5, _DATE_2, "テストR3", "2回中山2日 1レース"))
+    rows.append(_row(3, 1, 9, 7, _DATE_2, "テストR3", "2回中山2日 1レース"))
+
+    # Day2 / Race2 (race_num は kaisai から抽出): 先行勝ち・差し届く / 外決着
+    rows.append(_row(1, 16, 3, 2, _DATE_2, "テストR4", "2回中山2日 2レース"))
+    rows.append(_row(2, 15, 8, 3, _DATE_2, "テストR4", "2回中山2日 2レース"))
+    rows.append(_row(3, 14, 2, 4, _DATE_2, "テストR4", "2回中山2日 2レース"))
+
+    # 障害レースは除外されるべき
+    rows.append(_row(1, 1, 1, 1, _DATE_1, "障害テストR", "1回中山1日", race_num=9))
+
+    # ダートは混ぜない (空リストになることを別途確認)
+    return rows
+
+
+def test_build_result_table_ordering_and_fields():
+    rows = _build_result_table_fixture_rows()
+    result = pds.build_result_table(rows, latest_date=_DATE_1)
+
+    shiba = result["芝"]
+    assert len(shiba) == 4  # 障害は除外される
+
+    # date 降順 → race_num 昇順
+    assert [(r["date"], r["race_num"]) for r in shiba] == [
+        (_DATE_1, 1), (_DATE_1, 2), (_DATE_2, 1), (_DATE_2, 2),
+    ]
+
+    race1 = shiba[0]
+    # top3 は rank 昇順 (入力順は 2,1,3 だった)
+    assert [t["rank"] for t in race1["top3"]] == [1, 2, 3]
+    assert race1["top3"][0]["num"] == 1
+    assert race1["top3"][0]["name"] == "馬1"
+    assert race1["win_odds"] == "260"
+
+    # 脚質ラベル: c4=1→逃げ, 3→先行, 6→差し, 12→追込
+    assert race1["top3"][0]["kyaku"] == "逃げ"   # c4=1
+    assert race1["top3"][1]["kyaku"] == "先行"   # c4=3
+    race2 = shiba[1]
+    assert race2["top3"][0]["kyaku"] == "差し"   # c4=6
+    assert race2["top3"][1]["kyaku"] == "追込"   # c4=12
+
+    # finish_kyaku: 全≤4→前残り
+    assert race1["finish_kyaku"] == "前残り"
+    # finish_kyaku: 1着≥5→差し勝ち
+    assert race2["finish_kyaku"] == "差し勝ち"
+    race3, race4 = shiba[2], shiba[3]
+    # finish_kyaku: 全≥5→差し決着
+    assert race3["finish_kyaku"] == "差し決着"
+    # finish_kyaku: 1着≤4+他≥5→先行勝ち・差し届く
+    assert race4["finish_kyaku"] == "先行勝ち・差し届く"
+
+    # finish_waku: 全内→内決着 / 内2頭→内寄り / 混合
+    assert race1["finish_waku"] == "内決着"
+    assert race2["finish_waku"] == "内寄り"
+    assert race3["finish_waku"] == "混合"
+
+    # race_num フォールバック (kaisai の「Nレース」から抽出)
+    assert race3["race_num"] == 1
+    assert race4["race_num"] == 2
+
+    # ダートは空
+    assert result["ダート"] == []
+
+
+def test_build_result_table_empty_when_no_rows():
+    result = pds.build_result_table([])
+    assert result == {"芝": [], "ダート": []}
+
+
+def test_get_track_bias_data_includes_result_table(monkeypatch, sqlite_bias_db_multiday):
+    db_path, place, date_d0, date_d1, date_d8 = sqlite_bias_db_multiday
+
+    def _fake_get_db_connection(base_dir):
+        c = sqlite3.connect(db_path)
+        c.row_factory = sqlite3.Row
+        return c
+
+    monkeypatch.setattr(pds, "get_db_connection", _fake_get_db_connection)
+
+    data = pds.get_track_bias_data("dummy_base_dir", place)
+
+    assert "error" not in data
+    assert "result_table" in data
+    assert "芝" in data["result_table"] and "ダート" in data["result_table"]
+    # 3開催日 × 6レース = 18レース分
+    assert len(data["result_table"]["芝"]) == 18
+    sample = data["result_table"]["芝"][0]
+    assert len(sample["top3"]) == 3
+    assert "finish_kyaku" in sample and "finish_waku" in sample

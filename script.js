@@ -1208,9 +1208,11 @@ function renderTrackBias(data) {
 
     container.style.display = 'block';
 
-    // 詳細ボタンを表示（race_details があるとき）
+    // 詳細ボタンを表示（race_details または result_table があるとき）
     const detailBtn = document.getElementById('tbDetailBtn');
-    if (data.race_details && data.race_details.length > 0) {
+    const rt = data.result_table || {};
+    const hasResultTable = (rt['芝'] && rt['芝'].length > 0) || (rt['ダート'] && rt['ダート'].length > 0);
+    if ((data.race_details && data.race_details.length > 0) || hasResultTable) {
         detailBtn.style.display = 'inline-block';
         detailBtn._biasData = data; // データを紐付け
     } else {
@@ -1221,18 +1223,77 @@ function renderTrackBias(data) {
     detailBtn.textContent = '詳細表示 ▼';
 }
 
-function toggleBiasDetail() {
-    const container = document.getElementById('tbDetailContainer');
-    const btn       = document.getElementById('tbDetailBtn');
-    const data      = btn._biasData;
+// SPEC-T75c: 実データの結果表 (1〜3着の馬番・人気・枠・脚質、決着パターン) をsurfaceごとに描画
+function buildResultTableHtml(data) {
+    const resultTable = data.result_table || {};
+    const tracks = [
+        { key: '芝',    emoji: '🌿' },
+        { key: 'ダート', emoji: '🟤' },
+    ];
 
-    if (container.style.display !== 'none') {
-        container.style.display = 'none';
-        btn.textContent = '詳細表示 ▼';
-        return;
-    }
+    const fmtMD = (d) => (d && d.length === 6) ? `${parseInt(d.slice(2, 4), 10)}/${parseInt(d.slice(4, 6), 10)}` : (d || '?');
 
-    // テーブル生成
+    const sections = tracks.map(({ key, emoji }) => {
+        const races = resultTable[key] || [];
+        if (!races.length) return '';
+
+        const windowDays = (data.waku_bias && data.waku_bias[key] && data.waku_bias[key].window_days) || 14;
+
+        const cellFor = (entry, race) => {
+            if (!entry) return '-';
+            const groupCls = entry.group === '内' ? 'tbd-in' : entry.group === '外' ? 'tbd-out' : '';
+            const popHtml = entry.pop != null
+                ? (entry.pop <= 3 ? `<b>${entry.pop}人気</b>` : entry.pop >= 6 ? `<span class="tbd-pop-hi">${entry.pop}人気</span>` : `${entry.pop}人気`)
+                : '?人気';
+            const wakuLabel = entry.waku != null ? `${entry.waku}枠` : '?枠';
+            const oddsLabel = (entry.rank === 1 && race.win_odds) ? ` <span class="tbd-w-sub">(${race.win_odds}円)</span>` : '';
+            return `<span class="${groupCls}">${entry.num != null ? entry.num + '番' : '?番'} ${popHtml} ${wakuLabel} ${entry.kyaku || '?'}</span>${oddsLabel}`;
+        };
+
+        const rowsHtml = races.map(r => {
+            const top3ByRank = {};
+            (r.top3 || []).forEach(t => { if (!top3ByRank[t.rank]) top3ByRank[t.rank] = t; });
+
+            const raceLabel = r.race_num != null ? `${r.race_num}R` : '?R';
+            const nameLabel = r.distance != null ? `${r.race_name || ''}（${r.distance}m）` : (r.race_name || '');
+            const fkCls = r.finish_kyaku === '前残り' ? 'tbd-front' : (r.finish_kyaku === '差し決着' ? 'tbd-closer' : '');
+            const fwCls = (r.finish_waku === '内決着' || r.finish_waku === '内寄り') ? 'tbd-in'
+                        : (r.finish_waku === '外決着' || r.finish_waku === '外寄り') ? 'tbd-out' : '';
+
+            return `<tr>
+                <td class="tbd-c">${fmtMD(r.date)}<span class="tbd-w-sub"> ×${r.weight}</span></td>
+                <td class="tbd-r">${raceLabel}</td>
+                <td class="tbd-name">${nameLabel}</td>
+                <td class="tbd-c">${r.condition || '-'}</td>
+                <td class="tbd-c">${cellFor(top3ByRank[1], r)}</td>
+                <td class="tbd-c">${cellFor(top3ByRank[2], r)}</td>
+                <td class="tbd-c">${cellFor(top3ByRank[3], r)}</td>
+                <td class="tbd-c ${fkCls}">${r.finish_kyaku || '?'}</td>
+                <td class="tbd-c ${fwCls}">${r.finish_waku || '?'}</td>
+            </tr>`;
+        }).join('');
+
+        return `<div class="tbd-section">
+            <div class="tbd-title">${emoji} ${key} — 直近${windowDays}日の結果（1〜3着）</div>
+            <div style="overflow-x:auto">
+            <table class="tbd-table">
+                <thead>
+                    <tr>
+                        <th>日付</th><th>R</th><th>レース名（距離）</th><th>馬場</th>
+                        <th>1着</th><th>2着</th><th>3着</th><th>脚質決着</th><th>枠決着</th>
+                    </tr>
+                </thead>
+                <tbody>${rowsHtml}</tbody>
+            </table>
+            </div>
+        </div>`;
+    }).join('');
+
+    return sections;
+}
+
+// 従来の「上位3着以内馬の加重スコア内訳」テーブル (折りたたみ内に格納)
+function buildWeightBreakdownTableHtml(data) {
     const details = (data.race_details || []);
     const tracks = ['芝', 'ダート'];
 
@@ -1275,8 +1336,40 @@ function toggleBiasDetail() {
         </div>`;
     }).join('');
 
-    document.getElementById('tbDetailBody').innerHTML = html || '<div class="tbd-empty">詳細データなし</div>';
+    return html || '<div class="tbd-empty">詳細データなし</div>';
+}
+
+function toggleBiasDetail() {
+    const container = document.getElementById('tbDetailContainer');
+    const btn       = document.getElementById('tbDetailBtn');
+    const data      = btn._biasData;
+
+    if (container.style.display !== 'none') {
+        container.style.display = 'none';
+        btn.textContent = '詳細表示 ▼';
+        return;
+    }
+
+    const resultTableHtml = buildResultTableHtml(data);
+    const weightBreakdownHtml = buildWeightBreakdownTableHtml(data);
+
+    document.getElementById('tbDetailBody').innerHTML = `
+        ${resultTableHtml}
+        <div class="tbd-sub-toggle-wrap">
+            <button type="button" class="tbd-sub-toggle" onclick="toggleWeightBreakdown()">加重スコア内訳を表示 ▼</button>
+            <div id="tbdWeightBreakdown" style="display:none">${weightBreakdownHtml}</div>
+        </div>
+    `;
     container.style.display = 'block';
     btn.textContent = '詳細を閉じる ▲';
+}
+
+function toggleWeightBreakdown() {
+    const el  = document.getElementById('tbdWeightBreakdown');
+    const btn = el ? el.previousElementSibling : null;
+    if (!el) return;
+    const opening = el.style.display === 'none';
+    el.style.display = opening ? 'block' : 'none';
+    if (btn) btn.textContent = opening ? '加重スコア内訳を閉じる ▲' : '加重スコア内訳を表示 ▼';
 }
 
