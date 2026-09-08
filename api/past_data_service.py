@@ -495,22 +495,50 @@ def _waku_bias_empty(races=0):
         "level": "データ不足", "direction": "なし", "z": 0.0, "races": races,
         "in": dict(empty_grp), "mid": dict(empty_grp), "out": dict(empty_grp),
         "label": f"枠バイアス: データ不足 ({races}R)",
+        "days": [], "window_days": 14, "half_life_days": 7.0,
     }
 
-def _compute_waku_bias_one(rows, track_type):
-    """1surface分の内外バイアス強度を算出する。"""
+def _parse_yymmdd(s):
+    """'YYMMDD' 文字列 (例: '260906') を datetime に変換する。失敗時は None。"""
+    from datetime import datetime
+    if not s:
+        return None
+    try:
+        s = str(s)
+        y = 2000 + int(s[:2])
+        return datetime(y, int(s[2:4]), int(s[4:6]))
+    except (TypeError, ValueError, IndexError):
+        return None
+
+def _compute_waku_bias_one(rows, track_type, latest_date=None, half_life_days=7.0, window_days=14):
+    """1surface分の内外バイアス強度を算出する (SPEC-T75b: 直近window_days日を半減期half_life_daysで加重)。
+
+    行に 'date' (YYMMDD文字列) があれば latest_date (省略時はrows中の最大date) を基準に
+    `w = 0.5 ** (Δdays / half_life_days)` で重み付けする。'date' が無い行は重み1.0 (旧形式互換)。
+    """
     def _to_float(v):
         try: return float(v)
         except (TypeError, ValueError): return None
 
+    latest_dt = _parse_yymmdd(latest_date) if latest_date else None
+    if latest_dt is None:
+        dates_found = [dt for dt in (
+            _parse_yymmdd(r.get('date')) for r in rows if isinstance(r, dict) and r.get('date')
+        ) if dt is not None]
+        if dates_found:
+            latest_dt = max(dates_found)
+
     raw = {
-        "in":  {"n": 0, "top3": 0, "expected": 0.0},
-        "mid": {"n": 0, "top3": 0, "expected": 0.0},
-        "out": {"n": 0, "top3": 0, "expected": 0.0},
+        "in":  {"n": 0, "top3": 0, "expected": 0.0, "obs_w": 0.0, "exp_w": 0.0, "var_w": 0.0},
+        "mid": {"n": 0, "top3": 0, "expected": 0.0, "obs_w": 0.0, "exp_w": 0.0, "var_w": 0.0},
+        "out": {"n": 0, "top3": 0, "expected": 0.0, "obs_w": 0.0, "exp_w": 0.0, "var_w": 0.0},
     }
     race_keys = set()
+    by_date = {}
 
     for r in rows:
+        if not isinstance(r, dict):
+            continue
         if r.get('track_type') != track_type:
             continue
         race_name = r.get('race_name') or ''
@@ -528,38 +556,86 @@ def _compute_waku_bias_one(rows, track_type):
         waku = calculate_waku(r.get('horse_number'), t_horses)
         if not waku:
             continue
-        grp = "in" if waku <= 3 else ("mid" if waku <= 5 else "out")
 
-        race_keys.add((r.get('kaisai'), race_name, r.get('distance')))
+        date_val = r.get('date')
+        weight = 1.0
+        if date_val and latest_dt is not None:
+            dt = _parse_yymmdd(date_val)
+            if dt is not None:
+                delta_days = (latest_dt - dt).days
+                if delta_days < 0 or delta_days > window_days - 1:
+                    continue  # ウィンドウ外の日付は除外
+                weight = 0.5 ** (delta_days / half_life_days)
+
+        grp = "in" if waku <= 3 else ("mid" if waku <= 5 else "out")
+        race_key = (r.get('kaisai'), race_name, r.get('distance'))
+        exp_i = 3.0 / t_horses
+        is_top3 = rank <= 3
+
+        race_keys.add(race_key)
         raw[grp]["n"] += 1
-        raw[grp]["expected"] += 3.0 / t_horses
-        if rank <= 3:
+        raw[grp]["expected"] += exp_i
+        raw[grp]["exp_w"] += weight * exp_i
+        raw[grp]["var_w"] += (weight ** 2) * exp_i
+        if is_top3:
             raw[grp]["top3"] += 1
+            raw[grp]["obs_w"] += weight
+
+        if date_val:
+            dbucket = by_date.setdefault(date_val, {
+                "weight": weight, "race_keys": set(),
+                "in": {"top3": 0, "expected": 0.0},
+                "mid": {"top3": 0, "expected": 0.0},
+                "out": {"top3": 0, "expected": 0.0},
+            })
+            dbucket["race_keys"].add(race_key)
+            dbucket[grp]["expected"] += exp_i
+            if is_top3:
+                dbucket[grp]["top3"] += 1
 
     races = len(race_keys)
     n_in, n_out = raw["in"]["n"], raw["out"]["n"]
-    exp_in, exp_out = raw["in"]["expected"], raw["out"]["expected"]
-    obs_in, obs_out = raw["in"]["top3"], raw["out"]["top3"]
 
     def _fmt(g):
-        exp = g["expected"]
+        exp_w = g["exp_w"]
         return {
             "n": g["n"], "top3": g["top3"],
-            "expected": round(exp, 2),
-            "index": round(g["top3"] / exp, 2) if exp > 0 else 0.0,
+            "expected": round(g["expected"], 2),
+            "index": round(g["obs_w"] / exp_w, 2) if exp_w > 0 else 0.0,
         }
 
     groups_out = {k: _fmt(v) for k, v in raw.items()}
+
+    def _day_index(g):
+        return round(g["top3"] / g["expected"], 2) if g["expected"] > 0 else 0.0
+
+    days_list = [
+        {
+            "date": d,
+            "weight": round(b["weight"], 2),
+            "races": len(b["race_keys"]),
+            "in_index": _day_index(b["in"]),
+            "out_index": _day_index(b["out"]),
+        }
+        for d, b in by_date.items()
+    ]
+    days_list.sort(key=lambda x: x["weight"], reverse=True)
+    n_days = len(days_list) if days_list else 1
 
     if races < 3 or n_in < 10 or n_out < 10:
         return {
             "level": "データ不足", "direction": "なし", "z": 0.0, "races": races,
             "in": groups_out["in"], "mid": groups_out["mid"], "out": groups_out["out"],
             "label": f"枠バイアス: データ不足 ({races}R)",
+            "days": days_list, "window_days": window_days, "half_life_days": half_life_days,
         }
 
-    z_in  = (obs_in  - exp_in)  / math.sqrt(exp_in)  if exp_in  > 0 else 0.0
-    z_out = (obs_out - exp_out) / math.sqrt(exp_out) if exp_out > 0 else 0.0
+    exp_w_in, exp_w_out = raw["in"]["exp_w"], raw["out"]["exp_w"]
+    obs_w_in, obs_w_out = raw["in"]["obs_w"], raw["out"]["obs_w"]
+    var_w_in, var_w_out = raw["in"]["var_w"], raw["out"]["var_w"]
+
+    z_in  = (obs_w_in  - exp_w_in)  / math.sqrt(var_w_in)  if var_w_in  > 0 else 0.0
+    z_out = (obs_w_out - exp_w_out) / math.sqrt(var_w_out) if var_w_out > 0 else 0.0
     bias_z = (z_in - z_out) / math.sqrt(2)
     abs_z = abs(bias_z)
 
@@ -574,26 +650,30 @@ def _compute_waku_bias_one(rows, track_type):
 
     in_idx, out_idx = groups_out["in"]["index"], groups_out["out"]["index"]
     if direction == "なし":
-        label = f"枠バイアス: 弱 (フラット) (内 {in_idx}倍 / 外 {out_idx}倍, {races}R)"
+        label = f"枠バイアス: 弱 (フラット) (内 {in_idx}倍 / 外 {out_idx}倍, {n_days}日 {races}R)"
     else:
-        label = f"{direction}枠バイアス {level} (内 {in_idx}倍 / 外 {out_idx}倍, {races}R)"
+        label = f"{direction}枠バイアス {level} (内 {in_idx}倍 / 外 {out_idx}倍, {n_days}日 {races}R)"
 
     return {
         "level": level, "direction": direction, "z": round(bias_z, 2), "races": races,
         "in": groups_out["in"], "mid": groups_out["mid"], "out": groups_out["out"],
         "label": label,
+        "days": days_list, "window_days": window_days, "half_life_days": half_life_days,
     }
 
-def compute_waku_bias(rows):
+def compute_waku_bias(rows, latest_date=None, half_life_days=7.0, window_days=14):
     """
-    直近開催日の全出走馬 (dictのlist) から surface (芝/ダート) ごとの
-    内外枠バイアス強度 (弱/中/強) を算出する純関数。
+    直近 (最大window_days日以内・半減期half_life_daysで加重) の全出走馬 (dictのlist) から
+    surface (芝/ダート) ごとの内外枠バイアス強度 (弱/中/強) を算出する純関数 (SPEC-T75b)。
     rows は rank/track_type/horse_number/total_horses/race_name/kaisai/distance を含むこと。
+    'date' (YYMMDD文字列) があれば latest_date を基準に重み付けする。無ければ重み1.0 (旧形式互換)。
     """
     result = {}
     for tt in ("芝", "ダート"):
         try:
-            result[tt] = _compute_waku_bias_one(rows, tt)
+            result[tt] = _compute_waku_bias_one(rows, tt, latest_date=latest_date,
+                                                 half_life_days=half_life_days,
+                                                 window_days=window_days)
         except Exception as e:
             print(f"compute_waku_bias error ({tt}): {e}")
             result[tt] = _waku_bias_empty()
@@ -782,6 +862,44 @@ def get_track_bias_data(base_dir, place):
                 "out_score": b["out"]
             }
             
+        # SPEC-T75b: 枠バイアスは直近14日以内 (同競馬場) の全開催日を対象に、
+        # 近い日ほど重視 (半減期7日) して判定する。evaluations/race_details/track_speed は
+        # 従来通り最新日 (latest_date) のみの rows で計算済みなので変更しない。
+        waku_bias_window_days = 14
+        multiday_rows = rows  # 日付集計に失敗した場合は当日分のみで従来通り計算
+        try:
+            latest_dt_for_window = _parse_yymmdd(latest_date)
+            q_dates = "SELECT DISTINCT date FROM races WHERE place = ? AND date <= ? ORDER BY date DESC"
+            if is_pg: q_dates = q_dates.replace('?', '%s')
+            cursor.execute(q_dates, (place, latest_date))
+            candidate_dates = [d['date'] for d in cursor.fetchall() if d['date']]
+
+            window_dates = []
+            if latest_dt_for_window is not None:
+                for d in candidate_dates:
+                    dt = _parse_yymmdd(d)
+                    if dt is None:
+                        continue
+                    delta = (latest_dt_for_window - dt).days
+                    if 0 <= delta <= waku_bias_window_days - 1:
+                        window_dates.append(d)
+            if not window_dates:
+                window_dates = [latest_date]
+
+            placeholders = ", ".join(["?"] * len(window_dates))
+            q_multi = f"""
+                SELECT rank, track_type, horse_number, total_horses, race_name, kaisai, distance, date
+                FROM races
+                WHERE place = ? AND date IN ({placeholders})
+                  AND race_name NOT LIKE '{like_pct}障{like_pct}'
+            """
+            if is_pg: q_multi = q_multi.replace('?', '%s')
+            cursor.execute(q_multi, (place, *window_dates))
+            multiday_rows = [dict(r) for r in cursor.fetchall()]
+        except Exception as e:
+            print(f"waku_bias multiday query error: {e}")
+            multiday_rows = rows
+
         return {
             "success": True,
             "latest_date": latest_date,
@@ -789,7 +907,7 @@ def get_track_bias_data(base_dir, place):
             "evaluations": evaluations,
             "track_speed": track_speed,
             "race_details": race_details,
-            "waku_bias": compute_waku_bias(rows),
+            "waku_bias": compute_waku_bias(multiday_rows, latest_date=latest_date),
         }
     except Exception as e:
         print(f"Track bias error: {e}")

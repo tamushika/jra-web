@@ -271,3 +271,160 @@ def test_get_track_bias_data_includes_waku_bias_and_existing_keys(monkeypatch, s
     assert shiba_wb["level"] in ("弱", "中", "強", "データ不足")
     assert "in" in shiba_wb and "out" in shiba_wb and "mid" in shiba_wb
     assert "label" in shiba_wb
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SPEC-T75b: 直近複数開催日 (近い日ほど重視) での枠バイアス判定
+#   対応する仕様: docs/codex/SPEC-T75b-waku-bias-multiday.md §3
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 内枠集中の6レース分 (最新日用)
+_PODIUMS_INNER_HEAVY_T75B = [
+    [1, 2, 3], [1, 2, 16], [1, 2, 3], [1, 2, 16], [1, 2, 3], [1, 2, 16],
+]
+
+# 外枠集中の6レース分 (過去日用): 16頭立てで馬番14,15,16 (waku=8=外) に集中
+_PODIUMS_OUTER_HEAVY_T75B = [
+    [14, 15, 16], [14, 15, 1], [14, 15, 16], [14, 15, 1], [14, 15, 16], [14, 15, 1],
+]
+
+
+def _make_rows_dated(podiums, date, track_type="芝", total_horses=16, distance=1600,
+                      race_name_prefix="テストR", kaisai="1回中山1日"):
+    """compute_waku_bias 用の行 (dict) リストを生成する (date 列付き)。"""
+    rows = []
+    for i, podium in enumerate(podiums):
+        race_name = f"{race_name_prefix}{i+1}_{date}"
+        for u in range(1, total_horses + 1):
+            rank = (podium.index(u) + 1) if u in podium else 4
+            rows.append({
+                "rank": rank, "track_type": track_type, "horse_number": u,
+                "total_horses": total_horses, "distance": distance,
+                "race_name": race_name, "kaisai": kaisai, "date": date,
+            })
+    return rows
+
+
+def test_compute_waku_bias_multiday_weights_recent_day_more_heavily():
+    """最新日=内枠集中・10日前=外枠集中 (頭数同じ) → 加重により内が優勢になり、
+    全日を等重み (half_life_days を極大化) にした場合と |z| が異なること。"""
+    latest_date = "260906"
+    old_date = "260827"  # 10日前
+    rows = (_make_rows_dated(_PODIUMS_INNER_HEAVY_T75B, latest_date)
+            + _make_rows_dated(_PODIUMS_OUTER_HEAVY_T75B, old_date))
+
+    weighted = pds.compute_waku_bias(rows, latest_date=latest_date, half_life_days=7.0)
+    equal = pds.compute_waku_bias(rows, latest_date=latest_date, half_life_days=1e9)
+
+    shiba_w = weighted["芝"]
+    shiba_e = equal["芝"]
+
+    # 加重ありでは直近日 (内枠集中) が優勢 → direction=内
+    assert shiba_w["direction"] == "内"
+    assert shiba_w["level"] in ("中", "強")
+
+    # 等重み (half_life_days 極大) にした場合と |z| が異なること
+    assert shiba_w["z"] != pytest.approx(shiba_e["z"])
+
+    # days: 2件・重み降順 (直近日の重み=1.0が先頭)
+    assert len(shiba_w["days"]) == 2
+    assert shiba_w["days"][0]["date"] == latest_date
+    assert shiba_w["days"][0]["weight"] == 1.0
+    assert shiba_w["days"][1]["date"] == old_date
+    assert 0.0 < shiba_w["days"][1]["weight"] < 1.0
+    assert shiba_w["days"][0]["weight"] >= shiba_w["days"][1]["weight"]
+
+    assert shiba_w["window_days"] == 14
+    assert shiba_w["half_life_days"] == 7.0
+
+
+def test_compute_waku_bias_legacy_rows_without_date_default_to_weight_one():
+    """date列の無い行だけを渡す旧形式の呼び出しが従来どおり動く (重み1.0扱い)。"""
+    rows = _make_rows(_PODIUMS_INNER_HEAVY)  # 既存ヘルパ (date列なし)
+    result = pds.compute_waku_bias(rows)
+
+    shiba = result["芝"]
+    assert shiba["direction"] == "内"
+    assert shiba["level"] in ("中", "強")
+    assert shiba["days"] == []  # date情報が無いので日別内訳は空
+
+
+@pytest.fixture()
+def sqlite_bias_db_multiday(tmp_path):
+    """同一競馬場に D (最新) / D-1 / D-8 の3開催日を持つ一時SQLite DB。"""
+    db_path = str(tmp_path / "past_data_v2_t75b.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute(f"""
+        CREATE TABLE races (
+            {", ".join(f"{c} TEXT" for c in _RACES_COLUMNS)}
+        )
+    """)
+
+    from datetime import datetime, timedelta
+    today = datetime.now()
+    date_d0 = today.strftime("%y%m%d")
+    date_d1 = (today - timedelta(days=1)).strftime("%y%m%d")
+    date_d8 = (today - timedelta(days=8)).strftime("%y%m%d")
+
+    place = "中山"
+    kaisai = "1回中山1日"
+    rows_to_insert = []
+    for date_str in (date_d0, date_d1, date_d8):
+        for i, podium in enumerate(_PODIUMS_INNER_HEAVY):
+            race_name = f"テストR{i+1}_{date_str}"
+            for u in range(1, 17):
+                rank = (podium.index(u) + 1) if u in podium else (u + 3 if u + 3 <= 16 else 16)
+                rows_to_insert.append({
+                    "date": date_str, "kaisai": kaisai, "rank": str(rank),
+                    "track_type": "芝", "distance": "1600", "condition": "良",
+                    "horse_number": str(u), "corner_4": "5", "jockey": "テスト騎手",
+                    "time": "1:34.5" if rank == 1 else "1:36.0",
+                    "agari_3f": "35.0", "popularity": str(u), "odds": "5.0",
+                    "race_name": race_name, "weight": "480", "total_horses": "16",
+                    "place": place, "race_class": "3勝クラス",
+                })
+
+    cols = _RACES_COLUMNS
+    placeholders = ", ".join(["?"] * len(cols))
+    conn.executemany(
+        f"INSERT INTO races ({', '.join(cols)}) VALUES ({placeholders})",
+        [[r[c] for c in cols] for r in rows_to_insert],
+    )
+    conn.commit()
+    conn.close()
+
+    return db_path, place, date_d0, date_d1, date_d8
+
+
+def test_get_track_bias_data_aggregates_multiday_but_evaluations_stay_latest_only(
+    monkeypatch, sqlite_bias_db_multiday
+):
+    db_path, place, date_d0, date_d1, date_d8 = sqlite_bias_db_multiday
+
+    def _fake_get_db_connection(base_dir):
+        c = sqlite3.connect(db_path)
+        c.row_factory = sqlite3.Row
+        return c
+
+    monkeypatch.setattr(pds, "get_db_connection", _fake_get_db_connection)
+
+    data = pds.get_track_bias_data("dummy_base_dir", place)
+
+    assert "error" not in data
+    assert data["latest_date"] == date_d0
+
+    # waku_bias: 3開催日 (D, D-1, D-8) が全て14日以内 → 3日分・6R×3日=18R
+    shiba_wb = data["waku_bias"]["芝"]
+    assert shiba_wb["races"] == 18
+    days = shiba_wb["days"]
+    assert len(days) == 3
+    assert {d["date"] for d in days} == {date_d0, date_d1, date_d8}
+    # 重み降順 (直近日が先頭)
+    assert days[0]["weight"] >= days[1]["weight"] >= days[2]["weight"]
+    assert days[0]["date"] == date_d0
+    assert days[0]["weight"] == 1.0
+
+    # evaluations / race_details は従来通り最新日 (D) のみで計算されていること:
+    # 最新日は6レース×3着=18行のみが top3 として race_details に残るはず
+    assert len(data["race_details"]) == 18
+    assert all(d["race_name"].endswith(f"_{date_d0}") for d in data["race_details"])

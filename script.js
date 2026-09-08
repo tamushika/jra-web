@@ -1151,7 +1151,7 @@ function renderTrackBias(data) {
         const kyakuCls = ev.kyaku.includes('前') ? 'front' : ev.kyaku.includes('差') ? 'sashi' : 'flat';
         const wakuCls  = ev.waku.includes('イン') ? 'inner' : ev.waku.includes('外') ? 'outer' : 'flat';
 
-        // 枠バイアス強度バッジHTML (T75)
+        // 枠バイアス強度バッジHTML (T75, T75b: 直近複数開催日を近い日ほど重視して判定)
         let wakuBiasHtml = '';
         const wb = (data.waku_bias || {})[key];
         if (wb) {
@@ -1159,9 +1159,15 @@ function renderTrackBias(data) {
             const dirLevelText = wb.direction === 'なし'
                 ? (wb.level === 'データ不足' ? 'データ不足' : '弱 (フラット)')
                 : `${wb.direction}${wb.level}`;
-            wakuBiasHtml = `<div class="tb-waku-bias">
+            const wbDays = wb.days || [];
+            const nDays = wbDays.length || 1;
+            const fmtMD = (d) => (d && d.length === 6) ? `${parseInt(d.slice(2,4),10)}/${parseInt(d.slice(4,6),10)}` : (d || '?');
+            const daysTitle = wbDays
+                .map(d => `${fmtMD(d.date)} ×${d.weight}: 内${d.in_index}/外${d.out_index} (${d.races}R)`)
+                .join('\n');
+            wakuBiasHtml = `<div class="tb-waku-bias" ${daysTitle ? `title="${daysTitle.replace(/"/g, '&quot;')}"` : ''}>
                 <span class="tb-verdict ${wbCls}">枠バイアス: ${dirLevelText}</span>
-                <span class="tb-speed-diff">内 ${wb.in.index}倍 / 外 ${wb.out.index}倍 (3着内/期待, ${wb.races}R)</span>
+                <span class="tb-speed-diff">内 ${wb.in.index}倍 / 外 ${wb.out.index}倍 (3着内/期待, ${nDays}日 ${wb.races}R・近い日ほど重視)</span>
             </div>`;
         }
 
