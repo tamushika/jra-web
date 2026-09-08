@@ -1247,7 +1247,8 @@ function buildResultTableHtml(data) {
                 : '?人気';
             const wakuLabel = entry.waku != null ? `${entry.waku}枠` : '?枠';
             const oddsLabel = (entry.rank === 1 && race.win_odds) ? ` <span class="tbd-w-sub">(${race.win_odds}円)</span>` : '';
-            return `<span class="${groupCls}">${entry.num != null ? entry.num + '番' : '?番'} ${popHtml} ${wakuLabel} ${entry.kyaku || '?'}</span>${oddsLabel}`;
+            const nameHtml = entry.name ? ` <span class="tbd-hname">${entry.name}</span>` : '';
+            return `<span class="${groupCls}">${entry.num != null ? entry.num + '番' : '?番'}${nameHtml} ${popHtml} ${wakuLabel} ${entry.kyaku || '?'}</span>${oddsLabel}`;
         };
 
         const rowsHtml = races.map(r => {

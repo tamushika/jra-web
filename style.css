@@ -274,6 +274,7 @@ button {
 .tbd-front  { background: rgba(245,158,11,0.18); color: #fbbf24; }
 .tbd-closer { background: rgba(99,102,241,0.18); color: #a5b4fc; }
 .tbd-w-sub  { font-size: 10px; color: var(--text-muted); }
+.tbd-hname  { font-size: 11px; color: var(--text-muted); }
 .tbd-sub-toggle-wrap { margin-top: 10px; }
 .tbd-sub-toggle {
     padding: 3px 10px;
