@@ -146,7 +146,11 @@
                     </div>
                     <div class="right-pane course-img-container" style="flex: 1; display:flex; flex-direction:column; align-items:center; justify-content:center; border: 1px solid var(--border-color); border-radius: 8px; background: rgba(0,0,0,0.2); padding: 10px;">
                         <h4 style="margin-top:0; font-size:12px; color:var(--text-sub);">コースレイアウト</h4>
-                        <img id="courseLayoutImage" src="" alt="コースレイアウト画像" style="max-width: 100%; max-height: 250px; display: none;" />
+                        <div class="course-map-wrap">
+                            <img id="courseLayoutImage" src="" alt="コースレイアウト画像" style="max-width: 100%; max-height: 250px; display: none;" />
+                            <svg id="windOverlay" class="wind-overlay" viewBox="0 0 570 400"></svg>
+                        </div>
+                        <div class="wind-legend" id="windLegend"></div>
                     </div>
                 </div>
             </div>

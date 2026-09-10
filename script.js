@@ -317,6 +317,18 @@ function applyScrapeData(data, url, mode) {
 
     const courseImage = document.getElementById('courseLayoutImage');
     if (courseImage) {
+        // SPEC-T76 §1.3: 解析のたびに前回のオーバーレイ状態をリセットする
+        courseImage.dataset.loadFailed = '0';
+        const windSvg = document.getElementById('windOverlay');
+        const courseMapWrap = courseImage.closest('.course-map-wrap');
+        const windLegendEl = document.getElementById('windLegend');
+        if (windSvg) {
+            windSvg.innerHTML = '';
+            windSvg.setAttribute('viewBox', '0 0 570 400');
+        }
+        if (courseMapWrap) courseMapWrap.classList.remove('fallback');
+        if (windLegendEl) windLegendEl.textContent = '';
+
         if (data.course_image) {
             courseImage.src = data.course_image;
         } else {
@@ -328,8 +340,26 @@ function applyScrapeData(data, url, mode) {
                 courseImage.src = `/assets/images/courses/${vEn}_${tEn}_${data.dist_val}.png`;
             }
         }
-        courseImage.onerror = () => { courseImage.style.display = 'none'; };
-        courseImage.onload = () => { courseImage.style.display = 'block'; };
+        courseImage.onerror = () => {
+            courseImage.style.display = 'none';
+            courseImage.dataset.loadFailed = '1';
+            if (courseMapWrap) courseMapWrap.classList.add('fallback');
+            if (windSvg) windSvg.setAttribute('viewBox', '0 0 570 400');
+            if (window.lastWindData && window.lastWindData.venue === data.venue) {
+                renderWindOverlay(window.lastWindData.venue, window.lastWindData.dir, window.lastWindData.speed);
+            }
+        };
+        courseImage.onload = () => {
+            courseImage.style.display = 'block';
+            courseImage.dataset.loadFailed = '0';
+            if (courseMapWrap) courseMapWrap.classList.remove('fallback');
+            if (windSvg && courseImage.naturalWidth && courseImage.naturalHeight) {
+                windSvg.setAttribute('viewBox', `0 0 ${courseImage.naturalWidth} ${courseImage.naturalHeight}`);
+            }
+            if (window.lastWindData && window.lastWindData.venue === data.venue) {
+                renderWindOverlay(window.lastWindData.venue, window.lastWindData.dir, window.lastWindData.speed);
+            }
+        };
     }
 
     const select = document.getElementById('historyHorseSelect');
@@ -495,6 +525,7 @@ function renderNotableSiresTable(sires, title) {
     }).join('');
 }
 
+// ---- T76 wind pure functions (begin) ----
 const COURSE_DIRECTION = {
     "札幌": { lat: 43.075, lon: 141.275, dir: 110 },
     "函館": { lat: 41.791, lon: 140.781, dir: 320 },
@@ -508,70 +539,394 @@ const COURSE_DIRECTION = {
     "小倉": { lat: 33.834, lon: 130.875, dir: 340 }
 };
 
+// SPEC-T76 §1.1: ホームストレッチの画面上の向き (θ_s)。左回り=0 / 右回り=180。
+const COURSE_HANDEDNESS = {
+    "東京": "left", "中京": "left", "新潟": "left",
+    "中山": "right", "阪神": "right", "京都": "right", "函館": "right",
+    "札幌": "right", "福島": "right", "小倉": "right"
+};
+
+function _t76Mod360(x) {
+    return ((x % 360) + 360) % 360;
+}
+
+// diff<=45: 向かい風(head) / diff>=135: 追い風(tail) / それ以外: 横風(cross)
+// (straight = ホームストレッチ視点、backstretch = 向こう正面視点で常に逆になる)
+function classifyWindVsCourse(windFromDeg, courseDir) {
+    let diff = Math.abs(windFromDeg - courseDir);
+    if (diff > 180) diff = 360 - diff;
+
+    let straight, backstretch;
+    if (diff <= 45) {
+        straight = "head"; backstretch = "tail";
+    } else if (diff >= 135) {
+        straight = "tail"; backstretch = "head";
+    } else {
+        straight = "cross"; backstretch = "cross";
+    }
+    return { diff, straight, backstretch };
+}
+
+const WIND_SPEED_CATEGORIES = [
+    { max: 0.3, key: "calm", label: "静穏", color: "#9e9e9e" },
+    { max: 10, key: "light", label: "微風", color: "#4fc3f7" },
+    { max: 15, key: "moderate", label: "やや強い風", color: "#ffd54f" },
+    { max: 20, key: "strong", label: "強い風", color: "#ff9800" },
+    { max: 30, key: "very_strong", label: "非常に強い風", color: "#f44336" },
+    { max: Infinity, key: "violent", label: "猛烈な風", color: "#d500f9" }
+];
+
+function windSpeedCategory(speedMs) {
+    for (const cat of WIND_SPEED_CATEGORIES) {
+        if (speedMs < cat.max) {
+            return { key: cat.key, label: cat.label, color: cat.color };
+        }
+    }
+    const last = WIND_SPEED_CATEGORIES[WIND_SPEED_CATEGORIES.length - 1];
+    return { key: last.key, label: last.label, color: last.color };
+}
+
+// SPEC-T76 §1.1: θ(B) = θ_s + (B - dir) (mod 360)
+function computeWindScreenAngles(venue, windFromDeg) {
+    const course = COURSE_DIRECTION[venue];
+    const handed = COURSE_HANDEDNESS[venue];
+    if (!course || !handed) return null;
+
+    const thetaS = handed === "left" ? 0 : 180;
+    const dir = course.dir;
+    const theta = (B) => _t76Mod360(thetaS + (B - dir));
+
+    const bTo = _t76Mod360(windFromDeg + 180);
+    const thetaTo = theta(bTo);
+    const thetaNorth = theta(0);
+    const cls = classifyWindVsCourse(windFromDeg, dir);
+
+    return {
+        thetaTo, thetaNorth, handed,
+        straight: cls.straight, backstretch: cls.backstretch
+    };
+}
+// ---- T76 wind pure functions (end) ----
+
+window.JRA_WIND = {
+    COURSE_HANDEDNESS, classifyWindVsCourse, windSpeedCategory, computeWindScreenAngles
+};
+
+const WIND_TERM_JA = { head: "向かい風", tail: "追い風", cross: "横風" };
+const WIND_EFFECT_TEXT_JA = {
+    head: "直線が向かい風となるため、逃げ・先行馬が有利になる傾向があります。",
+    tail: "直線が追い風となるため、差し・追込馬が有利になる傾向があります。",
+    cross: "直線は横風となるため、内外で影響が変わる可能性があります。"
+};
+
 function getWindDirectionString(deg) {
     const directions = ["北", "北北東", "北東", "東北東", "東", "東南東", "南東", "南南東", "南", "南南西", "南西", "西南西", "西", "西北西", "北西", "北北西", "北"];
     return directions[Math.round(deg / 22.5)];
 }
 
 function getWindSpeedTerm(speed) {
-    if (speed < 0.3) return "静穏";
-    if (speed < 10) return "微風";
-    if (speed < 15) return "やや強い風";
-    if (speed < 20) return "強い風";
-    if (speed < 30) return "非常に強い風";
-    return "猛烈な風";
+    return windSpeedCategory(speed).label;
 }
 
 function checkWindEffectHtml(windDir, courseDir) {
-    let diff = Math.abs(windDir - courseDir);
-    if (diff > 180) diff = 360 - diff;
-    
-    let straightWind = "";
-    let backstretchWind = "";
-    let effect = "";
-    
-    if (diff <= 45) {
-        straightWind = "向かい風";
-        backstretchWind = "追い風";
-        effect = "直線が向かい風となるため、逃げ・先行馬が有利になる傾向があります。";
-    } else if (diff >= 135) {
-        straightWind = "追い風";
-        backstretchWind = "向かい風";
-        effect = "直線が追い風となるため、差し・追込馬が有利になる傾向があります。";
-    } else {
-        straightWind = "横風";
-        backstretchWind = "横風";
-        effect = "直線は横風となるため、内外で影響が変わる可能性があります。";
-    }
-    
+    const cls = classifyWindVsCourse(windDir, courseDir);
+    const straightWind = WIND_TERM_JA[cls.straight];
+    const backstretchWind = WIND_TERM_JA[cls.backstretch];
+    const effect = WIND_EFFECT_TEXT_JA[cls.straight];
+
     return `向こう正面は${backstretchWind}、直線は${straightWind}となります。<br><span style="color:#ffcc00; font-weight:bold;">${effect}</span>`;
 }
 
 async function fetchWindData(venue) {
     const windDisplay = document.getElementById('windDataDisplay');
     if (!windDisplay) return;
-    
+
     const course = COURSE_DIRECTION[venue];
     if (!course) {
         windDisplay.textContent = `風データ: ${venue}の緯度経度情報がありません`;
+        clearWindOverlay(`${venue}の風データはありません`);
         return;
     }
-    
+
     windDisplay.textContent = "風データを取得中...";
     try {
-        const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${course.lat}&longitude=${course.lon}&current_weather=true`);
+        const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${course.lat}&longitude=${course.lon}&current_weather=true&windspeed_unit=ms`);
         const result = await res.json();
         if (result.current_weather) {
             const w = result.current_weather;
             const dirStr = getWindDirectionString(w.winddirection);
             const speedTerm = getWindSpeedTerm(w.windspeed);
             const effectHtml = checkWindEffectHtml(w.winddirection, course.dir);
-            
+
             windDisplay.innerHTML = `<strong>リアルタイム風力データ (${venue}):</strong> ${dirStr}からの風 (${w.winddirection}°), ${speedTerm} (${w.windspeed}m/s)<br>${effectHtml}`;
+
+            window.lastWindData = { venue, dir: w.winddirection, speed: w.windspeed, time: w.time };
+            renderWindOverlay(venue, w.winddirection, w.windspeed);
+        } else {
+            clearWindOverlay();
         }
     } catch(e) {
         windDisplay.textContent = "風データの取得に失敗しました。";
+        clearWindOverlay();
     }
+}
+
+// ─── SPEC-T76 §1.2/1.3: コース図オーバーレイ (風向・風速の矢印表示) ───────────
+
+const WIND_LINE_STYLE = {
+    calm: { count: 0, width: 0, opacity: 0 },
+    light: { count: 5, width: 2, opacity: 0.65 },
+    moderate: { count: 7, width: 3, opacity: 0.62 },
+    strong: { count: 9, width: 4, opacity: 0.7 },
+    very_strong: { count: 11, width: 5, opacity: 0.78 },
+    violent: { count: 11, width: 5, opacity: 0.8 }
+};
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function _windSvgEl() {
+    return document.getElementById('windOverlay');
+}
+
+function _windLegendEl() {
+    return document.getElementById('windLegend');
+}
+
+function _svgViewBoxSize(svg) {
+    const vb = (svg.getAttribute('viewBox') || '0 0 570 400').split(/\s+/).map(Number);
+    return { width: vb[2] || 570, height: vb[3] || 400 };
+}
+
+function _makeSvgEl(tag, attrs) {
+    const el = document.createElementNS(SVG_NS, tag);
+    Object.keys(attrs || {}).forEach(k => el.setAttribute(k, attrs[k]));
+    return el;
+}
+
+// SVGはインライン (同一オリジンDOM) なので実測できる。text要素は事前に
+// 描画対象のSVGへappendしてから呼ぶこと (未接続の要素は0を返す環境がある)。
+// 失敗/0の場合のみ CJK=1em・ASCII=0.6em の概算にフォールバックする。
+function _measureTextWidth(textEl, fontSize) {
+    try {
+        const w = textEl.getComputedTextLength();
+        if (w && isFinite(w) && w > 0) return w;
+    } catch (e) { /* フォールバックへ */ }
+    const s = textEl.textContent || '';
+    let width = 0;
+    for (const ch of s) {
+        width += /[　-ヿ㐀-鿿＀-￯]/.test(ch) ? fontSize : fontSize * 0.6;
+    }
+    return width;
+}
+
+// テキストを先にcontainerへappendしてgetComputedTextLength()で幅を測り、
+// パディング込みの背景rectをテキストの直前に挿入する (paint順でrectが下)。
+function _appendChipWithMeasuredBg(container, textEl, fontSize, padX, rectAttrs) {
+    container.appendChild(textEl);
+    const textWidth = _measureTextWidth(textEl, fontSize);
+    const rect = _makeSvgEl('rect', rectAttrs(textWidth + padX * 2));
+    container.insertBefore(rect, textEl);
+    return rect;
+}
+
+function clearWindOverlay(message) {
+    const svg = _windSvgEl();
+    if (svg) svg.innerHTML = '';
+    const legend = _windLegendEl();
+    if (legend) legend.textContent = message || '風データ取得失敗';
+}
+
+// コース図が読めない場合の簡略図 (SPEC §1.2 フォールバック)
+function _drawCourseFallback(svg, venue, width, height) {
+    const cx = width / 2, cy = height / 2;
+    const rx = width * 0.42, ry = height * 0.32;
+
+    svg.appendChild(_makeSvgEl('ellipse', {
+        cx, cy, rx, ry, fill: 'none', stroke: '#6b8f6b', 'stroke-width': 10, opacity: 0.5
+    }));
+    svg.appendChild(_makeSvgEl('ellipse', {
+        cx, cy, rx: rx * 0.72, ry: ry * 0.62, fill: 'none', stroke: '#4a7a4a', 'stroke-width': 4, opacity: 0.6
+    }));
+
+    const standW = width * 0.5, standH = height * 0.1;
+    svg.appendChild(_makeSvgEl('rect', {
+        x: cx - standW / 2, y: cy + ry + 6, width: standW, height: standH,
+        fill: 'rgba(120,120,120,0.5)', rx: 4
+    }));
+    const standLabel = _makeSvgEl('text', {
+        x: cx, y: cy + ry + 6 + standH / 2 + 4, 'text-anchor': 'middle',
+        'font-size': 11, fill: '#eee'
+    });
+    standLabel.textContent = 'スタンド';
+    svg.appendChild(standLabel);
+
+    const handed = COURSE_HANDEDNESS[venue];
+    const goalX = handed === 'right' ? cx - rx : cx + rx;
+    const goalY = cy + ry * 0.15;
+    svg.appendChild(_makeSvgEl('polygon', {
+        points: `${goalX - 6},${goalY - 8} ${goalX + 6},${goalY} ${goalX - 6},${goalY + 8}`,
+        fill: '#ffd54f'
+    }));
+}
+
+// SPEC-T76 §1.2: コース図の上に風向・風速の矢印オーバーレイを一括描画する。
+function renderWindOverlay(venue, windFromDeg, windSpeedMs) {
+    const svg = _windSvgEl();
+    if (!svg) return;
+    svg.innerHTML = '';
+
+    const angles = computeWindScreenAngles(venue, windFromDeg);
+    if (!angles) {
+        clearWindOverlay(`${venue}は未対応のコースです`);
+        return;
+    }
+
+    const { width, height } = _svgViewBoxSize(svg);
+    const cx = width / 2, cy = height / 2;
+    const cat = windSpeedCategory(windSpeedMs);
+    const courseImage = document.getElementById('courseLayoutImage');
+    const usingFallback = !!(courseImage && courseImage.dataset.loadFailed === '1');
+
+    let legendPrefix = '';
+    if (usingFallback) {
+        _drawCourseFallback(svg, venue, width, height);
+        legendPrefix = 'コース図なし (簡略図)。 ';
+    }
+
+    // 1) 風の流線 (静穏でなければ)
+    const style = WIND_LINE_STYLE[cat.key] || WIND_LINE_STYLE.calm;
+
+    const defs = _makeSvgEl('defs', {});
+    const clipId = 'windClip';
+    const clipPath = _makeSvgEl('clipPath', { id: clipId });
+    clipPath.appendChild(_makeSvgEl('rect', { x: 0, y: 0, width, height }));
+    defs.appendChild(clipPath);
+
+    // 矢頭は線幅に比例させる (細い微風の矢印だと8x8固定では向きが読めないため)
+    const markerId = 'windArrowHead';
+    const mSize = 8 + 2.5 * style.width;
+    const marker = _makeSvgEl('marker', {
+        id: markerId, markerWidth: mSize, markerHeight: mSize,
+        refX: mSize * 0.8, refY: mSize / 2,
+        orient: 'auto', markerUnits: 'userSpaceOnUse'
+    });
+    marker.appendChild(_makeSvgEl('path', {
+        d: `M0,0 L${mSize},${mSize / 2} L0,${mSize} Z`, fill: cat.color
+    }));
+    defs.appendChild(marker);
+    svg.appendChild(defs);
+
+    if (style.count > 0) {
+        const diag = Math.sqrt(width * width + height * height);
+        const spacing = height / (style.count + 1);
+        const period = Math.max(0.6, 4 - windSpeedMs * 0.25);
+        // 約110 viewBox単位ごとに頂点を打ち、marker-midで矢頭を線に沿って繰り返す
+        const segLen = 110;
+        const numSegs = Math.max(2, Math.round(diag / segLen));
+
+        const g = _makeSvgEl('g', {
+            transform: `rotate(${angles.thetaTo} ${cx} ${cy})`,
+            'clip-path': `url(#${clipId})`
+        });
+
+        for (let i = 0; i < style.count; i++) {
+            const y = spacing * (i + 1);
+            const x1 = cx - diag / 2;
+            let d = `M${x1},${y}`;
+            for (let s = 1; s <= numSegs; s++) {
+                const x = x1 + (diag * s / numSegs);
+                d += ` L${x},${y}`;
+            }
+            const path = _makeSvgEl('path', {
+                d,
+                fill: 'none',
+                stroke: cat.color,
+                'stroke-width': style.width,
+                'stroke-linecap': 'round',
+                opacity: style.opacity,
+                'stroke-dasharray': '18 14',
+                'marker-mid': `url(#${markerId})`,
+                'marker-end': `url(#${markerId})`
+            });
+            path.classList.add('wind-flow-line');
+            path.style.animationDuration = `${period}s`;
+            g.appendChild(path);
+        }
+        svg.appendChild(g);
+    } else {
+        const chip = _makeSvgEl('g', {});
+        svg.appendChild(chip);
+        const text = _makeSvgEl('text', {
+            x: cx, y: cy + 4, 'text-anchor': 'middle', 'font-size': 13,
+            'font-weight': 'bold', fill: '#fff'
+        });
+        text.textContent = '静穏';
+        _appendChipWithMeasuredBg(chip, text, 13, 12, (w) => ({
+            x: cx - w / 2, y: cy - 13, width: w, height: 26, rx: 10,
+            fill: 'rgba(0,0,0,0.55)', stroke: '#9e9e9e'
+        }));
+    }
+
+    // 2) 方位記号 (N)
+    const ncx = width - 34, ncy = 34, nr = 22;
+    svg.appendChild(_makeSvgEl('circle', {
+        cx: ncx, cy: ncy, r: nr, fill: 'rgba(0,0,0,.55)', stroke: '#fff', 'stroke-width': 1.5
+    }));
+    const nGroup = _makeSvgEl('g', { transform: `rotate(${angles.thetaNorth} ${ncx} ${ncy})` });
+    nGroup.appendChild(_makeSvgEl('polygon', {
+        points: `${ncx},${ncy - nr + 5} ${ncx - 5},${ncy} ${ncx + 5},${ncy}`,
+        fill: '#ff5252'
+    }));
+    nGroup.appendChild(_makeSvgEl('line', {
+        x1: ncx, y1: ncy, x2: ncx, y2: ncy + nr - 6, stroke: '#fff', 'stroke-width': 2
+    }));
+    svg.appendChild(nGroup);
+    const nText = _makeSvgEl('text', {
+        x: ncx, y: ncy + nr + 13, 'text-anchor': 'middle', 'font-size': 11,
+        'font-weight': 'bold', fill: '#fff'
+    });
+    nText.textContent = 'N';
+    svg.appendChild(nText);
+
+    // 3) 直線 / 向こう正面バッジ (getComputedTextLength()で実測してrectを合わせる)
+    const badgeColor = { head: '#ff9800', tail: '#4fc3f7', cross: '#bdbdbd' };
+    const drawBadge = (xPct, yPct, label, key) => {
+        const text = `${label}: ${WIND_TERM_JA[key]}`;
+        const bx = width * xPct, by = height * yPct;
+        const g = _makeSvgEl('g', {});
+        svg.appendChild(g);
+        const t = _makeSvgEl('text', {
+            x: bx, y: by + 4, 'text-anchor': 'middle', 'font-size': 13,
+            'font-weight': 'bold', fill: '#fff'
+        });
+        t.textContent = text;
+        _appendChipWithMeasuredBg(g, t, 13, 12, (w) => ({
+            x: bx - w / 2, y: by - 13, width: w, height: 26, rx: 10,
+            fill: badgeColor[key], opacity: 0.88
+        }));
+    };
+    drawBadge(0.5, 0.71, '直線', angles.straight);
+    drawBadge(0.5, 0.09, '向こう正面', angles.backstretch);
+
+    // 4) 風速チップ (左上)
+    const dirStr = getWindDirectionString(windFromDeg);
+    const speedText = `🌬 ${dirStr} ${windSpeedMs.toFixed(1)} m/s ${cat.label}`;
+    const speedGroup = _makeSvgEl('g', {});
+    svg.appendChild(speedGroup);
+    const speedTextEl = _makeSvgEl('text', {
+        x: 6, y: 22, 'text-anchor': 'middle', 'font-size': 12,
+        'font-weight': 'bold', fill: '#fff'
+    });
+    speedTextEl.textContent = speedText;
+    _appendChipWithMeasuredBg(speedGroup, speedTextEl, 12, 12, (w) => {
+        speedTextEl.setAttribute('x', 6 + w / 2);
+        // 白いコース図の上でも読めるよう暗色地 + 風速階級色の縁取り (レビュー時の手直し)
+        return { x: 6, y: 6, width: w, height: 24, rx: 8, fill: 'rgba(0,0,0,0.6)', stroke: cat.color, 'stroke-width': 1.5 };
+    });
+
+    // 5) 凡例
+    const legend = _windLegendEl();
+    if (legend) legend.textContent = legendPrefix + '矢印 = 風の吹いていく向き / 本数と色 = 強さ / N = 北';
 }
 
 let activeSortCol = null;  // '回収スコア' | '的中スコア' | '複勝率β' | null(馬番順)
