@@ -157,3 +157,21 @@ def test_script_js_listens_for_analysis_done_message():
 def test_script_js_exposes_pick_next_race_on_window():
     js = _read("script.js")
     assert "window.JRA_RACE_PICK" in js
+
+
+# ─── SPEC-T77 §2.3 追補: 初期表示でも自動選択・autopick の引き継ぎ ─────────────
+
+def test_script_js_initial_embedded_load_always_autopicks():
+    js = _read("script.js")
+    # ?url 無しの埋め込み初期表示は autopick の有無によらず autoPickRaceFromEvState()
+    assert "if (!queryRaceUrl) {\n            autoPickRaceFromEvState();" in js
+
+
+def test_script_js_autopick_navigation_carries_autopick_flag():
+    js = _read("script.js")
+    assert "'&auto=1&autopick=1'" in js
+
+
+def test_script_js_analysis_done_repicks_when_autopicked():
+    js = _read("script.js")
+    assert "if (!queryRaceUrl || queryAutopick) {" in js

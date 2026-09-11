@@ -132,12 +132,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // 一覧を描画する (最新URL自動取得の代わり)。
         // SPEC-T77: ただし ?autopick=1 (統合版「解析開始」完了時の自動読み込み)
         // では一覧の代わりに次発走レースを自動選択する。
+        // SPEC-T77 §2.3 (2026-09-11 追補): 初期表示でも監視結果が既にあれば次発走
+        // レースを自動選択する (結果が無ければ autoPick 側が一覧を描画する)。
         if (!queryRaceUrl) {
-            if (queryAutopick) {
-                autoPickRaceFromEvState();
-            } else {
-                renderEmbeddedRaceList();
-            }
+            autoPickRaceFromEvState();
         }
     } else if (!queryRaceUrl) {
         // Auto-fetch on page load (?urlで既に指定されている場合は上書きしない)
@@ -153,7 +151,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (event.origin !== window.location.origin) return;
             const data = event.data;
             if (!data || data.type !== 'jra-analysis-done') return;
-            if (!queryRaceUrl) {
+            // 一覧状態、または自動選択で開いたレース (ユーザーが選んだのではない)
+            // なら新しい解析結果で選び直す。ユーザーが選んだレースは上書きしない。
+            if (!queryRaceUrl || queryAutopick) {
                 autoPickRaceFromEvState();
             }
         });
@@ -266,7 +266,8 @@ async function autoPickRaceFromEvState() {
     const nowHHMM = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
     const picked = pickNextRace(races, nowHHMM);
     if (picked) {
-        location.href = '?url=' + encodeURIComponent(picked.url) + '&auto=1';
+        // autopick=1 を引き継ぎ、次回の解析完了時に選び直せるようにする (§2.3)
+        location.href = '?url=' + encodeURIComponent(picked.url) + '&auto=1&autopick=1';
     } else {
         renderEmbeddedRaceList();
     }

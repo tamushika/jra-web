@@ -29,6 +29,11 @@
 4. `window.addEventListener('message', ...)`: 同一オリジンからの `{type:'jra-analysis-done'}` を受けたら、**`queryRaceUrl` が無い (一覧状態) 場合のみ** `autoPickRaceFromEvState()`。レース表示中なら無視。
 5. 既存の `?url=...&auto=1` の挙動・T73b の一覧描画は不変。
 
+### 2.3 追補 (2026-09-11、ユーザー指摘「初期画面ではオッズ監視でレースを選択してくださいと出る」)
+1. 埋め込みモードで `?url` 無しなら、`?autopick=1` の有無にかかわらず常に `autoPickRaceFromEvState()` を呼ぶ。監視結果が無い (解析前) ときだけ従来の一覧/メッセージになる。
+2. 自動選択で遷移する URL は `?url=…&auto=1&autopick=1` とし、自動選択で開いたことを引き継ぐ。
+3. `jra-analysis-done` 受信時は「一覧状態」または「autopick=1 で開いたレース」なら選び直す。ユーザーがオッズ監視から選んだレース (`autopick` 無し) は上書きしない。
+
 ## 3. テスト (`tests/test_t77_autopick_race.py`)
 1. Node でマーカー区間を評価: `pickNextRace` に `[{start_time:"09:45",url:"a"},{start_time:"10:10",url:"b"},{start_time:"10:40",url:"c"}]`:
    - now "10:00" → b、now "10:10" → b (同時刻は対象)、now "17:00" → a (先頭)、now "09:00" → a。
