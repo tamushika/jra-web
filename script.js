@@ -178,6 +178,7 @@ async function renderEmbeddedRaceList() {
 
     const container = document.createElement('div');
     container.id = 'embeddedRaceList';
+    container.className = 'embedded-race-list';
 
     const withUrl = races.filter(r => r && r.url);
     if (races.length === 0) {
@@ -194,11 +195,14 @@ async function renderEmbeddedRaceList() {
         Object.keys(byVenue).sort().forEach(venue => {
             const list = byVenue[venue].slice().sort((a, b) =>
                 (a.start_time || '99:99').localeCompare(b.start_time || '99:99'));
+            const block = document.createElement('div');
+            block.className = 'venue-block';
             const heading = document.createElement('div');
             heading.textContent = venue;
             heading.style.fontWeight = 'bold';
-            heading.style.marginTop = '8px';
-            container.appendChild(heading);
+            heading.style.marginBottom = '4px';
+            block.appendChild(heading);
+            container.appendChild(block);
             list.forEach(r => {
                 const link = document.createElement('a');
                 link.href = '?url=' + encodeURIComponent(r.url) + '&auto=1';
@@ -208,11 +212,14 @@ async function renderEmbeddedRaceList() {
                     ev.preventDefault();
                     location.href = '?url=' + encodeURIComponent(r.url) + '&auto=1';
                 });
-                container.appendChild(link);
+                block.appendChild(link);
             });
         });
     }
-    raceInfoEl.insertAdjacentElement('afterend', container);
+    // #raceInfo は .status-panel (flex 行) の項目なので、行の外 (直後) に置く。
+    // 行内に入れるとラベルが一覧の高さまで伸びて空箱に見える (2026-09-11 指摘)。
+    const panel = raceInfoEl.closest('.status-panel') || raceInfoEl;
+    panel.insertAdjacentElement('afterend', container);
 }
 
 async function startScraping() {
@@ -439,7 +446,9 @@ async function renderEvSummary(data) {
         box.style.margin = '6px 0 10px';
         box.style.fontSize = '13px';
         const raceInfoEl = document.getElementById('raceInfo');
-        raceInfoEl.insertAdjacentElement('afterend', box);
+        // flex 行 (.status-panel) の外に置く (renderEmbeddedRaceList と同じ理由)
+        const panel = raceInfoEl.closest('.status-panel') || raceInfoEl;
+        panel.insertAdjacentElement('afterend', box);
     }
 
     const coverage = race.ml_coverage;

@@ -1241,3 +1241,23 @@ tbody tr:hover { background: var(--row-hover); }
     font-weight: 700;
     transform: scale(1.1);
 }
+
+/* T73b 埋め込みレース一覧 (status-panel の直後に置く) */
+.embedded-race-list {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 8px 40px;
+    margin: 8px 0 4px;
+    font-size: 13px;
+}
+.embedded-race-list .venue-block {
+    display: flex;
+    flex-direction: column;
+}
+.embedded-race-list a {
+    color: var(--accent, #58a6ff);
+    text-decoration: none;
+    padding: 2px 0;
+}
+.embedded-race-list a:hover { text-decoration: underline; }
