@@ -114,9 +114,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // からの遷移)、urlInput にそのURLを設定し解析を自動実行する。埋め込みモード
     // では auto=1 の有無に関わらず常に自動実行する (モード選択UIが無いため)。
     let queryRaceUrl = null;
+    let queryAutopick = false;
     try {
         const qs = new URLSearchParams(window.location.search);
         queryRaceUrl = qs.get('url');
+        queryAutopick = qs.get('autopick') === '1';
         if (queryRaceUrl) {
             document.getElementById('urlInput').value = queryRaceUrl;
             if (IS_EMBEDDED || qs.get('auto') === '1') {
@@ -128,12 +130,33 @@ document.addEventListener('DOMContentLoaded', () => {
     if (IS_EMBEDDED) {
         // SPEC-T73b §2.3-2: ?url= が無ければオッズ監視の解析状況からレース
         // 一覧を描画する (最新URL自動取得の代わり)。
+        // SPEC-T77: ただし ?autopick=1 (統合版「解析開始」完了時の自動読み込み)
+        // では一覧の代わりに次発走レースを自動選択する。
         if (!queryRaceUrl) {
-            renderEmbeddedRaceList();
+            if (queryAutopick) {
+                autoPickRaceFromEvState();
+            } else {
+                renderEmbeddedRaceList();
+            }
         }
     } else if (!queryRaceUrl) {
         // Auto-fetch on page load (?urlで既に指定されている場合は上書きしない)
         autoFetchUrl(false);
+    }
+
+    // SPEC-T77 §2.2-4: 統合版タブシェルからの解析完了通知。レース詳細が既に
+    // ロード済み (iframe.src が空でない) の場合、タブシェル側は一覧状態のまま
+    // このメッセージを送ってくる。一覧状態 (queryRaceUrl 無し) の時だけ、次に
+    // 発走するレースを自動選択する (レース表示中なら上書きしない)。
+    if (IS_EMBEDDED) {
+        window.addEventListener('message', (event) => {
+            if (event.origin !== window.location.origin) return;
+            const data = event.data;
+            if (!data || data.type !== 'jra-analysis-done') return;
+            if (!queryRaceUrl) {
+                autoPickRaceFromEvState();
+            }
+        });
     }
 
     document.getElementById('historyHorseSelect').addEventListener('change', updateHistoryTable);
@@ -220,6 +243,33 @@ async function renderEmbeddedRaceList() {
     // 行内に入れるとラベルが一覧の高さまで伸びて空箱に見える (2026-09-11 指摘)。
     const panel = raceInfoEl.closest('.status-panel') || raceInfoEl;
     panel.insertAdjacentElement('afterend', container);
+}
+
+// SPEC-T77 §2.2-2: 統合版「解析開始」完了時、埋め込みモードのレース詳細タブが
+// 一覧状態であれば、オッズ監視の解析状況 (../ev/api/state) から「次に発走する
+// レース」を選んで自動的にそのレースへ遷移する (T73b の一覧リンクと同じ遷移)。
+// 選べる対象が無ければ従来どおりレース一覧を描画する。
+async function autoPickRaceFromEvState() {
+    const raceInfoEl = document.getElementById('raceInfo');
+    if (raceInfoEl) raceInfoEl.textContent = '次のレースを自動選択中...';
+
+    let races = [];
+    try {
+        const response = await fetch('../ev/api/state');
+        const state = await response.json();
+        races = (state && state.races) || [];
+    } catch (e) {
+        console.error(e);
+    }
+
+    const now = new Date();
+    const nowHHMM = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+    const picked = pickNextRace(races, nowHHMM);
+    if (picked) {
+        location.href = '?url=' + encodeURIComponent(picked.url) + '&auto=1';
+    } else {
+        renderEmbeddedRaceList();
+    }
 }
 
 async function startScraping() {
@@ -1737,4 +1787,26 @@ function toggleWeightBreakdown() {
     el.style.display = opening ? 'block' : 'none';
     if (btn) btn.textContent = opening ? '加重スコア内訳を閉じる ▲' : '加重スコア内訳を表示 ▼';
 }
+
+// ---- T77 race pick pure functions (begin) ----
+// SPEC-T77 §2.2-1: races (オッズ監視の状態 st.races 相当) から「次に発走する
+// レース」を1件選ぶ純関数。url を持つ要素のみを対象に start_time (文字列
+// "HH:MM") 昇順で安定ソートし、start_time >= nowHHMM の最初の要素を返す。
+// 該当が無ければ (全レース発走済みなら) 先頭の要素を返す。対象が空なら null。
+function pickNextRace(races, nowHHMM) {
+    const withUrl = (races || []).filter(r => r && r.url);
+    if (withUrl.length === 0) return null;
+    const sorted = withUrl.slice().sort((a, b) => {
+        const at = a.start_time || '';
+        const bt = b.start_time || '';
+        if (at < bt) return -1;
+        if (at > bt) return 1;
+        return 0;
+    });
+    const next = sorted.find(r => (r.start_time || '') >= nowHHMM);
+    return next || sorted[0];
+}
+// ---- T77 race pick pure functions (end) ----
+
+window.JRA_RACE_PICK = { pickNextRace };
 

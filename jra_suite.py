@@ -306,6 +306,9 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
   // WIN5対象レース取得を同時に行い、/ev/api/state のポーリングで状態を表示する。
   var globalPollTimer = null;
   var globalWin5Suffix = "";
+  // SPEC-T77: startAll() で立て、解析完了 (analyzing=false かつ races あり) を
+  // 検知した最初の pollGlobalStatus() でレース詳細タブへ自動選択を通知する。
+  var globalAwaitingRacePick = false;
 
   function setGlobalStatus(text, isError) {
     var el = document.getElementById("globalStatus");
@@ -335,6 +338,21 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
                (st.started_at ? " (" + st.started_at + ")" : "");
         if (st.warning) { text += " ⚠ " + st.warning; }
       }
+      // SPEC-T77: 解析完了を検知したらレース詳細タブへ「次に発走するレース」の
+      // 自動選択を促す (一度だけ)。
+      if (!analyzing && st.races && st.races.length > 0 && globalAwaitingRacePick) {
+        globalAwaitingRacePick = false;
+        var raceFrame = document.getElementById("frame-race");
+        if (raceFrame) {
+          if (!raceFrame.getAttribute("src")) {
+            raceFrame.setAttribute("src", "/race/?autopick=1");
+          } else {
+            try {
+              raceFrame.contentWindow.postMessage({ type: "jra-analysis-done" }, window.location.origin);
+            } catch (e) { /* noop */ }
+          }
+        }
+      }
       if (globalWin5Suffix) { text += globalWin5Suffix; }
       setGlobalStatus(text, isError);
       if (btn) { btn.disabled = analyzing; }
@@ -348,6 +366,7 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
     var btn = document.getElementById("globalStart");
     if (btn) { btn.disabled = true; }
     globalWin5Suffix = "";
+    globalAwaitingRacePick = true; // SPEC-T77: 完了後にレース詳細タブへ自動選択を通知する
     setGlobalStatus("解析開始中...", false);
 
     // WIN5対象レース取得: 未ロードならautofetch付きでロード、ロード済みなら
