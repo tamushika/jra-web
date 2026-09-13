@@ -23,7 +23,10 @@ scheduler_loop (ev) と _watch_loop (win5) は、このモジュールが所有�
 import os
 import sys
 import threading
+import urllib.error
+import urllib.request
 import webbrowser
+from datetime import datetime
 
 from flask import Flask, abort, jsonify, render_template_string, request, send_from_directory
 from flask_cors import CORS
@@ -33,7 +36,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 API_DIR = os.path.join(BASE_DIR, "api")
 sys.path.insert(0, API_DIR)
 
-from api.port_guard import ensure_port_free  # noqa: E402
+from api.port_guard import ensure_port_free, is_port_in_use  # noqa: E402
 
 import jra_ev  # noqa: E402
 import jra_win5  # noqa: E402
@@ -482,7 +485,39 @@ def create_app():
     return app
 
 
+def delegate_auto_start_to_running_server(port, timeout=5.0):
+    """既に稼働中の統合サーバーへ解析開始を依頼する (SPEC-T78)。
+
+    戻り値: (成功したか, メッセージ)。
+    """
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/ev/api/analyze_start",
+        data=b"{}",
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout):
+            return True, "既に稼働中の統合サーバーに解析開始を依頼しました"
+    except urllib.error.HTTPError as e:
+        if e.code == 409:
+            return True, "既に解析実行中です"
+        return False, str(e)
+    except Exception as e:
+        return False, str(e)
+
+
 if __name__ == "__main__":
+    # 週末タスクスケジューラ (--auto-start) で、既に手動起動プロセスがポートを
+    # 占有している場合は新規起動をあきらめ、稼働中プロセスへ解析開始を依頼する
+    # (SPEC-T78: ポートガードでexit 1すると開催日の解析が誰も始めない事故になる)。
+    if "--auto-start" in sys.argv and is_port_in_use(PORT):
+        ok, msg = delegate_auto_start_to_running_server(PORT)
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [auto-start] {msg}")
+        if ok:
+            sys.exit(0)
+        # 依頼できなければ従来どおりポートガードの案内で終了 (別プロセスが5005を占有)
+
     ensure_port_free(PORT, "統合サーバー (jra_suite)")
     app = create_app()
     start_background_loops()
