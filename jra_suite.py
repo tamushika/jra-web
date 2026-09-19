@@ -41,6 +41,7 @@ from api.port_guard import ensure_port_free, is_port_in_use  # noqa: E402
 import jra_ev  # noqa: E402
 import jra_win5  # noqa: E402
 import jra_perf  # noqa: E402
+import jra_graded  # noqa: E402
 
 # jra_win5 が `from index import analyze_race_url, ...` で既に api/index.py を
 # import 済み (sys.modules["index"]) のため、ここでの `import index` は
@@ -56,6 +57,8 @@ _SECTIONS = (
     {"prefix": "win5", "title": "WIN5予想", "desc": "スコアリング + 荒れ度配分 (旧 jra_win5.py, port 5002)",
      "loop": "win5-watch-loop"},
     {"prefix": "perf", "title": "実績ダッシュボード", "desc": "予測実績の集計表示 (旧 jra_perf.py, port 5004)",
+     "loop": None},
+    {"prefix": "graded", "title": "重賞データ", "desc": "重賞の過去傾向 (ability.db 由来キャッシュ)",
      "loop": None},
     {"prefix": "race", "title": "レース詳細", "desc": "個別レース解析 (本番Webと同じ画面)",
      "loop": None},
@@ -462,8 +465,9 @@ def create_app():
     app.register_blueprint(jra_ev.bp, url_prefix="/ev")
     app.register_blueprint(jra_win5.bp, url_prefix="/win5")
     app.register_blueprint(jra_perf.bp, url_prefix="/perf")
+    app.register_blueprint(jra_graded.bp, url_prefix="/graded")
 
-    for prefix in ("ev", "win5", "perf"):
+    for prefix in ("ev", "win5", "perf", "graded"):
         app.add_url_rule(f"/{prefix}/<path:filename>",
                          endpoint=f"{prefix}_static",
                          view_func=_serve_prefixed_static)

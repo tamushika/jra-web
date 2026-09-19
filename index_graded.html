@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>重賞データ</title>
+<link rel="stylesheet" href="style.css">
+<style>
+    .gd-app { margin: 0; }
+    .gd-app *, .gd-app *::before, .gd-app *::after { box-sizing: border-box; }
+    .gd-app [hidden] { display: none !important; }
+    .pf-container { max-width: 1540px; width: 100%; margin: 0 auto; padding: 28px 32px 48px; min-width: 0; }
+    .pf-section { background: var(--panel-bg); border: 1px solid var(--border-color);
+                  border-radius: 16px; padding: 24px; margin-bottom: 20px; min-width: 0; }
+    .pf-title { font-size: 16px; font-weight: 650; color: var(--text-main); margin-bottom: 12px; letter-spacing: .02em; }
+    .pf-meta { color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; line-height: 1.8; }
+    .pf-table { width: 100%; min-width: 720px; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+    .pf-table th, .pf-table td { border: 0; border-bottom: 1px solid var(--border-color);
+                                 padding: 10px 12px; text-align: center; vertical-align: top; }
+    .pf-table th { background: #182333; color: var(--text-muted); font-size: 11px; font-weight: 600; white-space: nowrap; }
+    .pf-table tbody tr:hover > td { background: rgba(78,214,176,.035); }
+    .pf-table td.left { text-align: left; }
+    .pf-table-scroll { width: 100%; overflow-x: auto; border: 1px solid var(--border-color); border-radius: 10px; }
+    .pf-empty { border: 1px dashed var(--border-color); border-radius: 12px; padding: 20px; color: var(--text-muted); font-size: 13px; line-height: 1.8; }
+    .gd-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+                   margin-bottom: 16px; padding: 14px 16px; background: var(--panel-bg);
+                   border: 1px solid var(--border-color); border-radius: 12px; }
+    .gd-controls label { font-size: 12px; color: var(--text-muted); }
+    .gd-controls select, .gd-controls input[type="text"] { background: rgba(0,0,0,0.25); color: var(--text-color);
+                         border: 1px solid var(--border-color); border-radius: 6px; padding: 7px 10px; }
+    .gd-controls select#raceSelect { min-width: 220px; max-width: 100%; }
+    .gd-yearbtns { display: inline-flex; gap: 4px; }
+    .gd-yearbtns button { padding: 6px 10px; font-size: 12px; }
+    .gd-yearbtns button[aria-pressed="true"] { color: #08251d; background: var(--primary); border-color: var(--primary); }
+    .gd-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+    .gd-chip { padding: 7px 14px; border-radius: 999px; border: 1px solid var(--border-color);
+               background: rgba(255,255,255,.03); color: var(--text-main); font-size: 12px; cursor: pointer; }
+    .gd-chip:hover { border-color: var(--primary); color: var(--primary); }
+    .gd-chip .grade-tag { margin-left: 6px; font-size: 10px; color: var(--text-muted); }
+    .gd-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    .gd-heading h2 { margin: 0 0 4px; font-size: 20px; color: var(--text-main); }
+    .gd-grade-badge { display: inline-block; padding: 2px 9px; border-radius: 8px; font-size: 11px;
+                      font-weight: bold; background: rgba(78,214,176,.14); color: var(--primary); margin-left: 8px; }
+    .gd-course-note { margin-top: 10px; font-size: 11px; color: var(--text-muted); line-height: 1.8; }
+    .gd-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .gd-grid .pf-table th, .gd-grid .pf-table td { padding: 7px 9px; font-size: 11.5px; }
+    .gd-best-row td { background: rgba(78,214,176,.08) !important; }
+    .gd-upset-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+    .gd-upset-kpi { padding: 14px; border-radius: 10px; border: 1px solid var(--border-color); background: #0e1723; }
+    .gd-upset-kpi .label { font-size: 11px; color: var(--text-muted); }
+    .gd-upset-kpi .value { display: block; font-size: 20px; color: var(--text-main); font-weight: 650; margin-top: 6px; }
+    .gd-result-row { cursor: pointer; }
+    .gd-runners-row td { background: rgba(255,255,255,.02); text-align: left; }
+    .gd-runners-table { width: 100%; font-size: 11px; border-collapse: collapse; }
+    .gd-runners-table th, .gd-runners-table td { padding: 4px 8px; border-bottom: 1px dashed var(--border-color); text-align: center; }
+    @media (max-width: 900px) {
+        .pf-container { padding: 20px; }
+        .gd-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 520px) {
+        .pf-container { padding: 14px 10px 32px; }
+        .pf-section { padding: 14px; border-radius: 12px; }
+        .gd-controls { padding: 10px; }
+    }
+</style>
+</head>
+<body class="local-app gd-app">
+<div class="pf-container">
+    <header class="app-page-header">
+        <div>
+            <div class="app-eyebrow">GRADED RACES / 重賞の過去傾向</div>
+            <h1>重賞データ</h1>
+            <p class="app-subtitle">ability.db から生成したキャッシュを表示するだけの画面です。予測・スコア・購入判断には一切使いません。</p>
+        </div>
+    </header>
+
+    <div class="pf-section" id="thisWeekSection">
+        <div class="pf-title">今週の重賞</div>
+        <div id="thisWeekChips" class="gd-chips"></div>
+        <div id="thisWeekEmpty" class="pf-meta" hidden>解析済みの出馬表に重賞はありません。統合サーバーの「解析開始」で出馬表を取得すると表示されます。</div>
+    </div>
+
+    <div class="gd-controls">
+        <label for="raceSelect">重賞を選ぶ</label>
+        <input type="text" id="raceFilter" placeholder="レース名で絞り込み" autocomplete="off">
+        <select id="raceSelect"></select>
+        <span class="gd-yearbtns" role="group" aria-label="集計対象の開催数" id="yearButtons">
+            <button type="button" data-years="5">直近5</button>
+            <button type="button" data-years="10" aria-pressed="true">直近10</button>
+            <button type="button" data-years="20">直近20</button>
+            <button type="button" data-years="all">全開催</button>
+        </span>
+        <label><input type="checkbox" id="sameCourseOnly"> 同一コースのみ</label>
+    </div>
+
+    <div id="status" class="pf-meta" role="status" aria-live="polite">重賞を選んでください。</div>
+
+    <div id="content" hidden>
+        <div class="pf-section" id="headingSection">
+            <div class="gd-heading">
+                <div>
+                    <h2 id="hName">-<span id="hGrade" class="gd-grade-badge" hidden></span></h2>
+                    <div class="pf-meta" id="hCourse"></div>
+                </div>
+                <div class="pf-meta" id="hScope"></div>
+            </div>
+            <div class="gd-course-note" id="hCourseNote"></div>
+        </div>
+
+        <div class="pf-section" id="resultsSection">
+            <div class="pf-title">過去の結果</div>
+            <div class="pf-table-scroll">
+                <table class="pf-table">
+                    <thead><tr>
+                        <th>年</th><th>馬場</th><th>頭数</th><th>1着</th><th>2着</th><th>3着</th>
+                        <th>勝ち時計</th><th>単勝配当</th><th>3連単</th>
+                    </tr></thead>
+                    <tbody id="resultsBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="pf-section" id="trendsSection">
+            <div class="pf-title">傾向</div>
+            <div class="gd-grid" id="trendsGrid"></div>
+        </div>
+
+        <div class="pf-section" id="upsetSection">
+            <div class="pf-title">荒れ度</div>
+            <div class="gd-upset-kpis" id="upsetKpis"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    "use strict";
+
+    var els = {
+        status: document.getElementById("status"),
+        content: document.getElementById("content"),
+        thisWeekChips: document.getElementById("thisWeekChips"),
+        thisWeekEmpty: document.getElementById("thisWeekEmpty"),
+        raceFilter: document.getElementById("raceFilter"),
+        raceSelect: document.getElementById("raceSelect"),
+        yearButtons: document.getElementById("yearButtons"),
+        sameCourseOnly: document.getElementById("sameCourseOnly"),
+        hName: document.getElementById("hName"),
+        hGrade: document.getElementById("hGrade"),
+        hCourse: document.getElementById("hCourse"),
+        hScope: document.getElementById("hScope"),
+        hCourseNote: document.getElementById("hCourseNote"),
+        resultsBody: document.getElementById("resultsBody"),
+        trendsGrid: document.getElementById("trendsGrid"),
+        upsetKpis: document.getElementById("upsetKpis"),
+    };
+
+    var state = { master: [], key: null, years: "10", sameCourse: false };
+
+    function setStatus(text) { els.status.textContent = text; }
+
+    function qs(name) {
+        return new URLSearchParams(window.location.search).get(name);
+    }
+
+    function setKeyInUrl(key) {
+        var url = new URL(window.location.href);
+        if (key) { url.searchParams.set("key", key); } else { url.searchParams.delete("key"); }
+        window.history.replaceState(null, "", url.toString());
+    }
+
+    function fmtNum(v, digits) {
+        if (v === null || v === undefined) { return "-"; }
+        return Number(v).toFixed(digits === undefined ? 0 : digits);
+    }
+
+    function fmtPct(v) {
+        if (v === null || v === undefined) { return "-"; }
+        return (v * 100).toFixed(1) + "%";
+    }
+
+    function fmtYen(v) {
+        if (v === null || v === undefined) { return "-"; }
+        return Math.round(v) + "円";
+    }
+
+    function fmtTime(sec) {
+        if (sec === null || sec === undefined) { return "-"; }
+        var m = Math.floor(sec / 60);
+        var s = (sec - m * 60).toFixed(1);
+        return m > 0 ? (m + ":" + (s < 10 ? "0" : "") + s) : s;
+    }
+
+    function loadMaster() {
+        return fetch("api/master", { cache: "no-store" }).then(function (res) {
+            if (res.status === 503) {
+                return res.json().then(function (data) {
+                    setStatus(data.error || "キャッシュがありません。");
+                    throw new Error("no_cache");
+                });
+            }
+            if (!res.ok) { throw new Error("HTTP " + res.status); }
+            return res.json();
+        }).then(function (data) {
+            state.master = data.races || [];
+            renderRaceSelect();
+            return data;
+        });
+    }
+
+    function loadThisWeek() {
+        fetch("api/this_week", { cache: "no-store" }).then(function (res) {
+            if (!res.ok) { throw new Error("HTTP " + res.status); }
+            return res.json();
+        }).then(function (data) {
+            renderThisWeek(data.races || []);
+        }).catch(function () {
+            renderThisWeek([]);
+        });
+    }
+
+    function renderThisWeek(races) {
+        els.thisWeekChips.innerHTML = "";
+        if (!races.length) {
+            els.thisWeekEmpty.hidden = false;
+            return;
+        }
+        els.thisWeekEmpty.hidden = true;
+        races.forEach(function (r) {
+            var btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "gd-chip";
+            btn.textContent = (r.venue || "") + " " + (r.display_name || r.key);
+            if (r.grade_latest) {
+                var tag = document.createElement("span");
+                tag.className = "grade-tag";
+                tag.textContent = r.grade_latest;
+                btn.appendChild(tag);
+            }
+            btn.addEventListener("click", function () { selectKey(r.key); });
+            els.thisWeekChips.appendChild(btn);
+        });
+    }
+
+    function renderRaceSelect(filterText) {
+        var text = (filterText || "").trim();
+        els.raceSelect.innerHTML = "";
+        var placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "-- 重賞を選択 --";
+        els.raceSelect.appendChild(placeholder);
+        state.master
+            .filter(function (r) { return !text || (r.display_name || "").indexOf(text) !== -1; })
+            .forEach(function (r) {
+                var opt = document.createElement("option");
+                opt.value = r.key;
+                opt.textContent = r.display_name + (r.grade_latest ? " (" + r.grade_latest + ")" : "") +
+                    " / " + (r.place_latest || "") + (r.track_type_latest || "") + (r.distance_latest || "") +
+                    (r.active === false ? " [終了 〜" + r.last_year + "]" : "");
+                if (r.key === state.key) { opt.selected = true; }
+                els.raceSelect.appendChild(opt);
+            });
+    }
+
+    function selectKey(key) {
+        state.key = key;
+        setKeyInUrl(key);
+        renderRaceSelect(els.raceFilter.value);
+        loadHistory();
+    }
+
+    function loadHistory() {
+        if (!state.key) { return; }
+        setStatus("読み込み中…");
+        els.content.hidden = true;
+        var params = new URLSearchParams({
+            key: state.key, years: state.years, same_course: state.sameCourse ? "1" : "0",
+        });
+        fetch("api/history?" + params.toString(), { cache: "no-store" }).then(function (res) {
+            if (!res.ok) { return res.json().then(function (d) { throw new Error(d.error || ("HTTP " + res.status)); }); }
+            return res.json();
+        }).then(function (data) {
+            setStatus("");
+            els.content.hidden = false;
+            renderHeading(data);
+            renderResults(data);
+            renderTrends(data);
+            renderUpset(data);
+        }).catch(function (err) {
+            setStatus("読み込みに失敗しました: " + err.message);
+        });
+    }
+
+    function renderHeading(data) {
+        var m = data.master;
+        els.hName.firstChild.textContent = m.display_name || m.key;
+        if (m.grade_latest) {
+            els.hGrade.hidden = false;
+            els.hGrade.textContent = m.grade_latest;
+        } else {
+            els.hGrade.hidden = true;
+        }
+        els.hCourse.textContent = (m.place_latest || "") + " " + (m.track_type_latest || "") +
+            (m.distance_latest || "") + "m ・ " + m.first_year + "〜" + m.last_year + " (" + m.n_years + "回)";
+        els.hScope.textContent = "集計対象: " + data.n_years_used + "開催 (" + (data.years_range || "-") + ")" +
+            (data.same_course_filter ? " ・ 同一コースのみ" : "");
+        var changes = (data.course_history || []).filter(function (_c, i) { return i > 0; });
+        if (changes.length) {
+            els.hCourseNote.textContent = "コース変更: " + changes.map(function (c) {
+                return c.year + "年〜 " + (c.place || "") + (c.track_type || "") + (c.distance || "") + "m" +
+                    (c.grade ? " (" + c.grade + ")" : "");
+            }).join(" / ");
+        } else {
+            els.hCourseNote.textContent = "";
+        }
+    }
+
+    function runnerLabel(r) {
+        if (!r) { return "-"; }
+        var parts = [r.umaban != null ? r.umaban + "番" : null, r.horse,
+            r.popularity != null ? r.popularity + "人気" : null,
+            (r.sex || "") + (r.age != null ? r.age : ""), r.kinryo != null ? r.kinryo + "kg" : null,
+            r.jockey, r.kyaku, r.sire].filter(Boolean);
+        return parts.join(" / ");
+    }
+
+    function renderResults(data) {
+        els.resultsBody.innerHTML = "";
+        (data.results || []).forEach(function (race, idx) {
+            var top3 = race.top3 || [];
+            var tr = document.createElement("tr");
+            tr.className = "gd-result-row";
+            tr.innerHTML =
+                "<td>" + race.year + "</td>" +
+                "<td>" + (race.track_type || "") + (race.distance || "") + "m " + (race.condition || "") + "</td>" +
+                "<td>" + (race.head_count != null ? race.head_count : "-") + "</td>" +
+                "<td class=\"left\">" + runnerLabel(top3[0]) + "</td>" +
+                "<td class=\"left\">" + runnerLabel(top3[1]) + "</td>" +
+                "<td class=\"left\">" + runnerLabel(top3[2]) + "</td>" +
+                "<td>" + fmtTime(race.win_time) + "</td>" +
+                "<td>" + fmtYen(race.pay ? race.pay.win : null) + "</td>" +
+                "<td>" + (race.pay && race.pay.sanrentan != null ? fmtYen(race.pay.sanrentan) : "-") + "</td>";
+            els.resultsBody.appendChild(tr);
+
+            var detailTr = document.createElement("tr");
+            detailTr.className = "gd-runners-row";
+            detailTr.hidden = true;
+            var td = document.createElement("td");
+            td.colSpan = 9;
+            var table = document.createElement("table");
+            table.className = "gd-runners-table";
+            table.innerHTML = "<thead><tr><th>着</th><th>馬番</th><th>枠</th><th>馬名</th><th>人気</th>" +
+                "<th>性齢</th><th>斤量</th><th>騎手</th><th>脚質</th><th>父</th></tr></thead>";
+            var tbody = document.createElement("tbody");
+            (race.runners || []).forEach(function (r) {
+                var row = document.createElement("tr");
+                row.innerHTML = "<td>" + (r.rank != null ? r.rank : "-") + "</td>" +
+                    "<td>" + (r.umaban != null ? r.umaban : "-") + "</td>" +
+                    "<td>" + (r.waku != null ? r.waku : "-") + "</td>" +
+                    "<td class=\"left\">" + (r.horse || "-") + "</td>" +
+                    "<td>" + (r.popularity != null ? r.popularity : "-") + "</td>" +
+                    "<td>" + (r.sex || "") + (r.age != null ? r.age : "") + "</td>" +
+                    "<td>" + (r.kinryo != null ? r.kinryo : "-") + "</td>" +
+                    "<td>" + (r.jockey || "-") + "</td>" +
+                    "<td>" + (r.kyaku || "-") + "</td>" +
+                    "<td>" + (r.sire || "-") + "</td>";
+                tbody.appendChild(row);
+            });
+            table.appendChild(tbody);
+            td.appendChild(table);
+            detailTr.appendChild(td);
+            els.resultsBody.appendChild(detailTr);
+
+            tr.addEventListener("click", function () { detailTr.hidden = !detailTr.hidden; });
+        });
+    }
+
+    var TREND_DEFS = [
+        { key: "popularity", title: "人気別" },
+        { key: "waku", title: "枠番別" },
+        { key: "kyaku", title: "脚質別" },
+        { key: "sex_age", title: "性齢別" },
+        { key: "affi", title: "所属別" },
+        { key: "prev_race", title: "前走レース別" },
+        { key: "prev_rank_band", title: "前走着順別" },
+        { key: "sire", title: "父別" },
+        { key: "jockey", title: "騎手別" },
+        { key: "weight", title: "馬体重帯別" },
+        { key: "interval", title: "間隔別" },
+    ];
+
+    function renderTrendTable(rows) {
+        var wrap = document.createElement("div");
+        wrap.className = "pf-table-scroll";
+        var table = document.createElement("table");
+        table.className = "pf-table";
+        table.innerHTML = "<thead><tr><th class=\"left\">区分</th><th>n</th><th>1-2-3-外</th>" +
+            "<th>勝率</th><th>連対率</th><th>複勝率</th><th>単回収</th><th>複回収</th></tr></thead>";
+        var tbody = document.createElement("tbody");
+        var maxFuku = -1;
+        (rows || []).forEach(function (r) { if (r.n > 0 && r.fuku_rate > maxFuku) { maxFuku = r.fuku_rate; } });
+        (rows || []).forEach(function (r) {
+            var tr = document.createElement("tr");
+            if (r.n > 0 && r.fuku_rate === maxFuku) { tr.className = "gd-best-row"; }
+            tr.innerHTML = "<td class=\"left\">" + r.label + "</td><td>" + r.n + "</td>" +
+                "<td>" + r.c1 + "-" + r.c2 + "-" + r.c3 + "-" + r.out + "</td>" +
+                "<td>" + fmtPct(r.win_rate) + "</td><td>" + fmtPct(r.ren_rate) + "</td>" +
+                "<td>" + fmtPct(r.fuku_rate) + "</td>" +
+                "<td>" + (r.roi_win != null ? (r.roi_win * 100).toFixed(0) + "%" : "-") + "</td>" +
+                "<td>" + (r.roi_fuku != null ? (r.roi_fuku * 100).toFixed(0) + "%" : "-") + "</td>";
+            tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        return wrap;
+    }
+
+    function renderTrends(data) {
+        els.trendsGrid.innerHTML = "";
+        var agg = data.aggregates || {};
+        TREND_DEFS.forEach(function (def) {
+            var rows = agg[def.key] || [];
+            if (!rows.length) { return; }
+            var box = document.createElement("div");
+            var h = document.createElement("div");
+            h.className = "pf-title";
+            h.style.fontSize = "13px";
+            h.textContent = def.title;
+            box.appendChild(h);
+            box.appendChild(renderTrendTable(rows));
+            els.trendsGrid.appendChild(box);
+        });
+    }
+
+    function renderUpset(data) {
+        var u = data.upset || {};
+        els.upsetKpis.innerHTML = "";
+        var items = [
+            ["1番人気 勝率", fmtPct(u.fav_win_rate)],
+            ["1番人気 複勝率", fmtPct(u.fav_fuku_rate)],
+            ["平均勝ち馬人気", u.avg_winner_pop != null ? u.avg_winner_pop + "番人気" : "-"],
+            ["平均単勝配当", fmtYen(u.avg_win_pay)],
+            ["平均3連単 (2025〜, n=" + ((u.avg_sanrentan && u.avg_sanrentan.n) || 0) + ")",
+                (u.avg_sanrentan && u.avg_sanrentan.value != null) ? fmtYen(u.avg_sanrentan.value) : "-"],
+            ["最高配当", u.max_win_pay ? (u.max_win_pay.year + "年 " + u.max_win_pay.horse + " " + fmtYen(u.max_win_pay.pay)) : "-"],
+        ];
+        items.forEach(function (item) {
+            var box = document.createElement("div");
+            box.className = "gd-upset-kpi";
+            box.innerHTML = "<div class=\"label\">" + item[0] + "</div><div class=\"value\">" + item[1] + "</div>";
+            els.upsetKpis.appendChild(box);
+        });
+    }
+
+    els.raceFilter.addEventListener("input", function () { renderRaceSelect(els.raceFilter.value); });
+    els.raceSelect.addEventListener("change", function () {
+        if (els.raceSelect.value) { selectKey(els.raceSelect.value); }
+    });
+    els.yearButtons.addEventListener("click", function (ev) {
+        var btn = ev.target.closest("button[data-years]");
+        if (!btn) { return; }
+        Array.prototype.forEach.call(els.yearButtons.querySelectorAll("button"), function (b) {
+            b.setAttribute("aria-pressed", String(b === btn));
+        });
+        state.years = btn.getAttribute("data-years");
+        loadHistory();
+    });
+    els.sameCourseOnly.addEventListener("change", function () {
+        state.sameCourse = els.sameCourseOnly.checked;
+        loadHistory();
+    });
+
+    window.addEventListener("message", function (event) {
+        if (event.origin !== window.location.origin) { return; }
+        var data = event.data;
+        if (data && data.type === "jra-analysis-done") { loadThisWeek(); }
+    });
+
+    loadMaster().then(function () {
+        loadThisWeek();
+        var initialKey = qs("key");
+        if (initialKey) { selectKey(initialKey); } else { setStatus("重賞を選んでください。"); }
+    }).catch(function () { /* setStatus済み */ });
+})();
+</script>
+</body>
+</html>

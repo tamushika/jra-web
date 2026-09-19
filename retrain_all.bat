@@ -43,6 +43,10 @@ echo  [5/5] Re-measuring coverage + WIN5 simulation with the new model ...
 "%PYEXE%" backtest_win5.py --from 20210101 --ml --write || goto :fail
 
 echo.
+echo  [T79] Rebuilding graded-race display cache (data/graded_cache.sqlite) ...
+"%PYEXE%" build_graded_cache.py --report || echo  [WARN] build_graded_cache.py failed (non-fatal, display-only cache)
+
+echo.
 echo  Done. Review the OOS results above, then commit and push:
 echo    git add -A ^&^& git commit -m "Retrain ML model" ^&^& git push
 echo.

@@ -53,3 +53,7 @@ api/data_files/common/factor_snapshot.json
 
 # Direct upper-model<->Codex discussion transcripts (local only, not distributed).
 .agents/
+
+# T79: 重賞データページの表示専用キャッシュ (ability.dbから毎回ローカル生成する。
+# build_graded_cache.py で再生成できるため配布・コミットしない)。
+data/graded_cache.sqlite
