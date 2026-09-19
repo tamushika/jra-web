@@ -194,35 +194,27 @@ def format_time(seconds):
     s = seconds % 60
     return f"{m}:{s:04.1f}" if m > 0 else f"{s:04.1f}"
 
-# 枠連の計算ロジック
+# 枠番の計算ロジック (SPEC-T80: JRAの規則どおり。api/index.py:calculate_waku と同一の結果になること)
+# 頭数 h <= 8 なら 枠=馬番。h > 8 なら各枠 h//8 頭を基本とし、余り h%8 頭を外枠から1頭ずつ追加する。
 def calculate_waku(umaban, head_count):
-    if not umaban or not head_count: return None
     try:
         u = int(umaban)
         h = int(head_count)
-    except:
+    except (TypeError, ValueError):
         return None
-        
+    if u <= 0 or h <= 0 or u > h:
+        return None
+
     if h <= 8: return u
-    
-    waku_sizes = [1] * 8
-    rem = h - 8
-    
-    for i in range(8, 0, -1):
-        if rem > 0:
-            waku_sizes[i-1] += 1
-            rem -= 1
-        if rem > 0 and i > 1:
-            waku_sizes[i-1] += 1
-            rem -= 1
-            
-    current_u = 1
-    for waku in range(1, 9):
-        size = waku_sizes[waku-1]
-        if current_u <= u < current_u + size:
+
+    q, r = divmod(h, 8)
+    counts = [q + (1 if i > 8 - r else 0) for i in range(1, 9)]
+    cur = 0
+    for waku, size in enumerate(counts, 1):
+        cur += size
+        if u <= cur:
             return waku
-        current_u += size
-    return None
+    return 8
 
 def analyze_races(rows):
     if not rows:
