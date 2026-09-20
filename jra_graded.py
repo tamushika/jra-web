@@ -13,12 +13,15 @@
 import os
 import re
 import sqlite3
+import threading
+import time
 from collections import defaultdict
 from datetime import date as _date
 from datetime import datetime
 
 from flask import Blueprint, jsonify, request, send_from_directory
 
+from api import graded_pick
 from api.graded_names import load_aliases, load_sponsors, match_key, normalize_race_name
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -29,6 +32,37 @@ _CURRENT_YEAR = datetime.now().year
 bp = Blueprint("graded", __name__)
 
 _MISSING_CACHE_MSG = "graded_cache.sqlite がありません。build_graded_cache.py を実行してください"
+
+# SPEC-T79b レビュー対応: /api/pick が jra_ev のキャッシュを持たないURLを
+# analyze_race_url() で直接スクレイプすると毎回数秒かかるため、年数切替や
+# 「人気込み」トグルのたびに再スクレイプしないよう、プロセス内TTLキャッシュを
+# 挟む (URL -> analyze_race_url()の戻り値そのもの)。出走馬構成はレース確定後は
+# 変わらない前提で10分保持。EVの実況ポップ更新等はこのキャッシュの対象外
+# (ev_by_num側は毎回jra_ev.STATEから取り直す)。
+_SCRAPE_CACHE_TTL_SEC = 600
+_SCRAPE_CACHE_MAX = 32
+_SCRAPE_CACHE_LOCK = threading.Lock()
+_SCRAPE_CACHE = {}  # url -> (expires_at, result)
+
+
+def _scrape_cache_get(url):
+    with _SCRAPE_CACHE_LOCK:
+        entry = _SCRAPE_CACHE.get(url)
+        if entry is None:
+            return None
+        expires_at, result = entry
+        if expires_at < time.time():
+            del _SCRAPE_CACHE[url]
+            return None
+        return result
+
+
+def _scrape_cache_put(url, result):
+    with _SCRAPE_CACHE_LOCK:
+        _SCRAPE_CACHE[url] = (time.time() + _SCRAPE_CACHE_TTL_SEC, result)
+        while len(_SCRAPE_CACHE) > _SCRAPE_CACHE_MAX:
+            oldest_url = min(_SCRAPE_CACHE, key=lambda u: _SCRAPE_CACHE[u][0])
+            del _SCRAPE_CACHE[oldest_url]
 
 _POP_BUCKETS = (
     ("1番人気", lambda p: p == 1),
@@ -256,6 +290,7 @@ def api_this_week():
             out.append({
                 "venue": rec.get("venue"), "race_num": rec.get("race_num"),
                 "race_info": rec.get("race_info"), "start_time": rec.get("start_time"),
+                "url": rec.get("url"),
                 "key": key, "display_name": master_row["display_name"] if master_row else key,
                 "grade_latest": master_row["grade_latest"] if master_row else None,
                 "how": how,
@@ -350,6 +385,131 @@ def _runner_view(row):
     }
 
 
+def _load_key_history(conn, key, years_param, same_course):
+    """SPEC-T79b §2.3-3: /api/history の中核処理 (master取得〜aggregates計算)。
+    /graded/api/pick からもHTTP経由せず直接呼べるよう切り出したもの。
+    戻り値は /api/history のレスポンスと同じ形 + overall_fuku_rate。
+    keyがmasterに無ければ None を返す (呼び出し側で404にする)。"""
+    limit = None
+    if str(years_param).lower() not in ("all", "0", ""):
+        try:
+            limit = int(years_param)
+        except (TypeError, ValueError):
+            limit = 10
+
+    master_row = conn.execute("SELECT * FROM master WHERE key=?", (key,)).fetchone()
+    if master_row is None:
+        return None
+
+    all_races = conn.execute(
+        "SELECT * FROM races WHERE key=? ORDER BY year ASC", (key,)).fetchall()
+    course_history = _course_history(all_races)
+
+    races_desc = list(reversed(all_races))
+    if same_course:
+        races_desc = [r for r in races_desc if r["same_course_as_latest"] == 1]
+    selected = races_desc[:limit] if limit else races_desc
+
+    race_ids = [r["race_id"] for r in selected]
+    runs_by_race = defaultdict(list)
+    if race_ids:
+        placeholders = ",".join("?" * len(race_ids))
+        for row in conn.execute(
+                f"SELECT * FROM runs WHERE race_id IN ({placeholders})", race_ids):
+            runs_by_race[row["race_id"]].append(row)
+
+    results = []
+    for r in selected:
+        runs = sorted(runs_by_race.get(r["race_id"], ()),
+                      key=lambda x: (x["rank"] is None, x["rank"] if x["rank"] is not None else 0))
+        top3 = [_runner_view(row) for row in runs if row["rank"] is not None and row["rank"] <= 3]
+        runners = [_runner_view(row) for row in runs]
+        results.append({
+            "year": r["year"], "date": r["date"], "place": r["place"],
+            "track_type": r["track_type"], "distance": r["distance"],
+            "condition": r["condition"], "head_count": r["head_count"],
+            "win_time": r["win_time_sec"], "winner_pop": r["winner_pop"],
+            "pay": {"win": r["winner_pay"], "umaren": r["pay_umaren"],
+                    "sanrenpuku": r["pay_sanrenpuku"], "sanrentan": r["pay_sanrentan"]},
+            "top3": top3, "runners": runners,
+        })
+
+    all_runs = [row for race_id in race_ids for row in runs_by_race.get(race_id, ())]
+    numeric_runs = [row for row in all_runs if row["rank"] is not None]
+
+    aggregates = {
+        "popularity": _bucket_stats(numeric_runs, _POP_BUCKETS, lambda r: r["popularity"]),
+        "waku": [_group_summary(str(w), [r for r in numeric_runs if r["waku"] == w])
+                for w in range(1, 9)],
+        "kyaku": [_group_summary(label, [r for r in numeric_runs if r["kyaku"] == label])
+                 for label in ("逃げ", "先行", "差し", "追込")],
+        "sex_age": _group_by_key(numeric_runs,
+                                 lambda r: _sex_age_label(r["sex"], r["age"]), min_n=1),
+        "affi": [_group_summary(_AFFI_LABELS[code],
+                                [r for r in numeric_runs if r["affi_norm"] == code])
+                for code in ("美", "栗")
+                if any(r["affi_norm"] == code for r in numeric_runs)],
+        "sire": _group_by_key(numeric_runs, lambda r: r["sire"], min_n=3, top=8),
+        "jockey": _group_by_key(numeric_runs, lambda r: r["jockey"], min_n=3, top=8),
+        "prev_race": _group_by_key(
+            numeric_runs,
+            lambda r: normalize_race_name(r["prev_race_name"])[0] if r["prev_race_name"] else None,
+            min_n=3, top=10),
+        "prev_rank_band": _bucket_stats(
+            [r for r in numeric_runs if r["prev_rank"] is not None], _PREV_RANK_BUCKETS,
+            lambda r: r["prev_rank"]),
+        "weight": _bucket_stats([r for r in numeric_runs if r["weight"] is not None],
+                                _WEIGHT_BUCKETS, lambda r: r["weight"]),
+        "interval": _bucket_stats(
+            [r for r in numeric_runs if r["prev_interval_days"] is not None],
+            _INTERVAL_BUCKETS, lambda r: r["prev_interval_days"]),
+    }
+
+    # SPEC-T79b §2.2: score_entry の lift 計算で使う「この履歴全体の複勝率」。
+    n_all = len(numeric_runs)
+    c123_all = sum(1 for r in numeric_runs if r["rank"] is not None and r["rank"] <= 3)
+    overall_fuku_rate = round(c123_all / n_all, 4) if n_all else None
+
+    fav = next((g for g in aggregates["popularity"] if g["label"] == "1番人気"), None)
+    winner_pops = [r["winner_pop"] for r in selected if r["winner_pop"] is not None]
+    winner_pays = [r["winner_pay"] for r in selected if r["winner_pay"] is not None]
+    sanrentan_rows = [r for r in selected if r["year"] >= 2025 and r["pay_sanrentan"] is not None]
+    max_win = None
+    if winner_pays:
+        best = max(selected, key=lambda r: r["winner_pay"] if r["winner_pay"] is not None else -1)
+        if best["winner_pay"] is not None:
+            winner_run = next((row for row in runs_by_race.get(best["race_id"], ())
+                               if row["rank"] == 1), None)
+            max_win = {"year": best["year"],
+                      "horse": winner_run["horse"] if winner_run else None,
+                      "pay": best["winner_pay"]}
+    upset = {
+        "fav_win_rate": fav["win_rate"] if fav else None,
+        "fav_fuku_rate": fav["fuku_rate"] if fav else None,
+        "avg_winner_pop": round(sum(winner_pops) / len(winner_pops), 2) if winner_pops else None,
+        "avg_win_pay": round(sum(winner_pays) / len(winner_pays), 1) if winner_pays else None,
+        "avg_sanrentan": {
+            "value": round(sum(r["pay_sanrentan"] for r in sanrentan_rows) / len(sanrentan_rows), 1)
+                    if sanrentan_rows else None,
+            "n": len(sanrentan_rows),
+        },
+        "max_win_pay": max_win,
+    }
+
+    years_used = sorted({r["year"] for r in selected})
+    return {
+        "master": dict(master_row),
+        "course_history": course_history,
+        "results": results,
+        "aggregates": aggregates,
+        "upset": upset,
+        "n_years_used": len(years_used),
+        "years_range": f"{years_used[0]}〜{years_used[-1]}" if years_used else None,
+        "same_course_filter": same_course,
+        "overall_fuku_rate": overall_fuku_rate,
+    }
+
+
 @bp.route("/api/history")
 def api_history():
     if not _cache_available():
@@ -360,120 +520,118 @@ def api_history():
 
     years_param = request.args.get("years", "10")
     same_course = request.args.get("same_course") == "1"
-    limit = None
-    if str(years_param).lower() not in ("all", "0", ""):
-        try:
-            limit = int(years_param)
-        except (TypeError, ValueError):
-            limit = 10
 
     conn = _conn()
     try:
-        master_row = conn.execute("SELECT * FROM master WHERE key=?", (key,)).fetchone()
-        if master_row is None:
+        payload = _load_key_history(conn, key, years_param, same_course)
+        if payload is None:
             return jsonify({"error": f"unknown key: {key}"}), 404
-
-        all_races = conn.execute(
-            "SELECT * FROM races WHERE key=? ORDER BY year ASC", (key,)).fetchall()
-        course_history = _course_history(all_races)
-
-        races_desc = list(reversed(all_races))
-        if same_course:
-            races_desc = [r for r in races_desc if r["same_course_as_latest"] == 1]
-        selected = races_desc[:limit] if limit else races_desc
-
-        race_ids = [r["race_id"] for r in selected]
-        runs_by_race = defaultdict(list)
-        if race_ids:
-            placeholders = ",".join("?" * len(race_ids))
-            for row in conn.execute(
-                    f"SELECT * FROM runs WHERE race_id IN ({placeholders})", race_ids):
-                runs_by_race[row["race_id"]].append(row)
-
-        results = []
-        for r in selected:
-            runs = sorted(runs_by_race.get(r["race_id"], ()),
-                          key=lambda x: (x["rank"] is None, x["rank"] if x["rank"] is not None else 0))
-            top3 = [_runner_view(row) for row in runs if row["rank"] is not None and row["rank"] <= 3]
-            runners = [_runner_view(row) for row in runs]
-            results.append({
-                "year": r["year"], "date": r["date"], "place": r["place"],
-                "track_type": r["track_type"], "distance": r["distance"],
-                "condition": r["condition"], "head_count": r["head_count"],
-                "win_time": r["win_time_sec"], "winner_pop": r["winner_pop"],
-                "pay": {"win": r["winner_pay"], "umaren": r["pay_umaren"],
-                        "sanrenpuku": r["pay_sanrenpuku"], "sanrentan": r["pay_sanrentan"]},
-                "top3": top3, "runners": runners,
-            })
-
-        all_runs = [row for race_id in race_ids for row in runs_by_race.get(race_id, ())]
-        numeric_runs = [row for row in all_runs if row["rank"] is not None]
-
-        aggregates = {
-            "popularity": _bucket_stats(numeric_runs, _POP_BUCKETS, lambda r: r["popularity"]),
-            "waku": [_group_summary(str(w), [r for r in numeric_runs if r["waku"] == w])
-                    for w in range(1, 9)],
-            "kyaku": [_group_summary(label, [r for r in numeric_runs if r["kyaku"] == label])
-                     for label in ("逃げ", "先行", "差し", "追込")],
-            "sex_age": _group_by_key(numeric_runs,
-                                     lambda r: _sex_age_label(r["sex"], r["age"]), min_n=1),
-            "affi": [_group_summary(_AFFI_LABELS[code],
-                                    [r for r in numeric_runs if r["affi_norm"] == code])
-                    for code in ("美", "栗")
-                    if any(r["affi_norm"] == code for r in numeric_runs)],
-            "sire": _group_by_key(numeric_runs, lambda r: r["sire"], min_n=3, top=8),
-            "jockey": _group_by_key(numeric_runs, lambda r: r["jockey"], min_n=3, top=8),
-            "prev_race": _group_by_key(
-                numeric_runs,
-                lambda r: normalize_race_name(r["prev_race_name"])[0] if r["prev_race_name"] else None,
-                min_n=3, top=10),
-            "prev_rank_band": _bucket_stats(
-                [r for r in numeric_runs if r["prev_rank"] is not None], _PREV_RANK_BUCKETS,
-                lambda r: r["prev_rank"]),
-            "weight": _bucket_stats([r for r in numeric_runs if r["weight"] is not None],
-                                    _WEIGHT_BUCKETS, lambda r: r["weight"]),
-            "interval": _bucket_stats(
-                [r for r in numeric_runs if r["prev_interval_days"] is not None],
-                _INTERVAL_BUCKETS, lambda r: r["prev_interval_days"]),
-        }
-
-        fav = next((g for g in aggregates["popularity"] if g["label"] == "1番人気"), None)
-        winner_pops = [r["winner_pop"] for r in selected if r["winner_pop"] is not None]
-        winner_pays = [r["winner_pay"] for r in selected if r["winner_pay"] is not None]
-        sanrentan_rows = [r for r in selected if r["year"] >= 2025 and r["pay_sanrentan"] is not None]
-        max_win = None
-        if winner_pays:
-            best = max(selected, key=lambda r: r["winner_pay"] if r["winner_pay"] is not None else -1)
-            if best["winner_pay"] is not None:
-                winner_run = next((row for row in runs_by_race.get(best["race_id"], ())
-                                   if row["rank"] == 1), None)
-                max_win = {"year": best["year"],
-                          "horse": winner_run["horse"] if winner_run else None,
-                          "pay": best["winner_pay"]}
-        upset = {
-            "fav_win_rate": fav["win_rate"] if fav else None,
-            "fav_fuku_rate": fav["fuku_rate"] if fav else None,
-            "avg_winner_pop": round(sum(winner_pops) / len(winner_pops), 2) if winner_pops else None,
-            "avg_win_pay": round(sum(winner_pays) / len(winner_pays), 1) if winner_pays else None,
-            "avg_sanrentan": {
-                "value": round(sum(r["pay_sanrentan"] for r in sanrentan_rows) / len(sanrentan_rows), 1)
-                        if sanrentan_rows else None,
-                "n": len(sanrentan_rows),
-            },
-            "max_win_pay": max_win,
-        }
-
-        years_used = sorted({r["year"] for r in selected})
-        payload = {
-            "master": dict(master_row),
-            "course_history": course_history,
-            "results": results,
-            "aggregates": aggregates,
-            "upset": upset,
-            "n_years_used": len(years_used),
-            "years_range": f"{years_used[0]}〜{years_used[-1]}" if years_used else None,
-            "same_course_filter": same_course,
-        }
         return jsonify(payload)
     finally:
         conn.close()
+
+
+def _is_valid_race_url(url):
+    """JRAの出馬表URL (accessD.html?CNAME=...) かどうかの簡易チェック
+    (SPEC-T79b §2.3-1)。既存コード (jra_win5.py 等) と同じ判定基準。"""
+    return bool(url) and "accessD.html" in url and "CNAME=" in url
+
+
+@bp.route("/api/pick")
+def api_pick():
+    if not _cache_available():
+        return _missing_cache_response()
+    url = request.args.get("url")
+    if not _is_valid_race_url(url):
+        return jsonify({"error": "url is required (JRA accessD.html?CNAME=... 形式)"}), 400
+    key = request.args.get("key")
+    if not key:
+        return jsonify({"error": "key is required"}), 400
+    years_param = request.args.get("years", "10")
+    same_course = request.args.get("same_course") == "1"
+
+    import jra_ev
+
+    cached = jra_ev.get_cached_analysis(url)
+    if cached and cached.get("result"):
+        result = cached["result"]
+        source = "cache"
+    else:
+        result = _scrape_cache_get(url)
+        if result is not None:
+            source = "scrape_cache"
+        else:
+            from api.index import analyze_race_url
+            source = "scrape"
+            try:
+                result = analyze_race_url(url, "簡易")
+            except Exception as e:  # noqa: BLE001 - 外部サイト解析なので何が飛んでくるか分からない
+                return jsonify({"error": f"出馬表の解析に失敗しました: {e}"}), 502
+            _scrape_cache_put(url, result)
+
+    horses = (result or {}).get("horses") or []
+    if not horses:
+        return jsonify({"error": "出走馬データを取得できませんでした"}), 502
+
+    # SPEC-T79b §2.3-2: EV監視の同URLレースがあれば horses[].pop (実際の人気) を使う。
+    ev_by_num = {}
+    ev_rec = next((rec for rec in jra_ev.STATE.get("races", {}).values()
+                  if rec.get("url") == url), None)
+    if ev_rec:
+        for h in ev_rec.get("horses") or []:
+            if h.get("num") is not None:
+                ev_by_num[h["num"]] = h
+
+    conn = _conn()
+    try:
+        history = _load_key_history(conn, key, years_param, same_course)
+        if history is None:
+            return jsonify({"error": f"unknown key: {key}"}), 404
+        known_keys = _known_keys_dict(conn)
+    finally:
+        conn.close()
+
+    sponsors = load_sponsors()
+    aliases = load_aliases()
+    aggregates = history["aggregates"]
+    overall_fuku_rate = history["overall_fuku_rate"]
+
+    entries = []
+    for h in horses:
+        if h.get("scratched"):
+            continue
+        ev_h = ev_by_num.get(h.get("num"))
+        attrs = graded_pick.derive_entry_attrs(
+            h, ev_horse=ev_h, known_keys=known_keys, sponsors=sponsors, aliases=aliases)
+        scored = graded_pick.score_entry(attrs, aggregates, overall_fuku_rate)
+
+        pop_val = (ev_h or {}).get("pop")
+        if pop_val is None:
+            pop_val = h.get("pop")
+        try:
+            pop_val = int(float(pop_val)) if pop_val is not None else None
+        except (TypeError, ValueError):
+            pop_val = None
+
+        entries.append({
+            "num": h.get("num"), "name": h.get("name"), "pop": pop_val,
+            "odds": h.get("odds"), "attrs": attrs,
+            "score": scored["score"], "score_ex_pop": scored["score_ex_pop"],
+            "hits": scored["hits"], "misses": scored["misses"], "detail": scored["detail"],
+        })
+
+    entries.sort(key=lambda e: -e["score_ex_pop"])
+
+    def _pop_sort_key(pop):
+        return pop if pop is not None else 9999
+
+    picks = [e["num"] for e in
+             sorted(entries, key=lambda e: (-e["score_ex_pop"], _pop_sort_key(e["pop"])))[:3]]
+
+    return jsonify({
+        "race": {"venue": result.get("venue"), "race_num": result.get("race_num"),
+                "race_info": result.get("race_info"), "url": url, "source": source},
+        "key": key, "display_name": history["master"].get("display_name") or key,
+        "n_years_used": history["n_years_used"], "overall_fuku_rate": overall_fuku_rate,
+        "entries": entries, "picks": picks,
+    })

@@ -50,6 +50,10 @@
     .gd-upset-kpi .label { font-size: 11px; color: var(--text-muted); }
     .gd-upset-kpi .value { display: block; font-size: 20px; color: var(--text-main); font-weight: 650; margin-top: 6px; }
     .gd-result-row { cursor: pointer; }
+    .gd-pick td { background: rgba(78,214,176,.12) !important; font-weight: 600; }
+    .gd-pick-chip { display: inline-block; margin: 1px 3px 1px 0; padding: 1px 6px; border-radius: 999px;
+                    font-size: 10.5px; background: rgba(255,255,255,.05); border: 1px solid var(--border-color); }
+    .gd-pick-miss { opacity: .85; }
     .gd-runners-row td { background: rgba(255,255,255,.02); text-align: left; }
     .gd-runners-table { width: 100%; font-size: 11px; border-collapse: collapse; }
     .gd-runners-table th, .gd-runners-table td { padding: 4px 8px; border-bottom: 1px dashed var(--border-color); text-align: center; }
@@ -107,6 +111,24 @@
             <div class="gd-course-note" id="hCourseNote"></div>
         </div>
 
+        <div class="pf-section" id="pickSection" hidden>
+            <div class="pf-title">今回の出走馬と過去傾向の照合</div>
+            <div class="pf-meta">傾向の一致度 (参考)。予測スコア・購入判断には使っていません</div>
+            <div class="gd-controls" style="margin-top:10px;">
+                <label><input type="checkbox" id="pickSortPop"> 人気込みで並べ替え</label>
+            </div>
+            <div id="pickStatus" class="pf-meta" role="status" aria-live="polite"></div>
+            <div class="pf-table-scroll">
+                <table class="pf-table">
+                    <thead><tr>
+                        <th>順位</th><th>馬番</th><th>馬名</th><th>人気</th><th>一致度</th>
+                        <th>好条件</th><th>不利条件</th>
+                    </tr></thead>
+                    <tbody id="pickBody"></tbody>
+                </table>
+            </div>
+        </div>
+
         <div class="pf-section" id="resultsSection">
             <div class="pf-title">過去の結果</div>
             <div class="pf-table-scroll">
@@ -153,9 +175,13 @@
         resultsBody: document.getElementById("resultsBody"),
         trendsGrid: document.getElementById("trendsGrid"),
         upsetKpis: document.getElementById("upsetKpis"),
+        pickSection: document.getElementById("pickSection"),
+        pickStatus: document.getElementById("pickStatus"),
+        pickBody: document.getElementById("pickBody"),
+        pickSortPop: document.getElementById("pickSortPop"),
     };
 
-    var state = { master: [], key: null, years: "10", sameCourse: false };
+    var state = { master: [], key: null, years: "10", sameCourse: false, url: null, pickData: null };
 
     function setStatus(text) { els.status.textContent = text; }
 
@@ -237,7 +263,7 @@
                 tag.textContent = r.grade_latest;
                 btn.appendChild(tag);
             }
-            btn.addEventListener("click", function () { selectKey(r.key); });
+            btn.addEventListener("click", function () { selectKey(r.key, r.url); });
             els.thisWeekChips.appendChild(btn);
         });
     }
@@ -262,8 +288,9 @@
             });
     }
 
-    function selectKey(key) {
+    function selectKey(key, url) {
         state.key = key;
+        state.url = url || null;
         setKeyInUrl(key);
         renderRaceSelect(els.raceFilter.value);
         loadHistory();
@@ -273,6 +300,7 @@
         if (!state.key) { return; }
         setStatus("読み込み中…");
         els.content.hidden = true;
+        hidePick();
         var params = new URLSearchParams({
             key: state.key, years: state.years, same_course: state.sameCourse ? "1" : "0",
         });
@@ -286,8 +314,99 @@
             renderResults(data);
             renderTrends(data);
             renderUpset(data);
+            loadPick();
         }).catch(function (err) {
             setStatus("読み込みに失敗しました: " + err.message);
+        });
+    }
+
+    // SPEC-T79b §2.4: 今週チップ (URL付き) から選んだ場合だけ、出走馬と過去傾向の
+    // 照合セクションを取得・表示する。予測・購入判断には一切使わない参考表示。
+    function hidePick() {
+        els.pickSection.hidden = true;
+        state.pickData = null;
+        els.pickBody.innerHTML = "";
+        els.pickStatus.textContent = "";
+    }
+
+    function loadPick() {
+        if (!state.url || !state.key) { hidePick(); return; }
+        els.pickSection.hidden = false;
+        els.pickStatus.textContent = "取得中…";
+        els.pickBody.innerHTML = "";
+        var params = new URLSearchParams({
+            key: state.key, url: state.url, years: state.years,
+            same_course: state.sameCourse ? "1" : "0",
+        });
+        fetch("api/pick?" + params.toString(), { cache: "no-store" }).then(function (res) {
+            if (!res.ok) { return res.json().then(function (d) { throw new Error(d.error || ("HTTP " + res.status)); }); }
+            return res.json();
+        }).then(function (data) {
+            state.pickData = data;
+            renderPick(data);
+        }).catch(function (err) {
+            els.pickStatus.textContent = "解析結果がありません (解析開始で取得): " + err.message;
+        });
+    }
+
+    // レビュー対応: 区分名の無いラベル (例 "1着"「1」) だけでは何の区分かわからない
+    // ため、区分ごとの接頭辞を付ける。人気/脚質/性齢/所属/間隔は元のラベル自体が
+    // 区分を表しているので接頭辞なし。
+    var PICK_FACTOR_PREFIX = {
+        popularity: "", waku: "枠", kyaku: "", sex_age: "", affi: "",
+        prev_race: "前走 ", prev_rank: "前走", sire: "父 ", jockey: "騎手 ",
+        weight: "馬体重", interval: "",
+    };
+
+    function pickChip(item, cls) {
+        var prefix = PICK_FACTOR_PREFIX.hasOwnProperty(item.factor) ? PICK_FACTOR_PREFIX[item.factor] : "";
+        return "<span class=\"gd-pick-chip" + (cls ? " " + cls : "") + "\">" + prefix + item.label +
+            "(複勝" + Math.round((item.fuku_rate || 0) * 100) + "%・n" + item.n + ")</span>";
+    }
+
+    function renderPick(data) {
+        var entries = (data.entries || []).slice();
+        var sortPop = !!(els.pickSortPop && els.pickSortPop.checked);
+        entries.sort(function (a, b) {
+            var av = sortPop ? a.score : a.score_ex_pop;
+            var bv = sortPop ? b.score : b.score_ex_pop;
+            return (bv == null ? -Infinity : bv) - (av == null ? -Infinity : av);
+        });
+        els.pickBody.innerHTML = "";
+        if (!entries.length) {
+            els.pickStatus.textContent = "出走馬データがありません。";
+            return;
+        }
+        els.pickStatus.textContent = "";
+        var picks = data.picks || [];
+        entries.forEach(function (e, idx) {
+            var scoreVal = sortPop ? e.score : e.score_ex_pop;
+            var tr = document.createElement("tr");
+            tr.className = "gd-result-row" + (picks.indexOf(e.num) !== -1 ? " gd-pick" : "");
+            tr.innerHTML =
+                "<td>" + (idx + 1) + "</td>" +
+                "<td>" + (e.num != null ? e.num : "-") + "</td>" +
+                "<td class=\"left\">" + (e.name || "-") + "</td>" +
+                "<td>" + (e.pop != null ? e.pop + "番人気" : "-") + "</td>" +
+                "<td>" + (scoreVal != null ? scoreVal.toFixed(2) : "-") + "</td>" +
+                "<td class=\"left\">" + (e.hits || []).map(function (h) { return pickChip(h); }).join(" ") + "</td>" +
+                "<td class=\"left\">" + (e.misses || []).map(function (m) { return pickChip(m, "gd-pick-miss"); }).join(" ") + "</td>";
+            els.pickBody.appendChild(tr);
+
+            var detailTr = document.createElement("tr");
+            detailTr.className = "gd-runners-row";
+            detailTr.hidden = true;
+            var td = document.createElement("td");
+            td.colSpan = 7;
+            td.className = "left";
+            td.textContent = (e.detail && e.detail.length) ? e.detail.map(function (d) {
+                return d.factor + ":" + d.label + " n=" + d.n + " 複勝" +
+                    Math.round((d.fuku_rate || 0) * 100) + "% lift=" + d.lift.toFixed(3);
+            }).join(" / ") : "詳細データなし";
+            detailTr.appendChild(td);
+            els.pickBody.appendChild(detailTr);
+
+            tr.addEventListener("click", function () { detailTr.hidden = !detailTr.hidden; });
         });
     }
 
@@ -468,6 +587,9 @@
     els.sameCourseOnly.addEventListener("change", function () {
         state.sameCourse = els.sameCourseOnly.checked;
         loadHistory();
+    });
+    els.pickSortPop.addEventListener("change", function () {
+        if (state.pickData) { renderPick(state.pickData); }
     });
 
     window.addEventListener("message", function (event) {
