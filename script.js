@@ -67,6 +67,9 @@ function updateRowMarkStyle(row, num) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    // コース図の風オーバーレイ表示設定 (既定: 表示)
+    applyCourseWindPreference();
+
     const courseDialog = document.getElementById('courseMapDialog');
     if (courseDialog) courseDialog.addEventListener('close', restoreCourseMap);
     // Tab Switching
@@ -771,6 +774,8 @@ function getCoursePresentation(data) {
 let courseImageRequestId = 0;
 let windRequestId = 0;
 
+const COURSE_WIND_PREF_KEY = 'jra.courseWindOverlay';
+
 function toggleCourseWind(visible) {
     const svg = document.getElementById('windOverlay');
     const legend = document.getElementById('windLegend');
@@ -779,6 +784,16 @@ function toggleCourseWind(visible) {
         else svg.setAttribute('hidden', '');
     }
     if (legend) legend.hidden = !visible;
+    // 風オーバーレイの表示設定は端末ごとに記憶する (既定は表示。2026-09-21 ユーザー要望)
+    try { window.localStorage.setItem(COURSE_WIND_PREF_KEY, visible ? '1' : '0'); } catch (e) { /* noop */ }
+}
+
+function applyCourseWindPreference() {
+    let visible = true;
+    try { visible = window.localStorage.getItem(COURSE_WIND_PREF_KEY) !== '0'; } catch (e) { /* noop */ }
+    const checkbox = document.getElementById('showWindOverlay');
+    if (checkbox) checkbox.checked = visible;
+    toggleCourseWind(visible);
 }
 
 function openCourseMap() {

@@ -38,7 +38,7 @@
                     <h2 id="courseOverviewTitle">コース・風バイアス</h2>
                     <p id="courseContext" class="app-subtitle">レースを選ぶと、対象競馬場のコース図を表示します。</p></div>
                 <div class="course-map-actions">
-                    <label class="course-wind-toggle"><input type="checkbox" id="showWindOverlay" onchange="toggleCourseWind(this.checked)">図に風を重ねる</label>
+                    <label class="course-wind-toggle"><input type="checkbox" id="showWindOverlay" checked onchange="toggleCourseWind(this.checked)">図に風を重ねる</label>
                     <button type="button" id="expandCourseMap" onclick="openCourseMap()" disabled>コース図を拡大</button>
                     <a id="courseOfficialLink" target="_blank" rel="noopener noreferrer" hidden>JRA公式コース紹介 ↗</a>
                 </div>
@@ -48,11 +48,11 @@
                     <div id="courseMapHome" class="course-map-home">
                         <div class="course-map-wrap">
                             <img id="courseLayoutImage" alt="対象競馬場のコース平面図" style="display:none;">
-                            <svg id="windOverlay" class="wind-overlay" viewBox="0 0 570 400" hidden aria-hidden="true"></svg>
+                            <svg id="windOverlay" class="wind-overlay" viewBox="0 0 570 400" aria-hidden="true"></svg>
                         </div>
                     </div>
                     <figcaption id="courseImageStatus">コース図はまだ読み込まれていません。</figcaption>
-                    <div class="wind-legend" id="windLegend" hidden></div>
+                    <div class="wind-legend" id="windLegend"></div>
                 </figure>
                 <aside class="course-wind-panel" aria-labelledby="windOverviewTitle">
                     <div class="app-eyebrow">WIND CONDITIONS</div>
