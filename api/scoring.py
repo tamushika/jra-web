@@ -915,16 +915,38 @@ def debut_field_warning(horses, race_class, race_label=""):
 
 
 def compute_score_ml(h, race_context, factor_table, cfg):
+    """互換API。確率を使う呼び出し元は assess_ml_score の出自も確認する。"""
+    assessment = assess_ml_score(h, race_context, factor_table, cfg)
+    return assessment["score"], assessment["details"]
+
+
+def assess_ml_score(h, race_context, factor_table, cfg):
     """
-    MLスコア (ロジスティック回帰の線形結合)。モデル未配置・例外時は手調整スコアへフォールバック。
-    戻り値: (score, details)
+    ML/参考スコアを出自付きで返す。参考スコアは確率化してはならない。
     """
+    import math
+
+    def fallback(reason):
+        try:
+            score, details = compute_score(h, race_context, factor_table, cfg)
+            if score is not None and math.isfinite(float(score)):
+                return {"score": score, "details": list(details) + ["参考スコア・確率判定不可"],
+                        "source": "fallback", "failure_reason": reason}
+        except Exception:
+            pass
+        return {"score": None, "details": ["採点不可"],
+                "source": "unavailable", "failure_reason": reason}
+
     if is_debut_horse(h):
-        return None, ["初出走のためML対象外"]
-    model = load_ml_model()
-    if model is None:
-        return compute_score(h, race_context, factor_table, cfg)
+        return {"score": None, "details": ["初出走のためML対象外"],
+                "source": "unavailable", "failure_reason": "初出走"}
     try:
+        model = load_ml_model()
+        if model is None:
+            return fallback("MLモデル未配置")
+        if not model["features"] or not (len(model["features"]) == len(model["mean"])
+                == len(model["sd"]) == len(model["coef"])):
+            raise ValueError("invalid model dimensions")
         f = _ml_features(h, race_context, factor_table, cfg)
         scale = model.get("display_scale", 10.0)
         contribs = []
@@ -947,10 +969,30 @@ def compute_score_ml(h, race_context, factor_table, cfg):
                 extra = f"({int(f['prev_rank'])}着)"
             details.append(f"ML {label}{extra}: {c:+.1f}")
         score = round(total, 1)
+        if not math.isfinite(score):
+            raise ValueError("non-finite ML score")
         details.append(f"合計(ML): {score:+.1f}")
-        return score, details
+        return {"score": score, "details": details, "source": "ml", "failure_reason": None}
     except Exception:
-        return compute_score(h, race_context, factor_table, cfg)
+        return fallback("ML計算失敗")
+
+
+def ml_probability_quality(horses, score_key="ml_score"):
+    """全出走馬の正常ML採点を要求。部分集合を100%に再正規化しない。"""
+    import math
+    active = [h for h in horses if not any(h.get(key) for key in
+              ("scratched", "cancelled", "withdrawn", "is_scratched"))]
+    missing = []
+    for horse in active:
+        value = horse.get(score_key)
+        valid = (isinstance(value, (int, float)) and not isinstance(value, bool)
+                 and math.isfinite(value) and horse.get("score_source") == "ml")
+        if not valid:
+            missing.append({"num": horse.get("num"), "reason":
+                            horse.get("score_failure_reason") or "正常MLスコア未確認"})
+    total = len(active)
+    return {"scored": total - len(missing), "total": total,
+            "ok": total >= 2 and not missing, "missing": missing}
 
 
 def compute_place_prob(h, race_context, factor_table, cfg):
@@ -1109,6 +1151,10 @@ def win_probs_from_ml_scores(scores):
         return None
     scale = model.get("display_scale", 10.0) or 10.0
     temp = model.get("prob_temperature", 1.0) or 1.0
+    if (not all(isinstance(s, (int, float)) and not isinstance(s, bool) and _m.isfinite(s)
+                for s in scores) or not _m.isfinite(scale) or not _m.isfinite(temp)
+            or scale <= 0 or temp <= 0):
+        return None
     raw = [s / scale / temp for s in scores]
     mx = max(raw)
     e = [_m.exp(r - mx) for r in raw]

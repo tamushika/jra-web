@@ -2,7 +2,7 @@
 
 対応する仕様 (口頭仕様、docs化なし):
   A. jra_ev.compute_picks に ML縮退ガードを追加。
-     scored (ml_score有、非scratched) が母数 (非scratched) の過半かつ2頭以上でなければ
+     正常ML採点が全出走馬 (取消除外、2頭以上) に揃わなければ
      softmaxを計算せず全馬 win_prob/ev/picked を None/None/False のままにする。
   B. api/index.get_race_class で「メイクデビュー」を新馬判定に含める
      (オープン判定より前)。
@@ -23,6 +23,7 @@ def _horse(num, odds=None, pop=None, ml_score=None, scratched=False, web_score=N
     return {
         "num": num, "name": f"馬{num}", "odds": odds, "pop": pop,
         "ml_score": ml_score, "scratched": scratched, "web_score": web_score,
+        "score_source": "ml",
     }
 
 
@@ -43,9 +44,9 @@ def test_single_scored_horse_degrades_to_no_picks():
         assert h["picked"] is False
 
 
-# ─── (b) 16頭・ml_score13頭 → 13頭に確率、3頭はNone、pickedは従来どおり ──────────
+# ─── (b) 16頭・ml_score13頭 → 部分集合への確率配分を抑止 ────────────────────
 
-def test_sufficient_coverage_keeps_existing_softmax_behavior(monkeypatch):
+def test_partial_coverage_does_not_renormalize_subset(monkeypatch):
     horses = [_horse(i + 1, odds="2.0", pop=i + 1, ml_score=1.0) for i in range(13)]
     horses += [_horse(i + 14, odds="10.0", pop=i + 14, ml_score=None) for i in range(3)]
     # 先頭馬だけ高確率・低オッズならず、ev>=1.1になるようoddsを調整
@@ -58,27 +59,12 @@ def test_sufficient_coverage_keeps_existing_softmax_behavior(monkeypatch):
 
     n_picked = jra_ev.compute_picks(horses, PARAMS)
 
-    scored_horses = horses[:13]
-    unscored_horses = horses[13:]
-
-    # win_probはcompute_picks内でround(p, 4)されるため、丸め誤差込みでほぼ1.0
-    assert sum(h["win_prob"] for h in scored_horses) == pytest.approx(1.0, abs=1e-3)
-    for h in unscored_horses:
+    for h in horses:
         assert h["win_prob"] is None
         assert h["ev"] is None
         assert h["picked"] is False
 
-    # horse[0]: p=0.5, odds=3.0 -> ev=1.5 >=1.1, odds<=50, p>=0.02 -> picked
-    assert horses[0]["win_prob"] == pytest.approx(0.5)
-    assert horses[0]["ev"] == pytest.approx(1.5)
-    assert horses[0]["picked"] is True
-
-    # horse[1..12]: p=0.5/12, odds=2.0 -> ev far below 1.1 -> not picked
-    for h in horses[1:13]:
-        assert h["ev"] == pytest.approx(round(0.5 / 12 * 2.0, 2))
-        assert h["picked"] is False
-
-    assert n_picked == 1
+    assert n_picked == 0
 
 
 # ─── (c) 10頭・ml_score3頭 (30%) → ガード発動で全馬None ────────────────────────
@@ -97,29 +83,28 @@ def test_below_ratio_threshold_degrades_to_no_picks():
         assert h["picked"] is False
 
 
-# ─── (d) 10頭中4頭scratched・残6頭中4頭にml_score → 母数6で4/6>=0.5、確率が付く ──
+# ─── (d) 10頭中4頭scratched・残6頭全馬ML → 取消馬には配分しない ──────────────
 
 def test_scratched_horses_excluded_from_denominator(monkeypatch):
     horses = [_horse(i + 1, odds="4.0", pop=i + 1) for i in range(10)]
     for i in range(4):
         horses[i]["scratched"] = True  # ml_score無し、母数から除外
-    for i in range(4, 8):
-        horses[i]["ml_score"] = 1.0  # 非scratched6頭中4頭に付与
-    # 残り2頭 (index 8,9) はml_score無し (非scratched)
+    for i in range(4, 10):
+        horses[i]["ml_score"] = 1.0
 
     monkeypatch.setattr(jra_ev.scoring, "win_probs_from_ml_scores",
                          lambda scores: [1.0 / len(scores)] * len(scores) if scores else None)
 
     n_picked = jra_ev.compute_picks(horses, PARAMS)
 
-    scored_horses = horses[4:8]
+    scored_horses = horses[4:]
     for h in scored_horses:
-        assert h["win_prob"] == pytest.approx(0.25)
-    for h in horses[:4] + horses[8:]:
+        assert h["win_prob"] == pytest.approx(round(1 / 6, 4))
+    for h in horses[:4]:
         assert h["win_prob"] is None
         assert h["ev"] is None
         assert h["picked"] is False
-    # n_picked は EV=0.25*4.0=1.0 <1.1 のため0
+    # n_picked は EV=(1/6)*4.0 <1.1 のため0
     assert n_picked == 0
 
 
@@ -152,8 +137,10 @@ def test_analyze_one_record_includes_ml_coverage(monkeypatch):
     monkeypatch.setattr(jra_ev.scoring, "load_factor_table", lambda *args: {})
     # 9番相当の1頭だけmlスコアが付く (新馬戦で履歴1行だけ検出されたケースを模す)
     monkeypatch.setattr(
-        jra_ev.scoring, "compute_score_ml",
-        lambda h, rc, factor_table, cfg: (-4.8 if h.get("num") == 9 else None, {}))
+        jra_ev.scoring, "assess_ml_score",
+        lambda h, rc, factor_table, cfg: {"score": -4.8 if h.get("num") == 9 else None,
+            "details": [], "source": "ml" if h.get("num") == 9 else "unavailable",
+            "failure_reason": None if h.get("num") == 9 else "初出走"})
     monkeypatch.setattr(jra_ev.scoring, "is_debut_horse", lambda h: h.get("num") != 9)
     monkeypatch.setattr(jra_ev, "_data_version", lambda: "test")
 

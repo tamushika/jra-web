@@ -9,6 +9,7 @@
     URLは素通しする (index.app の scrape() が呼ばれる)。
 """
 import pytest
+from datetime import datetime
 
 import jra_ev
 import jra_suite
@@ -33,7 +34,8 @@ def suite_client():
 def _patch_scoring_noop(monkeypatch):
     monkeypatch.setattr(jra_ev.scoring, "load_score_weights", lambda *_a: {})
     monkeypatch.setattr(jra_ev.scoring, "load_factor_table", lambda *_a: {})
-    monkeypatch.setattr(jra_ev.scoring, "compute_score_ml", lambda horse, *_a: (None, []))
+    monkeypatch.setattr(jra_ev.scoring, "assess_ml_score", lambda horse, *_a:
+                        {"score": None, "details": [], "source": "unavailable", "failure_reason": "test"})
     monkeypatch.setattr(jra_ev, "LoggingStore", None)
 
 
@@ -59,16 +61,35 @@ def test_analyze_one_caches_result_with_cached_at_and_stage(monkeypatch):
     assert entry["result"]["race_info"] == "【東京 1R】芝1600m 10:00発走"
 
 
-def test_analyze_one_does_not_cache_analysis_excluded_or_jump(monkeypatch):
+def test_analyze_one_keeps_default_exclusion_and_can_return_display_placeholder(monkeypatch):
     monkeypatch.setattr(jra_ev, "analyze_race_url", lambda u, mode: {
         "analysis_excluded": True, "race_type": "障害", "venue": "小倉",
-        "race_num": 1, "race_info": "【小倉 1R】障害2860m",
+        "race_num": 1, "race_info": "【小倉 1R】障害2860m 09:50発走",
+        "race_date": "20260919", "start_time": "09:50",
     })
     url = "fixture://jump"
 
-    result = jra_ev.analyze_one(url, dict(jra_ev.STATE["params"]))
+    assert jra_ev.analyze_one(url, dict(jra_ev.STATE["params"])) is None
+    result = jra_ev.analyze_one(
+        url, dict(jra_ev.STATE["params"]), day_label="9/19(土)",
+        include_excluded=True)
 
-    assert result is None
+    assert result == {
+        "analysis_excluded": True,
+        "excluded_reason": "jump_race",
+        "excluded_reason_label": "障害レースのため予測対象外",
+        "race_type": "障害",
+        "venue": "小倉",
+        "race_num": 1,
+        "race_info": "【小倉 1R】障害2860m 09:50発走",
+        "race_date": "20260919",
+        "start_time": "09:50",
+        "day_label": "9/19(土)",
+        "url": url,
+        "horses": [],
+        "n_picked": 0,
+        "wide_picks": [],
+    }
     assert jra_ev.get_cached_analysis(url) is None
 
 
@@ -84,11 +105,13 @@ def test_analyze_start_endpoint_clears_race_analysis_cache(monkeypatch):
     jra_ev.RACE_ANALYSIS_CACHE["dummy"] = {
         "result": {}, "cached_at": "00:00:00", "stage": None, "race_date": None,
     }
+    jra_ev.STATE["excluded_races"] = {"阪神_4": {"analysis_excluded": True}}
 
     resp = jra_ev.app.test_client().post("/api/analyze_start", json={})
 
     assert resp.status_code == 200
     assert jra_ev.RACE_ANALYSIS_CACHE == {}
+    assert jra_ev.STATE["excluded_races"] == {}
 
 
 def test_auto_start_clears_race_analysis_cache(monkeypatch):
@@ -97,10 +120,12 @@ def test_auto_start_clears_race_analysis_cache(monkeypatch):
     jra_ev.RACE_ANALYSIS_CACHE["dummy"] = {
         "result": {}, "cached_at": "00:00:00", "stage": None, "race_date": None,
     }
+    jra_ev.STATE["excluded_races"] = {"阪神_4": {"analysis_excluded": True}}
 
     jra_ev._auto_start()
 
     assert jra_ev.RACE_ANALYSIS_CACHE == {}
+    assert jra_ev.STATE["excluded_races"] == {}
 
 
 # ─── suite: /race/api/scrape のキャッシュ短絡 ──────────────────────────────
@@ -108,9 +133,11 @@ def test_auto_start_clears_race_analysis_cache(monkeypatch):
 def test_race_scrape_returns_cached_result_without_calling_index_scrape(
         suite_client, monkeypatch):
     url = "https://www.jra.go.jp/JRADB/accessD.html?CNAME=t73b-suite-hit"
+    now = datetime.now(jra_ev.JST)
     jra_ev.RACE_ANALYSIS_CACHE[url] = {
         "result": {"race_info": "キャッシュ 5R", "race_num": 5, "venue": "東京", "horses": []},
-        "cached_at": "12:34:56", "stage": 5, "race_date": "20260907",
+        "cached_at": "12:34:56", "stage": 5, "race_date": now.strftime("%Y%m%d"),
+        "captured_at": now.isoformat(), "cache_version": "fixture-version",
     }
 
     def _boom(*_args, **_kwargs):

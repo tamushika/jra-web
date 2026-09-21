@@ -11,6 +11,16 @@ let trackBiasCache = {}; // { 競馬場名: APIレスポンス }
 let globalMatrixData = null; // マトリクス表示用データ
 let allHorseMarks = {}; // { raceUrl: { horseNum: mark } } レースURL別の印
 let currentMarkUrl = ''; // 現在表示中レースのURL
+let raceViewEpoch = 0;
+let evSummaryRequestId = 0;
+let embeddedAutopickRequestId = 0;
+const MONITOR_SYNC_INTERVAL_MS = 15000;
+const MONITOR_SYNC_TIMEOUT_MS = 10000;
+const monitorSync = {
+    url: '', timer: null, inFlight: false, controller: null,
+    version: '', capturedAt: null, ageSeconds: null, checkedAt: null,
+    status: 'waiting', reason: null, manualSelection: false,
+};
 // アクティブなレースの印オブジェクトを返す（なければ初期化）
 function getMarks() {
     if (!allHorseMarks[currentMarkUrl]) allHorseMarks[currentMarkUrl] = {};
@@ -57,6 +67,8 @@ function updateRowMarkStyle(row, num) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    const courseDialog = document.getElementById('courseMapDialog');
+    if (courseDialog) courseDialog.addEventListener('close', restoreCourseMap);
     // Tab Switching
     const tabs = document.querySelectorAll('.tab-btn');
     const contents = document.querySelectorAll('.tab-content');
@@ -154,7 +166,14 @@ document.addEventListener('DOMContentLoaded', () => {
             // 一覧状態、または自動選択で開いたレース (ユーザーが選んだのではない)
             // なら新しい解析結果で選び直す。ユーザーが選んだレースは上書きしない。
             if (!queryRaceUrl || queryAutopick) {
-                autoPickRaceFromEvState();
+                if (monitorSync.manualSelection) {
+                    pollMonitorCache();
+                } else {
+                    autoPickRaceFromEvState();
+                }
+            } else {
+                // 手動で選択したレースは移動せず、監視済みの結果だけを再確認する。
+                pollMonitorCache();
             }
         });
     }
@@ -250,6 +269,9 @@ async function renderEmbeddedRaceList() {
 // レース」を選んで自動的にそのレースへ遷移する (T73b の一覧リンクと同じ遷移)。
 // 選べる対象が無ければ従来どおりレース一覧を描画する。
 async function autoPickRaceFromEvState() {
+    const requestId = ++embeddedAutopickRequestId;
+    const viewEpoch = raceViewEpoch;
+    if (IS_EMBEDDED && monitorSync.manualSelection) return;
     const raceInfoEl = document.getElementById('raceInfo');
     if (raceInfoEl) raceInfoEl.textContent = '次のレースを自動選択中...';
 
@@ -261,6 +283,9 @@ async function autoPickRaceFromEvState() {
     } catch (e) {
         console.error(e);
     }
+
+    if (requestId !== embeddedAutopickRequestId || viewEpoch !== raceViewEpoch ||
+            (IS_EMBEDDED && monitorSync.manualSelection)) return;
 
     const now = new Date();
     const nowHHMM = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
@@ -282,6 +307,14 @@ async function startScraping() {
         return;
     }
 
+    const viewEpoch = ++raceViewEpoch;
+    if (IS_EMBEDDED) {
+        monitorSync.url = url;
+        clearTimeout(monitorSync.timer);
+        monitorSync.timer = null;
+        if (monitorSync.controller) monitorSync.controller.abort();
+    }
+
     const cached = apiCache[url];
     if (cached && (mode === '簡易' || cached.mode === '詳細')) {
         applyScrapeData(cached.data, url, cached.mode);
@@ -298,19 +331,167 @@ async function startScraping() {
         
         const data = await response.json();
         if(data.error) throw new Error(data.error);
+        if (viewEpoch !== raceViewEpoch || document.getElementById('urlInput').value.trim() !== url) return;
         
         apiCache[url] = { mode: mode, data: data };
         applyScrapeData(data, url, mode);
         
     } catch(err) {
+        if (viewEpoch !== raceViewEpoch) return;
         console.error(err);
         alert("エラーが発生しました: " + err.message);
     } finally {
-        hideLoading();
+        if (viewEpoch === raceViewEpoch) hideLoading();
     }
 }
 
-function applyScrapeData(data, url, mode) {
+// 監視キャッシュの確認専用。未取得時も api/scrape にフォールバックしない。
+function monitorViewMatches(url, epoch) {
+    const input = document.getElementById('urlInput');
+    return IS_EMBEDDED && epoch === raceViewEpoch && monitorSync.url === url &&
+        currentMarkUrl === url && input && input.value.trim() === url;
+}
+
+function scheduleMonitorSync(delay = MONITOR_SYNC_INTERVAL_MS) {
+    clearTimeout(monitorSync.timer);
+    monitorSync.timer = null;
+    if (!monitorViewMatches(monitorSync.url, raceViewEpoch)) return;
+    monitorSync.timer = setTimeout(pollMonitorCache, delay);
+}
+
+function monitorCacheIsNewer(data) {
+    const version = String(data.cache_version || '');
+    if (!version || version === monitorSync.version) return false;
+    const nextTime = Date.parse(data.captured_at || '');
+    const currentTime = Date.parse(monitorSync.capturedAt || '');
+    if (!Number.isFinite(nextTime)) return false;
+    if (Number.isFinite(currentTime) && nextTime < currentTime) return false;
+    // time_ns の文字列は Number にすると精度を失う。同一ミリ秒も整数で比較する。
+    if (/^\d+$/.test(version) && /^\d+$/.test(monitorSync.version) &&
+            BigInt(version) <= BigInt(monitorSync.version)) return false;
+    return true;
+}
+
+function renderMonitorFreshness() {
+    if (!IS_EMBEDDED || !currentMarkUrl) return;
+    const raceInfo = document.getElementById('raceInfo');
+    if (!raceInfo) return;
+    let label = document.getElementById('monitorFreshness');
+    if (!label) {
+        label = document.createElement('small');
+        label.id = 'monitorFreshness';
+        label.style.display = 'block';
+        label.style.fontWeight = 'normal';
+        raceInfo.appendChild(label);
+    }
+    const elapsed = monitorSync.checkedAt === null ? 0 : (Date.now() - monitorSync.checkedAt) / 1000;
+    const age = monitorSync.ageSeconds === null
+        ? (Date.now() - Date.parse(monitorSync.capturedAt || '')) / 1000
+        : monitorSync.ageSeconds + elapsed;
+    const ageLabel = Number.isFinite(age)
+        ? `取得から${age < 60 ? Math.max(0, Math.floor(age)) + '秒' : Math.floor(age / 60) + '分'}` : '取得日時未確認';
+    let text;
+    if (monitorSync.status === 'error') {
+        text = `⚠ 同期確認に失敗・表示値は前回取得分 (${ageLabel})`;
+    } else if (monitorSync.status === 'unavailable') {
+        const reasons = {
+            different_day: '別開催日・前日以前の記録のため自動更新対象外',
+            invalid_timestamp: '監視記録の取得日時を確認できません',
+            not_cached: '監視キャッシュ待ち（追加の出馬表取得は行いません）',
+        };
+        text = `⚠ ${reasons[monitorSync.reason] || '監視キャッシュ未取得'}・表示値は前回取得分`;
+    } else if (monitorSync.status === 'waiting') {
+        text = '監視キャッシュの同期確認待ち・表示値は解析取得時点';
+    } else {
+        text = `監視キャッシュ同期・${ageLabel}` +
+            (age > 180 ? '（予定取得待ちの場合があります）' : '');
+    }
+    label.textContent = text;
+    label.style.color = monitorSync.status === 'error' || monitorSync.status === 'unavailable' || age > 180
+        ? '#ffb347' : 'var(--text-muted)';
+}
+
+async function pollMonitorCache() {
+    const url = monitorSync.url;
+    const epoch = raceViewEpoch;
+    if (!monitorViewMatches(url, epoch) || monitorSync.inFlight) return;
+    clearTimeout(monitorSync.timer);
+    monitorSync.timer = null;
+    monitorSync.inFlight = true;
+    const controller = new AbortController();
+    monitorSync.controller = controller;
+    const timeout = setTimeout(() => controller.abort(), MONITOR_SYNC_TIMEOUT_MS);
+    try {
+        const response = await fetch('api/cache?url=' + encodeURIComponent(url), {
+            cache: 'no-store', signal: controller.signal,
+        });
+        if (!response.ok) throw new Error('監視キャッシュ取得失敗');
+        const data = await response.json();
+        if (!monitorViewMatches(url, epoch)) return;
+        if (!data.available) {
+            monitorSync.status = 'unavailable';
+            monitorSync.reason = data.reason;
+        } else if (monitorCacheIsNewer(data)) {
+            if (!data.result || typeof data.result !== 'object') throw new Error('監視結果がありません');
+            const result = {...data.result, monitor_captured_at: data.captured_at,
+                monitor_cache_version: data.cache_version};
+            applyMonitorRefresh(result, url);
+            monitorSync.status = 'ready';
+            monitorSync.reason = null;
+            monitorSync.ageSeconds = Number.isFinite(data.age_seconds) ? data.age_seconds : null;
+            monitorSync.checkedAt = Date.now();
+        } else if (String(data.cache_version || '') === monitorSync.version) {
+            monitorSync.status = 'ready';
+            monitorSync.reason = null;
+            monitorSync.ageSeconds = Number.isFinite(data.age_seconds) ? data.age_seconds : null;
+            monitorSync.checkedAt = Date.now();
+            // EV判定は出馬表キャッシュ保存の直後に更新されることがある。
+            // 同一版でもローカル監視状態だけを確認し、出馬表は再描画しない。
+            if (window.lastRaceData) renderEvSummary(window.lastRaceData);
+        }
+    } catch (err) {
+        if (monitorViewMatches(url, epoch)) monitorSync.status = 'error';
+    } finally {
+        clearTimeout(timeout);
+        monitorSync.controller = null;
+        monitorSync.inFlight = false;
+        if (monitorViewMatches(url, epoch)) renderMonitorFreshness();
+        scheduleMonitorSync();
+    }
+}
+
+function applyMonitorRefresh(data, url) {
+    const scrollX = window.scrollX;
+    const scrollY = window.scrollY;
+    const containers = Array.from(document.querySelectorAll('.table-container'))
+        .map(element => ({element, left: element.scrollLeft, top: element.scrollTop}));
+    const selectedHorse = document.getElementById('historyHorseSelect').value;
+    const expanded = Array.from(document.querySelectorAll('#horsesTbody tr[data-horse-num]'))
+        .filter(row => row.nextElementSibling && row.nextElementSibling.classList.contains('history-row') &&
+            row.nextElementSibling.style.display !== 'none')
+        .map(row => row.dataset.horseNum);
+    apiCache[url] = {mode: '簡易', data};
+    applyScrapeData(data, url, '簡易', {passiveRefresh: true});
+    const select = document.getElementById('historyHorseSelect');
+    if (Array.from(select.options).some(option => option.value === selectedHorse)) {
+        select.value = selectedHorse;
+        updateHistoryTable();
+    }
+    document.querySelectorAll('#horsesTbody tr[data-horse-num]').forEach(row => {
+        if (expanded.includes(row.dataset.horseNum)) {
+            const button = row.querySelector('.expand-history-btn');
+            if (button) button.click();
+        }
+    });
+    containers.forEach(({element, left, top}) => {
+        element.scrollLeft = left;
+        element.scrollTop = top;
+    });
+    window.scrollTo(scrollX, scrollY);
+}
+
+function applyScrapeData(data, url, mode, options = {}) {
+    const passiveRefresh = options.passiveRefresh === true && currentMarkUrl === url;
     const raceInfoEl = document.getElementById('raceInfo');
     raceInfoEl.textContent = `${data.race_info} (${mode})` +
         (data.analysis_message ? ` — ${data.analysis_message}` : '') +
@@ -345,14 +526,19 @@ function applyScrapeData(data, url, mode) {
 
     globalHorsesData = data.horses || [];
     currentMarkUrl = url; // アクティブURLを切り替え（印はURLごとに保持）
-    renderHorsesTable(globalHorsesData);
+    const displayHorses = globalHorsesData.slice();
+    if (passiveRefresh && activeSortCol) {
+        const field = {'回収スコア': 'score', '的中スコア': 'score_ml', '複勝率β': 'place_prob'}[activeSortCol];
+        if (field) displayHorses.sort((a, b) => (b[field] ?? -999) - (a[field] ?? -999));
+    }
+    renderHorsesTable(displayHorses);
 
     raceCache[url] = data.has_double_circle;
     globalMatrixData = data.matrix_data || null; // WIN5照合用に保存
     renderMatrix(data.matrix_data, data.venue);
 
     // 競馬場が変わったときにトラックバイアスを自動切替
-    if (data.venue) fetchTrackBias(data.venue);
+    if (data.venue && !passiveRefresh) fetchTrackBias(data.venue);
     
     let ultraText = "";
     globalHorsesData.forEach(h => {
@@ -373,52 +559,7 @@ function applyScrapeData(data, url, mode) {
         courseFeatureElem.innerHTML = title + `<div style="white-space: pre-wrap; line-height: 1.6;">${bodyContent}</div>`;
     }
 
-    const courseImage = document.getElementById('courseLayoutImage');
-    if (courseImage) {
-        // SPEC-T76 §1.3: 解析のたびに前回のオーバーレイ状態をリセットする
-        courseImage.dataset.loadFailed = '0';
-        const windSvg = document.getElementById('windOverlay');
-        const courseMapWrap = courseImage.closest('.course-map-wrap');
-        const windLegendEl = document.getElementById('windLegend');
-        if (windSvg) {
-            windSvg.innerHTML = '';
-            windSvg.setAttribute('viewBox', '0 0 570 400');
-        }
-        if (courseMapWrap) courseMapWrap.classList.remove('fallback');
-        if (windLegendEl) windLegendEl.textContent = '';
-
-        if (data.course_image) {
-            courseImage.src = data.course_image;
-        } else {
-            const vEnMap = {"札幌":"sapporo", "函館":"hakodate", "福島":"fukushima", "新潟":"niigata", "東京":"tokyo", "中山":"nakayama", "中京":"chukyo", "京都":"kyoto", "阪神":"hanshin", "小倉":"kokura"};
-            const tEnMap = {"芝":"turf", "ダート":"dirt", "障害":"jump"};
-            if (vEnMap[data.venue] && tEnMap[data.race_type]) {
-                const vEn = vEnMap[data.venue];
-                const tEn = tEnMap[data.race_type];
-                courseImage.src = `/assets/images/courses/${vEn}_${tEn}_${data.dist_val}.png`;
-            }
-        }
-        courseImage.onerror = () => {
-            courseImage.style.display = 'none';
-            courseImage.dataset.loadFailed = '1';
-            if (courseMapWrap) courseMapWrap.classList.add('fallback');
-            if (windSvg) windSvg.setAttribute('viewBox', '0 0 570 400');
-            if (window.lastWindData && window.lastWindData.venue === data.venue) {
-                renderWindOverlay(window.lastWindData.venue, window.lastWindData.dir, window.lastWindData.speed);
-            }
-        };
-        courseImage.onload = () => {
-            courseImage.style.display = 'block';
-            courseImage.dataset.loadFailed = '0';
-            if (courseMapWrap) courseMapWrap.classList.remove('fallback');
-            if (windSvg && courseImage.naturalWidth && courseImage.naturalHeight) {
-                windSvg.setAttribute('viewBox', `0 0 ${courseImage.naturalWidth} ${courseImage.naturalHeight}`);
-            }
-            if (window.lastWindData && window.lastWindData.venue === data.venue) {
-                renderWindOverlay(window.lastWindData.venue, window.lastWindData.dir, window.lastWindData.speed);
-            }
-        };
-    }
+    updateCourseOverview(data, passiveRefresh);
 
     const select = document.getElementById('historyHorseSelect');
     select.innerHTML = '<option value="">-- 馬を選択 --</option>';
@@ -451,7 +592,7 @@ function applyScrapeData(data, url, mode) {
     if (dCond) dCond.textContent = `[${currentRaceContext.condition}]`;
     
     // Restore cached past data if available, otherwise hide the panel
-    if (!_tryRestorePastData()) {
+    if (!passiveRefresh && !_tryRestorePastData()) {
         const pmContainer = document.getElementById('pastDataResultsContainer');
         if(pmContainer) pmContainer.style.display = 'none';
         const pmStatus = document.getElementById('pastDataStatus');
@@ -466,13 +607,28 @@ function applyScrapeData(data, url, mode) {
     renderBookData(data);
 
     // Fetch Wind Data
-    fetchWindData(data.venue);
+    if (!passiveRefresh) fetchWindData(data.venue);
+
+    if (IS_EMBEDDED) {
+        monitorSync.url = url;
+        monitorSync.version = String(data.monitor_cache_version || '');
+        monitorSync.capturedAt = data.monitor_captured_at || null;
+        monitorSync.ageSeconds = null;
+        monitorSync.checkedAt = null;
+        monitorSync.status = monitorSync.capturedAt ? 'ready' : 'waiting';
+        monitorSync.reason = null;
+        renderMonitorFreshness();
+        if (!passiveRefresh) scheduleMonitorSync(0);
+    }
 
     // SPEC-T73 §2.4: オッズ監視の評価 (統合版のみ。本番Webでは/ev/が存在しないため無視される)
     renderEvSummary(data);
 }
 
 async function renderEvSummary(data) {
+    const requestId = ++evSummaryRequestId;
+    const viewEpoch = raceViewEpoch;
+    const url = currentMarkUrl;
     let evState;
     try {
         const res = await fetch('../ev/api/state');
@@ -481,25 +637,33 @@ async function renderEvSummary(data) {
     } catch (e) {
         return; // 本番Web/未起動時などは静かにスキップ
     }
+    if (requestId !== evSummaryRequestId || viewEpoch !== raceViewEpoch || currentMarkUrl !== url ||
+            (IS_EMBEDDED && !monitorViewMatches(url, viewEpoch))) return;
 
     let box = document.getElementById('evSummary');
+    const summaryHost = document.getElementById('evSummaryHost');
+    const summaryPanel = document.getElementById('evSummaryPanel');
     const races = (evState && evState.races) || [];
-    const race = races.find(r => r.venue === data.venue &&
-        Number(r.race_num) === Number(data.race_num));
+    const race = races.find(r => r.url ? r.url === url :
+        r.venue === data.venue && Number(r.race_num) === Number(data.race_num));
 
     if (!race) {
         if (box) box.remove();
+        if (summaryPanel) summaryPanel.hidden = true;
         return;
     }
+    if (summaryPanel) summaryPanel.hidden = false;
     if (!box) {
         box = document.createElement('div');
         box.id = 'evSummary';
         box.style.margin = '6px 0 10px';
         box.style.fontSize = '13px';
-        const raceInfoEl = document.getElementById('raceInfo');
-        // flex 行 (.status-panel) の外に置く (renderEmbeddedRaceList と同じ理由)
-        const panel = raceInfoEl.closest('.status-panel') || raceInfoEl;
-        panel.insertAdjacentElement('afterend', box);
+        if (summaryHost) summaryHost.appendChild(box);
+        else {
+            const raceInfoEl = document.getElementById('raceInfo');
+            const panel = raceInfoEl.closest('.status-panel') || raceInfoEl;
+            panel.insertAdjacentElement('afterend', box);
+        }
     }
 
     const coverage = race.ml_coverage;
@@ -583,6 +747,130 @@ function renderNotableSiresTable(sires, title) {
             <td>${s.show_rate}</td>
         </tr>`;
     }).join('');
+}
+
+// ---- course presentation helpers (begin) ----
+const COURSE_VENUE_SLUGS = {
+    "札幌":"sapporo", "函館":"hakodate", "福島":"fukushima", "新潟":"niigata", "東京":"tokyo",
+    "中山":"nakayama", "中京":"chukyo", "京都":"kyoto", "阪神":"hanshin", "小倉":"kokura"
+};
+function getCoursePresentation(data) {
+    const slug = COURSE_VENUE_SLUGS[data.venue];
+    const officialPage = slug ? `https://www.jra.go.jp/facilities/race/${slug}/course/` : '';
+    const supplied = String(data.course_image || '');
+    const safeSupplied = /^(?:\/(?!\/)|https:\/\/www\.jra\.go\.jp\/)/.test(supplied) ? supplied : '';
+    const image = safeSupplied || (officialPage ? `${officialPage}img/pic_course_heimenzu.gif` : '');
+    const distance = Number(data.dist_val);
+    const title = [data.venue || '競馬場未確認', data.race_type || '馬場未確認',
+        Number.isFinite(distance) && distance > 0 ? `${distance}m` : '距離未確認'].join(' ');
+    const straightOnly = data.venue === '新潟' && data.race_type === '芝' && distance === 1000;
+    return {title, officialPage, image, straightOnly};
+}
+// ---- course presentation helpers (end) ----
+
+let courseImageRequestId = 0;
+let windRequestId = 0;
+
+function toggleCourseWind(visible) {
+    const svg = document.getElementById('windOverlay');
+    const legend = document.getElementById('windLegend');
+    if (svg) {
+        if (visible) svg.removeAttribute('hidden');
+        else svg.setAttribute('hidden', '');
+    }
+    if (legend) legend.hidden = !visible;
+}
+
+function openCourseMap() {
+    const image = document.getElementById('courseLayoutImage');
+    const dialog = document.getElementById('courseMapDialog');
+    const viewport = document.getElementById('courseMapViewport');
+    if (!image || image.dataset.loadFailed !== '0' || !dialog || !viewport) return;
+    viewport.appendChild(image.closest('.course-map-wrap'));
+    document.getElementById('courseMapDialogTitle').textContent = image.alt;
+    setCourseMapZoom(1);
+    if (!dialog.open) dialog.showModal();
+}
+
+function setCourseMapZoom(scale) {
+    if (![1, 1.5, 2].includes(scale)) return;
+    const viewport = document.getElementById('courseMapViewport');
+    if (viewport) viewport.style.setProperty('--course-zoom', String(scale));
+}
+
+function restoreCourseMap() {
+    const image = document.getElementById('courseLayoutImage');
+    const home = document.getElementById('courseMapHome');
+    if (image && home) home.appendChild(image.closest('.course-map-wrap'));
+}
+
+function closeCourseMap() {
+    const dialog = document.getElementById('courseMapDialog');
+    if (dialog?.open) dialog.close();
+}
+
+function updateCourseOverview(data, passiveRefresh = false) {
+    const courseImage = document.getElementById('courseLayoutImage');
+    if (!courseImage) return;
+    const presentation = getCoursePresentation(data);
+    const context = document.getElementById('courseContext');
+    if (context) context.textContent = presentation.title + (presentation.straightOnly ? ' · 直線コース' : '');
+    if (passiveRefresh) return;
+    closeCourseMap();
+    restoreCourseMap();
+    const requestId = ++courseImageRequestId;
+    courseImage.dataset.loadFailed = '1';
+    courseImage.style.display = 'none';
+    courseImage.alt = `${presentation.title} — 競馬場全体の平面図`;
+    const courseMapWrap = courseImage.closest('.course-map-wrap');
+    const windSvg = document.getElementById('windOverlay');
+    const status = document.getElementById('courseImageStatus');
+    const expand = document.getElementById('expandCourseMap');
+    const source = document.getElementById('courseOfficialLink');
+    if (source) { source.hidden = !presentation.officialPage; source.href = presentation.officialPage; }
+    if (expand) expand.disabled = true;
+    if (status) { status.textContent = 'コース図を読み込んでいます…'; status.dataset.state = 'loading'; }
+    if (courseMapWrap) courseMapWrap.classList.add('fallback');
+    if (windSvg) { windSvg.innerHTML = ''; windSvg.setAttribute('viewBox', '0 0 570 400'); }
+    window.lastWindData = null;
+    const redrawWind = () => {
+        const wind = window.lastWindData;
+        if (wind && wind.venue === data.venue) renderWindOverlay(wind.venue, wind.dir, wind.speed);
+    };
+    courseImage.onerror = () => {
+        if (requestId !== courseImageRequestId) return;
+        courseImage.style.display = 'none';
+        courseImage.dataset.loadFailed = '1';
+        if (courseMapWrap) courseMapWrap.classList.add('fallback');
+        if (windSvg) windSvg.setAttribute('viewBox', '0 0 570 400');
+        if (expand) expand.disabled = true;
+        if (status) { status.textContent = 'コース図を取得できません。JRA公式コース紹介から確認できます。'; status.dataset.state = 'error'; }
+        redrawWind();
+    };
+    courseImage.onload = () => {
+        if (requestId !== courseImageRequestId) return;
+        courseImage.style.display = 'block';
+        courseImage.dataset.loadFailed = '0';
+        if (courseMapWrap) courseMapWrap.classList.remove('fallback');
+        if (windSvg && courseImage.naturalWidth && courseImage.naturalHeight) {
+            windSvg.setAttribute('viewBox', `0 0 ${courseImage.naturalWidth} ${courseImage.naturalHeight}`);
+        }
+        if (expand) expand.disabled = false;
+        if (status) { status.textContent = `${presentation.title} · 芝/ダートやスタート地点は図内の表記を確認。拡大表示できます。`; status.dataset.state = 'ready'; }
+        redrawWind();
+    };
+    // Install handlers before changing src, including cache-hit loads.
+    if (presentation.image) courseImage.src = presentation.image;
+    else { courseImage.removeAttribute('src'); courseImage.onerror(); }
+}
+
+function updateWindSummary(straight, backstretch, observation = '') {
+    const first = document.getElementById('windStraight');
+    const back = document.getElementById('windBackstretch');
+    const time = document.getElementById('windObservation');
+    if (first) first.textContent = straight;
+    if (back) back.textContent = backstretch;
+    if (time) time.textContent = observation;
 }
 
 // ---- T76 wind pure functions (begin) ----
@@ -700,33 +988,51 @@ function checkWindEffectHtml(windDir, courseDir) {
 async function fetchWindData(venue) {
     const windDisplay = document.getElementById('windDataDisplay');
     if (!windDisplay) return;
-
+    const requestId = ++windRequestId;
+    window.lastWindData = null;
+    clearWindOverlay('風データを取得中…');
+    updateWindSummary('取得中', '取得中');
     const course = COURSE_DIRECTION[venue];
     if (!course) {
         windDisplay.textContent = `風データ: ${venue}の緯度経度情報がありません`;
         clearWindOverlay(`${venue}の風データはありません`);
+        updateWindSummary('未対応', '未対応');
         return;
     }
 
     windDisplay.textContent = "風データを取得中...";
     try {
         const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${course.lat}&longitude=${course.lon}&current_weather=true&windspeed_unit=ms`);
+        if (res.ok === false) throw new Error('Wind request failed');
         const result = await res.json();
-        if (result.current_weather) {
+        if (requestId !== windRequestId) return;
+        if (result.current_weather && Number.isFinite(result.current_weather.winddirection) &&
+            Number.isFinite(result.current_weather.windspeed) && result.current_weather.windspeed >= 0 &&
+            result.current_weather.winddirection >= 0 && result.current_weather.winddirection <= 360) {
             const w = result.current_weather;
             const dirStr = getWindDirectionString(w.winddirection);
             const speedTerm = getWindSpeedTerm(w.windspeed);
             const effectHtml = checkWindEffectHtml(w.winddirection, course.dir);
 
-            windDisplay.innerHTML = `<strong>リアルタイム風力データ (${venue}):</strong> ${dirStr}からの風 (${w.winddirection}°), ${speedTerm} (${w.windspeed}m/s)<br>${effectHtml}`;
+            const straightOnly = getCoursePresentation(window.lastRaceData || {}).straightOnly;
+            windDisplay.innerHTML = `<strong>現在の風 (${venue}):</strong> ${dirStr}からの風 (${w.winddirection}°), ${speedTerm} (${w.windspeed}m/s)<br>` +
+                (straightOnly ? '直線専用コースのため、通常の周回コース向けバイアス判定は表示しません。' : effectHtml);
+            const cls = classifyWindVsCourse(w.winddirection, course.dir);
+            updateWindSummary(straightOnly ? '個別確認' : WIND_TERM_JA[cls.straight],
+                straightOnly ? 'なし（直線）' : WIND_TERM_JA[cls.backstretch],
+                w.time ? `データ時刻: ${w.time} (${result.timezone || 'UTC'}) · Open-Meteo` : 'データ時刻未確認 · Open-Meteo');
 
             window.lastWindData = { venue, dir: w.winddirection, speed: w.windspeed, time: w.time };
             renderWindOverlay(venue, w.winddirection, w.windspeed);
         } else {
+            windDisplay.textContent = '有効な風データがありません。';
+            updateWindSummary('未取得', '未取得');
             clearWindOverlay();
         }
     } catch(e) {
+        if (requestId !== windRequestId) return;
         windDisplay.textContent = "風データの取得に失敗しました。";
+        updateWindSummary('未取得', '未取得');
         clearWindOverlay();
     }
 }
@@ -834,6 +1140,10 @@ function renderWindOverlay(venue, windFromDeg, windSpeedMs) {
     const svg = _windSvgEl();
     if (!svg) return;
     svg.innerHTML = '';
+    if (getCoursePresentation(window.lastRaceData || {}).straightOnly) {
+        clearWindOverlay('直線専用コースは周回用の風オーバーレイ対象外です。');
+        return;
+    }
 
     const angles = computeWindScreenAngles(venue, windFromDeg);
     if (!angles) {
@@ -1236,6 +1546,7 @@ function renderMatrix(matrixData, currentVenue) {
                 
                 btn.textContent = `${raceItem.r}R`;
                 btn.onclick = () => {
+                    if (IS_EMBEDDED) monitorSync.manualSelection = true;
                     document.getElementById('urlInput').value = raceItem.url;
                     startScraping();
                 };
@@ -1810,4 +2121,3 @@ function pickNextRace(races, nowHHMM) {
 // ---- T77 race pick pure functions (end) ----
 
 window.JRA_RACE_PICK = { pickNextRace };
-

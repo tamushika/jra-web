@@ -6,18 +6,28 @@
     <title>予測実績ダッシュボード</title>
     <link rel="stylesheet" href="style.css">
     <style>
-        .pf-container { max-width: min(1500px, 98vw); margin: 0 auto; padding: 16px; }
-        .pf-section { background: rgba(0,0,0,0.25); border: 1px solid var(--border-color);
-                      border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-        .pf-title { font-size: 16px; font-weight: bold; color: var(--primary); margin-bottom: 10px; }
-        .pf-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        .pf-table th, .pf-table td { border: 1px solid var(--border-color);
-                                     padding: 5px 9px; text-align: center; }
-        .pf-table th { background: rgba(255,255,255,0.06); }
+        .perf-app { margin: 0; }
+        .perf-app *, .perf-app *::before, .perf-app *::after { box-sizing: border-box; }
+        .perf-app [hidden] { display: none !important; }
+        .pf-container { max-width: 1540px; width: 100%; margin: 0 auto; padding: 28px 32px 48px; min-width: 0; }
+        .pf-section { background: var(--panel-bg); border: 1px solid var(--border-color);
+                      border-radius: 16px; padding: 24px; margin-bottom: 20px; min-width: 0; }
+        .pf-section[hidden] { display: none !important; }
+        .pf-title { font-size: 16px; font-weight: 650; color: var(--text-main); margin-bottom: 12px; letter-spacing: .02em; }
+        .pf-section > .pf-meta { line-height: 1.8; margin-bottom: 16px !important; }
+        .pf-table { width: 100%; min-width: 720px; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+        .pf-table th, .pf-table td { border: 0; border-bottom: 1px solid var(--border-color);
+                                     padding: 12px 14px; text-align: center; vertical-align: top; }
+        .pf-table th { background: #182333; color: var(--text-muted); font-size: 11px; font-weight: 600; white-space: nowrap; }
+        .pf-table tbody tr:hover > td { background: rgba(78,214,176,.035); }
+        .pf-table td { line-height: 1.65; }
+        .pf-table td[colspan] { white-space: normal; }
+        .pf-table-scroll { width: 100%; overflow-x: auto; border: 1px solid var(--border-color); border-radius: 10px; margin-top: 14px; }
+        .pf-table-scroll:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
         .pf-table td.left { text-align: left; }
         .roi-good { color: #66bb6a; font-weight: bold; }
         .roi-bad { color: #ef7070; }
-        .pf-meta { color: var(--text-muted); font-size: 12px; }
+        .pf-meta { color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
         .pf-badge { display: inline-block; padding: 1px 8px; border-radius: 10px;
                     font-size: 11px; font-weight: bold; background: rgba(255,255,255,0.1); }
         .hit-y { color: #66bb6a; font-weight: bold; }
@@ -37,7 +47,9 @@
                          border: 1px dashed var(--border-color); margin-right: 6px; }
         .w5-shadow-summary { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border-color); }
         .pf-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
-                       margin: 8px 0 12px; }
+                       margin: 0; padding: 16px 18px; background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: 12px; }
+        .pf-controls label { font-size: 12px; color: var(--text-muted); margin-right: 2px; }
+        .pf-controls #syncBtn { margin-left: auto; }
         .pf-controls input { background: rgba(0,0,0,0.25); color: var(--text-color);
                              border: 1px solid var(--border-color); border-radius: 6px;
                              padding: 7px 10px; }
@@ -47,9 +59,9 @@
         .pf-graph-controls select { max-width: min(560px, 90vw); background: rgba(0,0,0,0.25);
                                     color: var(--text-color); border: 1px solid var(--border-color);
                                     border-radius: 6px; padding: 7px 10px; }
-        .metric-btn.active { color: #fff; background: var(--primary); }
-        .pf-chart-wrap { overflow-x: auto; }
-        #dailyChart { display: block; width: 100%; min-width: 620px; height: 300px; }
+        .metric-btn.active { color: #08251d; background: var(--primary); border-color: var(--primary); }
+        .pf-chart-wrap { min-width: 0; }
+        #dailyChart { display: block; width: 100%; height: 300px; }
         #dailyChart .grid { stroke: var(--border-color); stroke-width: 1; }
         #dailyChart .baseline { stroke: #ffb74d; stroke-width: 1.5; stroke-dasharray: 6 4; }
         #dailyChart .line { fill: none; stroke: var(--primary); stroke-width: 2.5; }
@@ -58,14 +70,64 @@
         .race-date-row td { background: rgba(255,255,255,0.055); font-weight: bold; text-align: left; }
         .race-date-detail summary { cursor: pointer; color: var(--primary); padding: 3px 0; }
         .race-date-content { margin-top: 8px; }
+        .pf-status { display: flex; align-items: center; gap: 8px; padding: 12px 2px; min-height: 46px; font-size: 12px; line-height: 1.6; color: var(--text-muted); overflow-wrap: anywhere; }
+        .pf-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--primary); flex: 0 0 auto; }
+        .pf-status[data-state="error"] { color: #ffaaa1; }
+        .pf-status[data-state="error"]::before { background: #ef7070; }
+        .pf-status[data-state="loading"]::before { background: var(--accent); }
+        .pf-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 22px; padding: 5px; border-bottom: 1px solid var(--border-color); }
+        .pf-tabs button { background: transparent; color: var(--text-muted); border: 1px solid transparent; padding: 10px 16px; font-size: 13px; border-radius: 8px; }
+        .pf-tabs button[aria-selected="true"] { color: var(--primary); background: rgba(78,214,176,.09); border-color: rgba(78,214,176,.2); }
+        .pf-tabs button:hover { color: var(--text-main); background: rgba(255,255,255,.04); }
+        .pf-overview-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+        .pf-overview-heading .pf-title { margin: 0 0 7px; }
+        .pf-model-control { display: flex; align-items: center; gap: 9px; min-width: 0; max-width: 100%; }
+        .pf-model-control label { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+        .pf-model-control select { min-width: 0; max-width: 430px; width: 100%; }
+        .pf-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+        .pf-kpi { padding: 20px; border-radius: 12px; border: 1px solid var(--border-color); background: #0e1723; }
+        .pf-kpi-label { color: var(--text-muted); font-size: 12px; }
+        .pf-kpi-value { display: block; color: var(--text-main); font-size: clamp(24px, 3vw, 36px); letter-spacing: -.035em; font-weight: 650; margin: 12px 0 8px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+        .pf-kpi-value .roi-good { color: var(--primary); }
+        .pf-kpi-note { font-size: 11px; color: var(--text-muted); line-height: 1.7; }
+        .pf-scope-note { margin-top: 16px; font-size: 11px; color: var(--text-muted); line-height: 1.8; }
+        .pf-empty { border: 1px dashed var(--border-color); border-radius: 12px; padding: 24px; color: var(--text-muted); font-size: 13px; line-height: 1.8; }
+        .pf-empty[hidden] { display: none; }
+        .pf-empty strong { display: block; color: var(--text-main); font-size: 15px; margin-bottom: 5px; }
+        .pf-empty button { margin-top: 12px; }
+        .vb-pattern { background: #0e1723; padding: 20px; border: 1px solid var(--border-color); border-radius: 12px; }
+        .vb-pattern .pf-meta { line-height: 1.8; }
+        #evSum, [id^="vbCumulative-"] { line-height: 1.9; font-size: 13px; }
+        .pf-notice { border-left: 3px solid var(--accent); padding: 10px 14px; background: rgba(240,188,103,.06); border-radius: 0 8px 8px 0; }
+        @media (max-width: 900px) {
+            .pf-container { padding: 20px; }
+            .pf-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .pf-controls #syncBtn { margin-left: 0; }
+        }
+        @media (max-width: 520px) {
+            .pf-container { padding: 16px 12px 32px; }
+            .pf-section { padding: 16px; border-radius: 12px; }
+            .pf-tabs { gap: 2px; }
+            .pf-tabs button { padding: 9px 10px; font-size: 12px; }
+            .pf-controls { padding: 12px; }
+            .pf-controls button { font-size: 11px; padding: 8px; }
+            .pf-kpis { gap: 8px; }
+            .pf-kpi { padding: 14px 12px; }
+            .pf-model-control { width: 100%; }
+            .pf-graph-controls select { max-width: 100%; width: 100%; }
+            .vb-pattern { padding: 12px; }
+        }
     </style>
 </head>
-<body>
+<body class="local-app perf-app">
 <div class="pf-container">
-    <h2 style="margin: 12px 0;">予測実績ダッシュボード
-        <span class="pf-meta">モデルバージョン別の的中率・回収率 (スコア1位馬に単勝/複勝100円想定)</span>
-        <button class="primary-btn" style="float:right;" onclick="load()">🔄 更新</button>
-    </h2>
+    <header class="app-page-header">
+        <div><div class="app-eyebrow">PERFORMANCE / 検証と振り返り</div>
+            <h1>実績ダッシュボード</h1>
+            <p class="app-subtitle">結果を確かめ、次の判断へ。モデル・EV通知・WIN5を、それぞれの条件で振り返ります。</p>
+        </div>
+        <button id="refreshBtn" class="primary-btn" onclick="load()">データを更新</button>
+    </header>
     <div class="pf-controls">
         <label for="dateFilter">開催日</label>
         <input id="dateFilter" type="date" list="availableDates">
@@ -75,9 +137,33 @@
         <button onclick="showAll()">全期間</button>
         <button id="syncBtn" onclick="syncResults()">この日の結果を再取得</button>
     </div>
-    <div id="status" class="pf-meta" style="margin-bottom:10px;"></div>
+    <div id="status" class="pf-status" role="status" aria-live="polite">記録を読み込みます</div>
+    <nav class="pf-tabs" role="tablist" aria-label="実績の表示切替">
+        <button id="tab-overview" role="tab" data-view="overview" aria-selected="true" aria-controls="overviewSection graphSection" onclick="showDashboardView('overview')">概要</button>
+        <button id="tab-models" role="tab" data-view="models" aria-selected="false" aria-controls="modelsSection" tabindex="-1" onclick="showDashboardView('models')">モデル比較</button>
+        <button id="tab-ev" role="tab" data-view="ev" aria-selected="false" aria-controls="evSection" tabindex="-1" onclick="showDashboardView('ev')">EV通知</button>
+        <button id="tab-win5" role="tab" data-view="win5" aria-selected="false" aria-controls="win5Section" tabindex="-1" onclick="showDashboardView('win5')">WIN5</button>
+        <button id="tab-paper" role="tab" data-view="paper" aria-selected="false" aria-controls="vbSection" tabindex="-1" onclick="showDashboardView('paper')">仮想運用</button>
+        <button id="tab-details" role="tab" data-view="details" aria-selected="false" aria-controls="raceSection daysSection dailySection" tabindex="-1" onclick="showDashboardView('details')">レース・日別明細</button>
+    </nav>
 
-    <div class="pf-section">
+    <section class="pf-section" id="overviewSection" data-pane="overview" role="tabpanel" aria-labelledby="tab-overview">
+        <div class="pf-overview-heading">
+            <div><h2 class="pf-title">選択モデルの成績</h2><div class="pf-meta" id="overviewScope">集計対象を確認中</div></div>
+            <div class="pf-model-control"><label for="overviewModel">対象モデル</label><select id="overviewModel" onchange="renderOverview()" aria-describedby="overviewDefinition"></select></div>
+        </div>
+        <div class="pf-kpis" id="overviewMetrics">
+            <div class="pf-kpi"><span class="pf-kpi-label">結果確定 / 予測レース</span><strong class="pf-kpi-value" id="kpiSample">—</strong><span class="pf-kpi-note" id="kpiPending">結果待ちを除いて成績を集計</span></div>
+            <div class="pf-kpi"><span class="pf-kpi-label">単勝的中率</span><strong class="pf-kpi-value" id="kpiWin">—</strong><span class="pf-kpi-note" id="kpiTop3">複勝的中率 —</span></div>
+            <div class="pf-kpi"><span class="pf-kpi-label">単勝回収率</span><strong class="pf-kpi-value" id="kpiTan">—</strong><span class="pf-kpi-note">100% = 収支トントン</span></div>
+            <div class="pf-kpi"><span class="pf-kpi-label">複勝回収率</span><strong class="pf-kpi-value" id="kpiFuku">—</strong><span class="pf-kpi-note">100% = 収支トントン</span></div>
+        </div>
+        <div class="pf-empty" id="overviewEmpty" hidden><strong>この期間の予測記録はありません</strong>開催日を変更するか、全期間で過去の記録を確認できます。<br><button onclick="showAll()">全期間の実績を見る</button></div>
+        <div class="pf-scope-note" id="overviewDefinition">選択した1モデル・1設定のみの集計です。各レースの最終予測でスコア1位の馬に単勝／複勝100円を投じた想定で、実購入の収支ではありません。異なるモデル間の重複レースは合算しません。</div>
+        <div class="pf-scope-note" id="graphDateNote" hidden>日別推移グラフは「全期間」で表示できます。<button onclick="showAll()">全期間へ</button></div>
+    </section>
+
+    <div class="pf-section" id="raceSection" data-pane="details" role="tabpanel" aria-labelledby="tab-details" hidden>
         <div class="pf-title">レース別の予測結果</div>
         <div class="pf-meta" style="margin-bottom:6px;">
             各モデルの最終予測でスコア1位だった馬と、公式結果を照合します。
@@ -88,7 +174,7 @@
         </tr></thead><tbody id="raceBody"></tbody></table>
     </div>
 
-    <div class="pf-section">
+    <div class="pf-section" id="modelsSection" data-pane="models" role="tabpanel" aria-labelledby="tab-models" hidden>
         <div class="pf-title">モデルバージョン別サマリ</div>
         <div class="pf-meta" style="margin-bottom:6px;">
             レースごとに「締切に最も近い最終予測run」を採用。回収率は100円あたりの払戻額 (100%=収支トントン)。
@@ -100,7 +186,7 @@
         </tr></thead><tbody id="sumBody"></tbody></table>
     </div>
 
-    <div class="pf-section">
+    <div class="pf-section" id="evSection" data-pane="ev" role="tabpanel" aria-labelledby="tab-ev" hidden>
         <div class="pf-title">🔔 EV通知の実績 (通知した馬に単勝/複勝100円)</div>
         <div id="evSum" style="margin-bottom:8px;"></div>
         <table class="pf-table"><thead><tr>
@@ -109,7 +195,7 @@
         </tr></thead><tbody id="evBody"></tbody></table>
     </div>
 
-    <div class="pf-section">
+    <div class="pf-section" id="win5Section" data-pane="win5" role="tabpanel" aria-labelledby="tab-win5" hidden>
         <div class="pf-title">🎯 WIN5の実績</div>
         <table class="pf-table"><thead><tr>
             <th>予測日時</th><th>点数</th><th>推定的中率</th><th>配分</th><th>軸</th>
@@ -118,9 +204,9 @@
         <div id="w5ShadowSummary" class="w5-shadow-summary pf-meta"></div>
     </div>
 
-    <div class="pf-section" id="vbSection">
+    <div class="pf-section" id="vbSection" data-pane="paper" role="tabpanel" aria-labelledby="tab-paper" hidden>
         <div class="pf-title">🧪 仮想運用 (paper trading、P1/P5/P3)</div>
-        <div class="pf-meta pf-warn" style="margin-bottom:8px;">
+        <div class="pf-meta pf-warn pf-notice" style="margin-bottom:8px;">
             ⚠ 仮想運用であり実購入・購入推奨ではありません。いずれも紙上の記録にとどまる計測値です。
         </div>
 
@@ -165,7 +251,7 @@
         </div>
     </div>
 
-    <div class="pf-section" id="graphSection">
+    <div class="pf-section" id="graphSection" data-pane="overview" role="tabpanel" aria-labelledby="tab-overview">
         <div class="pf-title">📈 日別成績グラフ</div>
         <div class="pf-graph-controls">
             <label for="seriesSelect">系列</label>
@@ -178,7 +264,7 @@
         <div class="pf-chart-wrap"><svg id="dailyChart" role="img" aria-label="日別成績グラフ"></svg></div>
     </div>
 
-    <div class="pf-section" id="daysSection">
+    <div class="pf-section" id="daysSection" data-pane="details" role="tabpanel" aria-labelledby="tab-details" hidden>
         <div class="pf-title">📅 日別実績</div>
         <div class="pf-meta" style="margin-bottom:6px;">
             日付ごとにモデル別の的中率・回収率、EV通知実績、WIN5実績をまとめます (全期間表示のときのみ表示、日付クリックでその日にフィルタ)。
@@ -189,7 +275,7 @@
         </tr></thead><tbody id="daysBody"></tbody></table>
     </div>
 
-    <div class="pf-section">
+    <div class="pf-section" id="dailySection" data-pane="details" role="tabpanel" aria-labelledby="tab-details" hidden>
         <div class="pf-title">日別内訳</div>
         <table class="pf-table"><thead><tr>
             <th>日付</th><th>アプリ</th><th>版</th><th>設定</th>
@@ -392,6 +478,121 @@ function renderVirtualBetting(d) {
 let lastSyncMessage = '';
 let graphSeries = [];
 let graphMetric = 'win_rate';
+let overviewData = null;
+let loadRequestSequence = 0;
+let graphRenderedWidth = 0;
+let graphResizeFrame = null;
+let graphResizeObserver = null;
+
+function modelIdentity(model) {
+    return JSON.stringify([model.app, model.model, model.version, model.config]);
+}
+
+function setupOverview(data) {
+    overviewData = data;
+    const select = document.getElementById('overviewModel');
+    const previous = select.value;
+    const models = data.summary || [];
+    select.innerHTML = models.map(model => `<option value="${esc(modelIdentity(model))}">`
+        + `${esc(model.app)} / ${esc(model.model)} ${esc(model.version)} (${esc(model.config)})</option>`).join('');
+    select.disabled = !models.length;
+    select.value = models.some(model => modelIdentity(model) === previous)
+        ? previous : (models.length ? modelIdentity(models[0]) : '');
+    renderOverview(false);
+}
+
+function renderOverview(syncGraph = true) {
+    const data = overviewData || {};
+    const identity = document.getElementById('overviewModel').value;
+    const model = (data.summary || []).find(item => modelIdentity(item) === identity);
+    document.getElementById('overviewMetrics').hidden = !model;
+    document.getElementById('overviewEmpty').hidden = !!model;
+    document.getElementById('graphDateNote').hidden = !data.selected_date;
+    const scope = data.selected_date || '全期間';
+    document.getElementById('overviewScope').textContent = model
+        ? `${scope} ・ ${model.period || '記録期間未確認'} ・ ${model.app} / ${model.model} ${model.version} (${model.config})`
+        : `${scope} ・ 記録なし`;
+    if (!model) return;
+    const settled = Number(model.settled) || 0;
+    const races = Number(model.races) || 0;
+    document.getElementById('kpiSample').textContent = `${settled} / ${races}`;
+    document.getElementById('kpiPending').textContent = `結果待ち ${Math.max(0, races - settled)}レース`;
+    document.getElementById('kpiWin').innerHTML = settled ? pct(model.win_rate) : '—';
+    document.getElementById('kpiTop3').textContent = settled && model.top3_rate != null
+        ? `複勝的中率 ${Number(model.top3_rate).toFixed(1)}%` : '複勝的中率 — / 結果確定待ち';
+    document.getElementById('kpiTan').innerHTML = settled ? roi(model.tan_roi) : '—';
+    document.getElementById('kpiFuku').innerHTML = settled ? roi(model.fuku_roi) : '—';
+    if (syncGraph) {
+        const series = graphSeries.find(item => item.modelKey === identity);
+        if (series) {
+            document.getElementById('seriesSelect').value = series.key;
+            renderGraph();
+        }
+    }
+}
+
+function showDashboardView(view) {
+    const buttons = Array.from(document.querySelectorAll('.pf-tabs [data-view]'));
+    if (!buttons.some(button => button.dataset.view === view)) return;
+    buttons.forEach(button => {
+        const selected = button.dataset.view === view;
+        button.setAttribute('aria-selected', String(selected));
+        button.tabIndex = selected ? 0 : -1;
+    });
+    document.querySelectorAll('[data-pane]').forEach(section => {
+        section.hidden = section.dataset.pane !== view;
+    });
+    if (view === 'overview') renderGraph();
+}
+
+function setupDashboardNavigation() {
+    const buttons = Array.from(document.querySelectorAll('.pf-tabs [data-view]'));
+    buttons.forEach((button, index) => button.addEventListener('keydown', event => {
+        let target;
+        if (event.key === 'ArrowRight') target = (index + 1) % buttons.length;
+        else if (event.key === 'ArrowLeft') target = (index + buttons.length - 1) % buttons.length;
+        else if (event.key === 'Home') target = 0;
+        else if (event.key === 'End') target = buttons.length - 1;
+        else return;
+        event.preventDefault();
+        showDashboardView(buttons[target].dataset.view);
+        buttons[target].focus();
+    }));
+}
+
+// 幅だけの変更では記録を再取得せず、現在の系列を次の描画フレームで描き直す。
+function scheduleGraphResize() {
+    const width = document.getElementById('dailyChart').clientWidth;
+    if (!width || width === graphRenderedWidth || graphResizeFrame !== null) return;
+    graphResizeFrame = requestAnimationFrame(() => {
+        graphResizeFrame = null;
+        const currentWidth = document.getElementById('dailyChart').clientWidth;
+        if (currentWidth && currentWidth !== graphRenderedWidth) renderGraph();
+    });
+}
+
+function setupResponsiveGraph() {
+    if (typeof ResizeObserver === 'function') {
+        graphResizeObserver = new ResizeObserver(scheduleGraphResize);
+        graphResizeObserver.observe(document.getElementById('dailyChart'));
+    } else {
+        window.addEventListener('resize', scheduleGraphResize);
+    }
+}
+
+// 明細が増えてもページ全体を横に広げず、表の中だけでスクロールする。
+function wrapPerformanceTables(root = document) {
+    root.querySelectorAll('.pf-table').forEach(table => {
+        if (table.parentElement.classList.contains('pf-table-scroll')) return;
+        const wrapper = document.createElement('div');
+        wrapper.className = 'pf-table-scroll table-scroll';
+        wrapper.tabIndex = 0;
+        wrapper.setAttribute('role', 'region');
+        wrapper.setAttribute('aria-label', '実績表（横方向にスクロールできます）');
+        table.parentElement.insertBefore(wrapper, table);
+        wrapper.appendChild(table);
+    });
+}
 // T67: レース別/EV/WIN5の3セクションで共有する日付別レスポンスキャッシュ
 // (同一日付への重複fetchをしない。値はfetchのPromiseそのものをキャッシュする)。
 const dateDataCache = new Map();
@@ -467,6 +668,7 @@ async function loadRaceDate(details, date) {
             + `<th>予測1位馬</th><th>スコア</th><th>勝ち馬</th><th>着順</th><th>単勝払戻</th><th>複勝払戻</th>`
             + `</tr></thead><tbody>${raceRowsHtml(data.race_details) || '<tr><td colspan="9" class="pf-meta">なし</td></tr>'}</tbody></table>`;
         body.innerHTML = html;
+        wrapPerformanceTables(body);
     } catch (error) {
         body.innerHTML = `<span class="hit-n">読み込みエラー: ${esc(error.message)}</span>`;
     }
@@ -503,6 +705,7 @@ async function loadEvDate(details, date) {
             <th>通知時オッズ</th><th>人気</th><th>着順</th><th>単勝払戻</th><th>複勝払戻</th>
         </tr></thead><tbody>${evRowsHtml(rows) || '<tr><td colspan="10" class="pf-meta">なし</td></tr>'}</tbody></table>`;
         body.innerHTML = html;
+        wrapPerformanceTables(body);
     } catch (error) {
         body.innerHTML = `<span class="hit-n">読み込みエラー: ${esc(error.message)}</span>`;
     }
@@ -565,6 +768,7 @@ async function loadWin5Date(details, date) {
                 <th>レース別 (○=勝ち馬を含む)</th><th>WIN5</th><th>詳細</th>
             </tr></thead><tbody>${win5RowsHtml(rows)}</tbody></table>`
             : '<span class="pf-meta">この日のWIN5予測記録はありません</span>';
+        wrapPerformanceTables(body);
     } catch (error) {
         body.innerHTML = `<span class="hit-n">読み込みエラー: ${esc(error.message)}</span>`;
     }
@@ -613,17 +817,24 @@ function renderRaceResults(data) {
 }
 
 function setupGraph(series) {
+    const select = document.getElementById('seriesSelect');
+    const previous = graphSeries.find(item => item.key === select.value);
     const models = (series?.models || []).map((item, index) => ({
         key: `model:${index}`, label: `${item.app} / ${item.model} ${item.version} (${item.config})`,
-        type: 'model', points: item.points || [],
+        type: 'model', modelKey: modelIdentity(item), points: item.points || [],
     }));
     graphSeries = [...models,
         {key: 'ev', label: 'EV通知', type: 'ev', points: series?.ev?.points || []},
         {key: 'win5', label: 'WIN5', type: 'win5', points: series?.win5?.points || []}];
-    const select = document.getElementById('seriesSelect');
-    const previous = select.value;
     select.innerHTML = graphSeries.map(item => `<option value="${esc(item.key)}">${esc(item.label)}</option>`).join('');
-    if (graphSeries.some(item => item.key === previous)) select.value = previous;
+    const retained = previous && graphSeries.find(item => previous.modelKey
+        ? item.modelKey === previous.modelKey : item.key === previous.key);
+    if (retained) select.value = retained.key;
+    else {
+        const overviewModel = document.getElementById('overviewModel').value;
+        const sameModel = graphSeries.find(item => item.modelKey === overviewModel);
+        if (sameModel) select.value = sameModel.key;
+    }
     renderGraph();
 }
 
@@ -636,14 +847,16 @@ function setGraphMetric(metric) {
 
 function renderGraph() {
     const svg = document.getElementById('dailyChart');
+    graphRenderedWidth = svg.clientWidth || 0;
     const selected = graphSeries.find(item => item.key === document.getElementById('seriesSelect').value);
+    const isWin5 = selected?.type === 'win5';
+    document.querySelectorAll('.metric-btn').forEach(button => button.disabled = isWin5);
     if (!selected || !selected.points.length) {
+        svg.setAttribute('viewBox', `0 0 ${Math.max(280, svg.clientWidth || 620)} 300`);
         svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle">表示できる日次データがありません</text>';
         document.getElementById('graphNote').textContent = '';
         return;
     }
-    const isWin5 = selected.type === 'win5';
-    document.querySelectorAll('.metric-btn').forEach(button => button.disabled = isWin5);
     const metric = isWin5 ? 'hits' : graphMetric;
     const valueOf = point => {
         if (isWin5) return point.total ? point.hits : null;
@@ -653,7 +866,7 @@ function renderGraph() {
     };
     const points = selected.points;
     const values = points.map(valueOf).filter(value => value != null);
-    const width = Math.max(620, svg.clientWidth || 900), height = 300;
+    const width = Math.max(280, svg.clientWidth || 900), height = 300;
     const left = 52, right = 18, top = 18, bottom = 46;
     const maxValue = isWin5
         ? Math.max(1, ...points.map(point => point.total || 0))
@@ -661,7 +874,7 @@ function renderGraph() {
     const minValue = 0;
     const x = index => left + (points.length === 1 ? (width-left-right)/2 : index * (width-left-right)/(points.length-1));
     const y = value => top + (maxValue-value) * (height-top-bottom)/(maxValue-minValue || 1);
-    const labelEvery = Math.max(1, Math.ceil(points.length / 8));
+    const labelEvery = Math.max(1, Math.ceil(points.length / (width < 560 ? 4 : 8)));
     const gridValues = [0, maxValue / 2, maxValue];
     let html = gridValues.map(value => `<line class="grid" x1="${left}" y1="${y(value)}" x2="${width-right}" y2="${y(value)}"/>`
         + `<text x="${left-7}" y="${y(value)+4}" text-anchor="end">${isWin5 ? value.toFixed(0) : value.toFixed(1)}${isWin5 ? '' : '%'}</text>`).join('');
@@ -744,19 +957,26 @@ function renderDays(days) {
 }
 
 async function load() {
+    const requestSequence = ++loadRequestSequence;
     document.getElementById('status').textContent = '読み込み中...';
+    document.getElementById('status').dataset.state = 'loading';
+    document.getElementById('refreshBtn').disabled = true;
+    document.querySelector('.pf-container').setAttribute('aria-busy', 'true');
     try {
         const date = selectedDate();
-        const response = await fetch(date ? `api/perf?date=${encodeURIComponent(date)}` : 'api/perf');
+        const response = await fetch(date ? `api/perf?date=${encodeURIComponent(date)}` : 'api/perf', {cache: 'no-store'});
         const d = await response.json();
-        if (d.error) throw new Error(d.error);
+        if (!response.ok || d.error) throw new Error(d.error || `HTTP ${response.status}`);
+        if (requestSequence !== loadRequestSequence) return;
         document.getElementById('availableDates').innerHTML = (d.available_dates || [])
             .map(value => `<option value="${esc(value)}"></option>`).join('');
         document.getElementById('syncBtn').disabled = !date;
         const scope = d.selected_date ? `${d.selected_date} / ` : '全期間 / ';
         document.getElementById('status').textContent =
-            `${scope}結果待ちレース: ${d.pending_races}件` +
+            `${scope}結果待ちレース: ${d.pending_races ?? '未確認'}件` +
             (lastSyncMessage ? ` — ${lastSyncMessage}` : ' (レース終了後に公式結果を自動取り込み)');
+        document.getElementById('status').dataset.state = 'ready';
+        setupOverview(d);
 
         renderRaceResults(d);
 
@@ -774,7 +994,7 @@ async function load() {
             ? `通知 <b>${es.n}</b>件 / 結果確定 ${es.settled}件` + (es.settled
                 ? ` — 単勝的中 ${(100*es.win/es.settled).toFixed(1)}% ${roi(es.tan_ret/es.settled)}
                     / 複勝的中 ${(100*es.top3/es.settled).toFixed(1)}% ${roi(es.fuku_ret/es.settled)}
-                    <span class="pf-meta">(バックテスト: 単勝回収158.6%/100.1%)</span>` : '')
+                    <span class="pf-meta">(通知した各馬に100円ずつ投じた想定。実購入の収支ではありません)</span>` : ' — 結果確定待ち')
             : '<span class="pf-meta">まだ通知実績がありません (発走15分/5分前にEV≥閾値の馬が出ると記録されます)</span>';
         renderEvResults(d);
 
@@ -801,8 +1021,16 @@ async function load() {
                 <td>${pct(s.win_rate)}</td><td>${pct(s.top3_rate)}</td>
                 <td>${roi(s.tan_roi)}</td><td>${roi(s.fuku_roi)}</td></tr>`).join('')
             || '<tr><td colspan="9" class="pf-meta">なし</td></tr>';
+        wrapPerformanceTables();
     } catch (e) {
-        document.getElementById('status').textContent = 'エラー: ' + e.message;
+        if (requestSequence !== loadRequestSequence) return;
+        document.getElementById('status').textContent = '更新できませんでした: ' + e.message + '。表示中の値は最新とは限りません。「データを更新」で再試行できます。';
+        document.getElementById('status').dataset.state = 'error';
+    } finally {
+        if (requestSequence === loadRequestSequence) {
+            document.getElementById('refreshBtn').disabled = false;
+            document.querySelector('.pf-container').setAttribute('aria-busy', 'false');
+        }
     }
 }
 
@@ -836,6 +1064,9 @@ async function syncResults() {
 }
 
 const initialDate = new URLSearchParams(location.search).get('date');
+setupDashboardNavigation();
+setupResponsiveGraph();
+wrapPerformanceTables();
 if (initialDate) {
     document.getElementById('dateFilter').value = initialDate;
 } else {

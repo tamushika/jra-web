@@ -140,11 +140,46 @@ def _reject_denied_race_static_paths():
 
 
 # ─── /race/api/scrape のオッズ監視キャッシュ短絡 (SPEC-T73b §2.2) ──────────
+def _race_cache_snapshot(url, now=None):
+    """監視キャッシュの読取専用API。未取得・別日でも外部取得には進まない。"""
+    cached = jra_ev.get_cached_analysis(url) if url else None
+    if cached is None:
+        return {"available": False, "reason": "not_cached"}
+    now = now or datetime.now(jra_ev.JST)
+    try:
+        captured = datetime.fromisoformat(cached.get("captured_at") or "")
+        if captured.tzinfo is None or not cached.get("cache_version"):
+            raise ValueError("timezone and cache version required")
+        captured = captured.astimezone(jra_ev.JST)
+    except (TypeError, ValueError):
+        return {"available": False, "reason": "invalid_timestamp"}
+    today = now.astimezone(jra_ev.JST).strftime("%Y%m%d")
+    race_date = str(cached.get("race_date") or "").replace("-", "")
+    if captured.strftime("%Y%m%d") != today or race_date != today:
+        return {"available": False, "reason": "different_day"}
+    if captured > now:
+        return {"available": False, "reason": "invalid_timestamp"}
+    age = max(0, int((now - captured).total_seconds()))
+    result = {**cached["result"], "cached_from_monitor": cached.get("cached_at"),
+              "monitor_stage": cached.get("stage"),
+              "monitor_captured_at": captured.isoformat(),
+              "monitor_cache_version": cached.get("cache_version")}
+    return {"available": True, "reason": None, "result": result,
+            "captured_at": captured.isoformat(), "cache_version": cached.get("cache_version"),
+            "age_seconds": age, "stale": age > 180}
+
+
 def _short_circuit_race_scrape_with_cache():
     """オッズ監視 (jra_ev.analyze_one) が既に同じURLを解析済みなら、
     jra_ev.RACE_ANALYSIS_CACHE の結果を即返して index.app の scrape() (実URL
     再取得) を呼ばせない。mode="詳細" または force 指定時、キャッシュ未ヒット
     時は None を返して素通しする (before_request はNoneならviewが呼ばれる)。"""
+    if request.path == "/api/cache":
+        if request.method != "GET":
+            return jsonify({"error": "GETのみ対応"}), 405
+        response = jsonify(_race_cache_snapshot(request.args.get("url")))
+        response.headers["Cache-Control"] = "no-store"
+        return response
     if request.path != "/api/scrape" or request.method != "POST":
         return None
     data = request.get_json(silent=True) or {}
@@ -153,12 +188,12 @@ def _short_circuit_race_scrape_with_cache():
     url = data.get("url")
     if not url:
         return None
-    cached = jra_ev.get_cached_analysis(url)
-    if cached is None:
+    snapshot = _race_cache_snapshot(url)
+    if not snapshot["available"]:
         return None
-    result = cached["result"]
-    return jsonify({**result, "cached_from_monitor": cached.get("cached_at"),
-                    "monitor_stage": cached.get("stage")})
+    response = jsonify(snapshot["result"])
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 # ─── バックグラウンドループの一元管理 (SPEC-T38 §3.3) ──────────────────────
@@ -211,49 +246,82 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>JRA予想スイート</title>
+<link rel="stylesheet" href="/ev/style.css">
 <style>
-  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
-               font-family: -apple-system, "Segoe UI", "Hiragino Sans", sans-serif; }
-  #tabbar { box-sizing: border-box; height: 48px; flex: 0 0 48px; display: flex;
-            align-items: center; background: #222; color: #eee; padding: 0 8px; }
-  #tabbar .tab { cursor: pointer; user-select: none; padding: 0 18px; height: 48px;
-                 line-height: 48px; color: #bbb; font-size: 0.95em; white-space: nowrap; }
-  #tabbar .tab.active { color: #fff; background: #0a5; font-weight: bold; }
-  #tabbar .spacer { flex: 1 1 auto; }
-  #tabbar .loop-badge { display: inline-block; margin-left: 8px; font-size: 0.8em;
-                         padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
-  #tabbar .loop-badge.alive { background: #e6f7ea; color: #1a7a34; }
-  #tabbar .loop-badge.dead { background: #f7e6e6; color: #a31a1a; }
-  #tabbar .global-start { cursor: pointer; margin-right: 10px; height: 32px; padding: 0 14px;
-                           border: none; border-radius: 6px; background: #f5c842; color: #222;
-                           font-weight: bold; font-size: 0.95em; white-space: nowrap; }
+  html, body { display: block; margin: 0; padding: 0; height: 100%; overflow: hidden;
+               background: var(--bg-color); color: var(--text-main); }
+  #tabbar { display: grid; grid-template-columns: auto 1fr auto;
+            grid-template-areas: "brand status actions" "tabs tabs loops";
+            align-items: center; gap: 0 24px; background: #101925; padding: 12px 24px 0;
+            border-bottom: 1px solid var(--border-color); flex: 0 0 auto; }
+  .suite-brand { grid-area: brand; font-size: 17px; font-weight: 750; letter-spacing: -.03em; white-space: nowrap; }
+  .suite-brand span { display: inline-block; font-size: 9px; color: var(--primary); letter-spacing: .15em; margin-left: 9px; }
+  .suite-actions { grid-area: actions; justify-self: end; }
+  .suite-nav { grid-area: tabs; display: flex; gap: 4px; overflow-x: auto; min-width: 0; margin-top: 9px;
+               scrollbar-width: thin; scrollbar-color: #40546b transparent; }
+  #tabbar .tab { cursor: pointer; padding: 12px 18px; color: var(--text-muted); font-size: 13px;
+                 white-space: nowrap; background: transparent; border-radius: 7px 7px 0 0; border-bottom: 2px solid transparent; }
+  #tabbar .tab.active { color: var(--primary); background: #18302c; border-bottom-color: var(--primary); }
+  .suite-loops { grid-area: loops; display: flex; gap: 8px; justify-content: flex-end; }
+  #tabbar .loop-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; color: var(--text-muted); white-space: nowrap; }
+  .loop-badge::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: #718097; }
+  .loop-badge.alive::before { background: var(--primary); }
+  .loop-badge.dead::before { background: var(--accent); }
+  #tabbar .global-start { cursor: pointer; min-height: 36px; padding: 0 18px;
+                           border: none; border-radius: 8px; background: var(--primary); color: #08241c;
+                           font-weight: 750; font-size: 12px; white-space: nowrap; }
   #tabbar .global-start:disabled { opacity: 0.6; cursor: default; }
-  #tabbar .global-status { font-size: 0.85em; color: #ddd; margin-right: 14px; white-space: nowrap;
-                            max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
+  #tabbar .global-status { grid-area: status; font-size: 11px; color: var(--text-muted); min-width: 0;
+                           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #tabbar .global-status.error { color: #ffb347; }
   #shell { display: flex; flex-direction: column; height: 100%; }
+  .collection-panel { flex: 0 0 auto; border-bottom: 1px solid var(--border-color); background: #0d1722; }
+  .collection-panel > summary { cursor: pointer; padding: 9px 24px; font-size: 11px; color: var(--text-muted);
+                               list-style-position: inside; overflow-wrap: anywhere; }
+  .collection-panel.warning > summary { color: var(--accent); }
+  .health-label { color: var(--text-main); margin-right: 12px; font-weight: 650; }
+  #collectionHealth { padding: 8px 24px 18px; font-size: 12px; line-height: 1.9;
+                       overflow-wrap: anywhere; white-space: pre-line; columns: 2; column-gap: 36px; }
+  #collectionHealth.warning { color: #ffd69b; }
   #frames { position: relative; flex: 1 1 auto; min-height: 0; }
   #frames iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
                     border: none; display: none; }
   #frames iframe.active { display: block; }
+  @media(max-width:900px) {
+    #tabbar { gap: 0 12px; padding: 10px 14px 0; grid-template-columns: 1fr auto;
+              grid-template-areas: "brand actions" "status status" "tabs tabs"; }
+    .suite-loops { display: none; } .global-status { margin-top: 8px; }
+    #tabbar .tab { padding: 10px 14px; font-size: 12px; }
+    .collection-panel > summary { padding: 8px 14px; }
+    #collectionHealth { padding: 8px 14px 14px; columns: 1; max-height: 32vh; overflow-y: auto; }
+  }
 </style>
 </head>
 <body>
 <div id="shell">
   <div id="tabbar">
-    <button id="globalStart" class="global-start" title="本日の全レースを解析し、WIN5対象レースも取得します">🏇 解析開始</button>
+    <div class="suite-brand">JRA 予想スイート <span>LOCAL ANALYTICS</span></div>
+    <div class="suite-actions"><button id="globalStart" class="global-start" title="本日の全レースを解析し、WIN5対象レースも取得します">解析開始</button></div>
     <span id="globalStatus" class="global-status"></span>
+    <nav class="suite-nav" role="tablist" aria-label="アプリ切り替え">
     {% for t in tabs %}
-    <div class="tab" data-tab="{{ t.prefix }}" role="tab">{{ t.title }}</div>
+    <button type="button" class="tab" data-tab="{{ t.prefix }}" role="tab" aria-controls="frame-{{ t.prefix }}">{{ t.title }}</button>
     {% endfor %}
-    <div class="spacer"></div>
+    </nav>
+    <div class="suite-loops">
     {% for b in loop_badges %}
     <span class="loop-badge {{ 'alive' if b.alive else 'dead' }}" data-loop="{{ b.loop }}">
       {{ b.label }}: {{ '稼働中' if b.alive else '未起動' }}
     </span>
     {% endfor %}
+    </div>
   </div>
+  <details class="collection-panel" id="healthPanel">
+    <summary><span class="health-label">収集状況</span><span id="healthSummary" role="status">確認中…</span></summary>
+    <div id="collectionHealth">収集状態を確認中…</div>
+  </details>
   <div id="frames">
     {% for t in tabs %}
     <iframe id="frame-{{ t.prefix }}" data-tab="{{ t.prefix }}" data-src="/{{ t.prefix }}/" title="{{ t.title }}"></iframe>
@@ -290,7 +358,7 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
         // アンマウントせず display 切替のみ (クライアント状態を保持するため)。
         iframe.classList.toggle("active", isActive);
       }
-      if (tabEl) { tabEl.classList.toggle("active", isActive); }
+      if (tabEl) { tabEl.classList.toggle("active", isActive); tabEl.setAttribute("aria-selected", String(isActive)); }
     });
     try { window.localStorage.setItem(STORAGE_KEY, name); } catch (e) { /* noop */ }
     if ((window.location.hash || "").replace(/^#/, "") !== name) {
@@ -311,6 +379,7 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
   // SPEC-T74: タブバー左端の統合「解析開始」ボタン。オッズ監視の解析開始と
   // WIN5対象レース取得を同時に行い、/ev/api/state のポーリングで状態を表示する。
   var globalPollTimer = null;
+  var globalPollInFlight = false;
   var globalWin5Suffix = "";
   // SPEC-T77: startAll() で立て、解析完了 (analyzing=false かつ races あり) を
   // 検知した最初の pollGlobalStatus() でレース詳細タブへ自動選択を通知する。
@@ -323,11 +392,66 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
     el.classList.toggle("error", !!isError);
   }
 
+  // ---- collection health rendering (begin) ----
+  function setHealthSummary(text, warning) {
+    var summary = document.getElementById("healthSummary");
+    var panel = document.getElementById("healthPanel");
+    if (summary) { summary.textContent = text; }
+    if (panel) { panel.classList.toggle("warning", !!warning); }
+  }
+  function healthTime(value) {
+    if (!value) { return "未確認"; }
+    var date = new Date(value);
+    return isNaN(date.getTime()) ? "未確認" : date.toLocaleTimeString("ja-JP", {hour12: false});
+  }
+
+  function renderCollectionHealth(health) {
+    var el = document.getElementById("collectionHealth");
+    if (!el) { return; }
+    if (!health) {
+      setHealthSummary("収集状態は未確認です", true);
+      el.textContent = "収集状態は未確認です（サーバー再起動後に確認できます）";
+      el.classList.toggle("warning", true);
+      return;
+    }
+    var a = health.analysis || {};
+    var c = health.collection || {};
+    var stages = health.stages || {};
+    var warning = !c.last_save_at || c.fetch_errors > 0 || c.save_errors > 0 || a.failed > 0;
+    var summary = ["本日 " + (health.date || ""),
+      "解析成功 " + (a.succeeded || 0) + "/" + (a.total == null ? "未確認" : a.total) + "R" +
+      "（失敗 " + (a.failed == null ? "未確認" : a.failed) + "・対象外 " + (a.excluded == null ? "未確認" : a.excluded) + "）",
+      "取得 " + healthTime(c.last_fetch_at), "有効オッズ " + healthTime(c.last_odds_at),
+      "保存 " + healthTime(c.last_save_at),
+      "現在の取得/保存エラー " + (c.fetch_errors || 0) + "/" + (c.save_errors || 0)];
+    ["30", "10", "2"].forEach(function (stage) {
+      var s = stages[stage] || {};
+      warning = warning || s.missing > 0 || s.quality_failed > 0 || s.unknown > 0;
+      summary.push(stage + "分前: 保存 " + (s.saved || 0) + "・待機 " + (s.waiting || 0) +
+        "・品質不足 " + (s.quality_failed || 0) + "・未取得 " + (s.missing || 0) + "・未確認 " + (s.unknown || 0));
+    });
+    summary.push("監視巡回 " + healthTime((health.monitor || {}).last_iteration_at));
+    el.textContent = summary.join("\\n");
+    el.classList.toggle("warning", !!warning);
+    var missed = ["30", "10", "2"].reduce(function (n, stage) { return n + ((stages[stage] || {}).missing || 0); }, 0);
+    setHealthSummary("解析 " + (a.succeeded || 0) + "/" + (a.total == null ? "未確認" : a.total) +
+      "R · 最終保存 " + healthTime(c.last_save_at) + " · 未取得 " + missed +
+      " · 取得/保存エラー " + (c.fetch_errors || 0) + "/" + (c.save_errors || 0), warning);
+  }
+  // ---- collection health rendering (end) ----
+
   function pollGlobalStatus() {
     clearTimeout(globalPollTimer);
-    fetch("/ev/api/state").then(function (res) {
+    if (globalPollInFlight) { return; }
+    globalPollInFlight = true;
+    var nextPollMs = 15000;
+    var controller = new AbortController();
+    var timeout = setTimeout(function () { controller.abort(); }, 10000);
+    fetch("/ev/api/state", {cache: "no-store", signal: controller.signal}).then(function (res) {
+      if (!res.ok) { throw new Error("HTTP " + res.status); }
       return res.json();
     }).then(function (st) {
+      renderCollectionHealth(st.health);
       var btn = document.getElementById("globalStart");
       var analyzing = st.status === "analyzing";
       var text = "";
@@ -363,9 +487,23 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
       setGlobalStatus(text, isError);
       if (btn) { btn.disabled = analyzing; }
       if (analyzing) {
-        globalPollTimer = setTimeout(pollGlobalStatus, 3000);
+        nextPollMs = 3000;
       }
-    }).catch(function () { /* サーバー停止中などは次回クリックまで待つ */ });
+    }).catch(function () {
+      setHealthSummary("接続を確認できません — 再接続中", true);
+      setGlobalStatus("サーバーとの通信失敗・再接続待ち", true);
+      var el = document.getElementById("collectionHealth");
+      if (el) {
+        el.textContent = "通信失敗のため収集状態を確認できません。15秒後に再確認します。";
+        el.classList.toggle("warning", true);
+      }
+      var btn = document.getElementById("globalStart");
+      if (btn) { btn.disabled = false; }
+    }).finally(function () {
+      clearTimeout(timeout);
+      globalPollInFlight = false;
+      globalPollTimer = setTimeout(pollGlobalStatus, nextPollMs);
+    });
   }
 
   function startAll() {

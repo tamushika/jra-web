@@ -6,9 +6,8 @@
     <title>期待値レース監視</title>
     <link rel="stylesheet" href="style.css">
     <style>
-        .ev-container { max-width: min(1750px, 98vw); margin: 0 auto; padding: 16px; }
-        .ev-section { background: rgba(0,0,0,0.25); border: 1px solid var(--border-color);
-                      border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+        .ev-section { background: var(--panel-bg); border: 1px solid var(--border-color);
+                      border-radius: 14px; padding: 20px; margin-bottom: 18px; min-width: 0; }
         .ev-step-title { font-size: 16px; font-weight: bold; color: var(--primary); margin-bottom: 10px; }
         .ev-progress { color: var(--text-muted); margin-left: 10px; }
         .ev-race { border: 1px solid var(--border-color); border-radius: 8px;
@@ -34,35 +33,70 @@
         select, input[type=checkbox] { accent-color: var(--primary); }
         .ev-select { background: var(--bg-color, #222); color: var(--text-color, #eee);
                      border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 8px; }
-        .ev-grid { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        .ev-grid { width: 100%; border-collapse: separate; border-spacing: 8px; table-layout: fixed;
+                   white-space: normal; min-width: 500px; }
         .ev-grid th, .ev-grid td { border: 1px solid var(--border-color);
-                                   padding: 3px 5px; vertical-align: top;
-                                   overflow-wrap: break-word; }
-        .ev-grid th { background: rgba(255,255,255,0.06); font-size: 13px; }
-        .ev-cell { font-size: 12px; border-radius: 6px; padding: 2px 4px; }
+                                   padding: 0; vertical-align: top; white-space: normal;
+                                   overflow-wrap: anywhere; text-align: left; border-radius: 10px; }
+        .ev-grid th { background: transparent; font-size: 12px; border: 0; color: var(--text-muted);
+                     text-align: center; padding: 8px 0; position: static; }
+        .ev-grid td { background: #0e1723; }
+        .ev-grid td:empty { background: transparent; border-color: transparent; }
+        .ev-grid tbody tr:hover { background: transparent; }
+        .ev-cell { font-size: 13px; border-radius: 10px; padding: 14px 16px; min-width: 0;
+                   white-space: normal; overflow-wrap: anywhere; }
         .ev-cell.has-pick { background: rgba(245,200,66,0.12);
                             outline: 1px solid #f5c842; }
-        .ev-cell.finished { opacity: 0.4; }
-        .ev-cell-head { font-size: 11px; color: var(--text-muted); }
+        .ev-cell.excluded { background: rgba(245,124,0,0.07); border-color: #6f5937; }
+        .ev-cell.finished { opacity: 0.7; }
+        .ev-cell-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+                        font-size: 12px; color: var(--text-muted); margin-bottom: 9px; }
+        button.ev-cell-head { width: 100%; min-height: 0; padding: 0; border: 0; background: transparent;
+                              text-align: left; justify-content: flex-start; }
         .ev-cell-head.ev-clickable { cursor: pointer; }
         .ev-cell-head.ev-clickable:hover { color: var(--text-color, #eee); text-decoration: underline; }
-        .ev-cell-venue { margin-right: 4px; }
-        .ev-cell-horse { margin-top: 2px; line-height: 1.35; }
-        .ev-cell-sub { font-size: 11px; color: var(--text-muted); }
+        .ev-cell-venue { margin-right: auto; color: var(--text-main); font-size: 13px; }
+        .ev-cell-horse { margin-top: 8px; line-height: 1.7; }
+        .ev-cell-sub { font-size: 12px; color: var(--text-muted); }
         .ev-cell-horse b { color: var(--primary); }
-        .ev-h-top { opacity: 0.75; }
+        .ev-h-top { opacity: 1; }
         .ev-wide { color: #7ec8e3; }
+        .ev-quality { margin: 7px 0; font-size: 11px; color: var(--text-muted); line-height: 1.7; }
+        .ev-quality.unavailable { color: var(--accent); border-left: 2px solid #8c6c37; padding-left: 10px; }
+        .ev-quality.excluded { color: #f5a623; border-left: 2px solid #f5a623; padding-left: 10px; }
+        .ev-quality summary { font-size: 11px; margin-top: 4px; }
+        .ev-quality ul { padding-left: 18px; margin-top: 6px; }
+        .ev-quality li { white-space: normal; overflow-wrap: anywhere; }
+        .ev-app .app-page-header { margin-bottom: 16px; }
+        .ev-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 16px 0; }
+        .ev-stat { border: 1px solid var(--border-color); background: var(--panel-bg); border-radius: 12px; padding: 10px 18px; }
+        .ev-stat strong { display: block; font-size: 26px; font-variant-numeric: tabular-nums; color: var(--text-main); }
+        .ev-stat span { font-size: 11px; color: var(--text-muted); }
+        .ev-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+        .ev-filter { display: flex; gap: 6px; flex-wrap: wrap; }
+        .ev-filter button.active { border-color: var(--primary); background: #18352f; color: var(--primary); }
+        .ev-empty { padding: 48px 20px; text-align: center; color: var(--text-muted); border: 1px dashed var(--border-color); border-radius: 12px; }
+        .ev-section > summary { font-weight: 650; color: var(--text-main); }
+        .ev-section > summary + div { margin-top: 16px; }
+        .ev-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+        .ev-options > .ev-section { padding: 12px 16px; margin-bottom: 14px; }
+        @media(max-width:760px) { .ev-section { padding: 12px; } .ev-cell { padding: 12px; }
+            .ev-stats { gap: 8px; } .ev-stat { padding: 12px; } .ev-stat strong { font-size: 22px; } }
+        @media(max-width:480px) { .ev-options { grid-template-columns: 1fr; gap: 0; } }
     </style>
 </head>
-<body>
+<body class="local-app ev-app">
 <div class="ev-container">
-    <h2 style="margin: 12px 0;">期待値レース監視
-        <span style="font-size:13px;color:var(--text-muted);">Web版スコア(回収率) × MLスコア(的中率) / ローカル専用</span>
-        <a href="boards" style="font-size:13px;margin-left:12px;">確率・オッズボード</a>
-    </h2>
+    <div class="app-page-header">
+        <div><div class="app-eyebrow">RACE MONITOR</div><h1>オッズ監視</h1>
+        <p class="app-subtitle">レースごとの予測とデータ品質を、ひと目で確認。</p></div>
+        <a href="boards" class="app-subtitle">確率・オッズボード ↗</a>
+    </div>
+    <div class="ev-stats" id="raceStats" aria-label="監視サマリー"></div>
 
-    <div class="ev-section">
-        <div class="ev-step-title">解析 &amp; 監視設定</div>
+    <div class="ev-options">
+    <details class="ev-section" id="monitorSettings">
+        <summary>監視設定・解析</summary>
         <div style="margin-bottom:10px;">
             EV閾値 (ML勝率×オッズ):
             <select id="evTh" class="ev-select">
@@ -82,19 +116,25 @@
         <div class="ev-meta" style="margin-top:8px;">
             発走15分前と5分前にオッズを自動更新し、期待値馬がいればブラウザ通知します。<b>このタブを開いたままにしてください。</b>
         </div>
-    </div>
+    </details>
 
-    <div class="ev-section">
-        <div class="ev-step-title">🔔 通知ログ</div>
+    <details class="ev-section">
+        <summary>通知ログ・運用上の注意</summary>
         <div class="ev-meta" style="margin-bottom:6px;">
             ※通知は参考情報です (購入推奨ではありません)。EV≥1.3のフル再検証 (2026-07-13) は単勝81.4%で市場同等。閾値は起動時の設定値 (.env EV_THRESHOLD) に自動で合わせます。
             通知内容はNeonに自動記録され、<code>python ev_log_report.py</code> で実測回収率を確認できます。
         </div>
         <div class="ev-alert-log" id="alertLog"><span class="ev-meta">まだ通知はありません</span></div>
+    </details>
     </div>
 
     <div class="ev-section">
-        <div class="ev-step-title">本日のレースと期待値ピックアップ</div>
+        <div class="ev-toolbar"><div class="ev-step-title" style="margin:0;">本日のレース</div>
+        <div class="ev-filter" aria-label="表示レースの絞り込み">
+            <button type="button" class="active" data-race-filter="all" onclick="setRaceFilter('all')">すべて</button>
+            <button type="button" data-race-filter="picked" onclick="setRaceFilter('picked')">EV対象</button>
+            <button type="button" data-race-filter="unavailable" onclick="setRaceFilter('unavailable')">判定不可</button>
+        </div></div>
         <div class="ev-summary" id="summary"></div>
         <div id="raceArea" style="margin-top:10px;"></div>
     </div>
@@ -104,6 +144,8 @@
 let lastAlertId = 0;
 let stateCache = null;
 let pollTimer = null;
+let raceFilter = 'all';
+const expandedQuality = new Set();
 
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -265,7 +307,45 @@ function openRace(rid) {
     }
 }
 
+function setRaceFilter(value) {
+    raceFilter = ['all', 'picked', 'unavailable'].includes(value) ? value : 'all';
+    document.querySelectorAll('[data-race-filter]').forEach(button => {
+        const active = button.dataset.raceFilter === raceFilter;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+    });
+    render();
+}
+
+function qualityHtml(r) {
+    const quality = r.probability_quality;
+    if (!quality) return '<div class="ev-quality">採点状況：未確認</div>';
+    const counts = `正常ML採点 ${esc(quality.scored)}/${esc(quality.total)}頭`;
+    if (quality.ok) return `<div class="ev-quality">${counts}</div>`;
+    const reasons = new Map();
+    (quality.missing || []).forEach(horse => {
+        const reason = horse.reason || '理由未確認';
+        if (!reasons.has(reason)) reasons.set(reason, []);
+        reasons.get(reason).push(horse.num);
+    });
+    const rows = [...reasons].map(([reason, nums]) => `<li>${esc(reason)}：${nums.length}頭
+        <span>（${nums.map(esc).join('・')}番）</span></li>`).join('');
+    return `<div class="ev-quality unavailable">${counts} · 勝率/EV判定不可
+        ${rows ? `<details data-quality-rid="${esc(r.rid)}" ${expandedQuality.has(r.rid) ? 'open' : ''}>
+            <summary>未採点の理由を確認</summary><ul>${rows}</ul></details>` : ''}</div>`;
+}
+
 function cellHtml(r) {
+    if (r.analysis_excluded) {
+        const clickable = r.url ? ' ev-clickable' : '';
+        const reason = r.excluded_reason_label || '予測対象外';
+        return `<div class="ev-cell excluded">
+            <button type="button" class="ev-cell-head${clickable}" data-rid="${esc(r.rid)}" onclick="openRace(this.dataset.rid)" title="レース詳細を開く" ${r.url ? '' : 'disabled'}>
+                <span class="ev-cell-venue ev-meta">${esc(r.venue)}${esc(r.race_num)}R</span>${esc(r.start_time)}
+            </button>
+            <div class="ev-quality excluded"><b>予測対象外</b><br>${esc(reason)}</div>
+        </div>`;
+    }
     const picks = r.horses.filter(h => h.picked);
     let body;
     if (picks.length) {
@@ -286,40 +366,96 @@ function cellHtml(r) {
         ? ' <span class="ev-badge" style="background:#f57c00;color:#fff;">オッズ未</span>' : '';
     const clickable = r.url ? ' ev-clickable' : '';
     return `<div class="ev-cell ${picks.length ? 'has-pick' : ''} ${r.finished ? 'finished' : ''}">
-        <div class="ev-cell-head${clickable}" onclick="openRace('${esc(r.rid)}')" title="レース詳細を開く">
+        <button type="button" class="ev-cell-head${clickable}" data-rid="${esc(r.rid)}" onclick="openRace(this.dataset.rid)" title="レース詳細を開く" ${r.url ? '' : 'disabled'}>
             <span class="ev-cell-venue ev-meta">${esc(r.venue)}${esc(r.race_num)}R</span>${esc(r.start_time)}<span class="ev-meta">${marks}</span>${oddsBadge}
-        </div>
-        ${body}${(r.wide_picks || []).map(w =>
+        </button>
+        ${qualityHtml(r)}${body}${(r.wide_picks || []).map(w =>
             `<div class="ev-cell-sub ev-wide">W ${esc(w.nums[0])}-${esc(w.nums[1])} <span class="ev-meta">×${w.overlay}</span></div>`).join('')}</div>`;
+}
+
+// 再起動前の旧バックエンドは対象外件数だけを返し、対象レース自体を返さない。
+// 全対象が会場×R番号の矩形になり、穴の数が対象外件数と完全一致する場合に限り、
+// 表示専用カードを安全に補完する。新バックエンドでは excluded_races が優先される。
+function inferLegacyExcludedRaces(monitoredRaces, explicitExcluded, state) {
+    const analysis = state.health?.analysis || {};
+    const reportedExcluded = Number(analysis.excluded);
+    const reportedTotal = Number(analysis.total);
+    const remaining = reportedExcluded - explicitExcluded.length;
+    if (!Number.isInteger(remaining) || remaining <= 0 || !Number.isInteger(reportedTotal)) return [];
+
+    const venues = [...new Set(monitoredRaces.map(r => r.venue).filter(Boolean))];
+    const raceNumbers = [...new Set(monitoredRaces.map(r => Number(r.race_num))
+        .filter(n => n > 0))].sort((a, b) => a - b);
+    if (!venues.length || !raceNumbers.length || venues.length * raceNumbers.length !== reportedTotal ||
+            monitoredRaces.length + reportedExcluded !== reportedTotal) return [];
+
+    const present = new Set(monitoredRaces.map(r => `${r.venue}:${Number(r.race_num)}`));
+    explicitExcluded.forEach(r => present.add(`${r.venue}:${Number(r.race_num)}`));
+    const gaps = [];
+    for (const rn of raceNumbers) {
+        for (const venue of venues) {
+            if (!present.has(`${venue}:${rn}`)) gaps.push({venue, race_num: rn});
+        }
+    }
+    if (gaps.length !== remaining) return [];
+    const dayLabel = monitoredRaces.find(r => r.day_label)?.day_label || '';
+    return gaps.map(({venue, race_num}) => ({
+        rid: `excluded:${venue}:${race_num}`,
+        venue, race_num, start_time: '', day_label: dayLabel,
+        horses: [], n_picked: 0, wide_picks: [], analysis_excluded: true,
+        excluded_reason: 'jump_race',
+        excluded_reason_label: '障害レースのため予測対象外',
+    }));
 }
 
 function render() {
     if (!stateCache) return;
-    const races = stateCache.races || [];
-    const nPick = races.filter(r => r.n_picked > 0).length;
+    const monitoredRaces = stateCache.races || [];
+    const hasExplicitExcluded = Array.isArray(stateCache.excluded_races);
+    const explicitExcluded = hasExplicitExcluded ? stateCache.excluded_races : [];
+    const excludedRaces = [...explicitExcluded,
+        ...(hasExplicitExcluded ? [] :
+            inferLegacyExcludedRaces(monitoredRaces, explicitExcluded, stateCache))];
+    const allRaces = [...monitoredRaces, ...excludedRaces];
+    const nPick = monitoredRaces.filter(r => r.n_picked > 0).length;
+    const nUnavailable = monitoredRaces.filter(r => r.probability_quality?.ok === false).length;
+    const stats = document.getElementById('raceStats');
+    if (stats) stats.innerHTML = `<div class="ev-stat"><span>監視レース</span><strong>${monitoredRaces.length}<small> R</small></strong></div>
+        <div class="ev-stat"><span>EV対象のあるレース</span><strong style="color:var(--accent)">${nPick}<small> R</small></strong></div>
+        <div class="ev-stat"><span>採点不足・判定不可</span><strong>${nUnavailable}<small> R</small></strong></div>`;
+    const races = allRaces.filter(r => raceFilter === 'all' ||
+        (raceFilter === 'picked' ? r.n_picked > 0 :
+            !r.analysis_excluded && r.probability_quality?.ok === false));
     const dayLabel = races.length && races[0].day_label ? ` (${races[0].day_label})` : '';
+    const excludedText = excludedRaces.length ? ` · 対象外 ${excludedRaces.length}R` : '';
     document.getElementById('summary').innerHTML =
-        races.length ? `期待値馬のいるレース: <b>${nPick}</b> / ${races.length}レース${esc(dayLabel)}
-            <span class="ev-meta">金枠=期待値馬あり / 薄色=EV最上位馬 (2026-07-13 ワイド候補表示は再検証により停止中)</span>` : '';
+        allRaces.length ? `<span class="ev-meta">${races.length} / ${allRaces.length}レースを表示${esc(dayLabel)}${excludedText} · 金枠はEV対象あり。未採点の理由は各カードで確認できます。</span>` : '';
     const area = document.getElementById('raceArea');
+    area.querySelectorAll('details[data-quality-rid]').forEach(details => {
+        if (details.open) expandedQuality.add(details.dataset.qualityRid);
+        else expandedQuality.delete(details.dataset.qualityRid);
+    });
     racesByRid = {};
-    races.forEach(r => { racesByRid[r.rid] = r; });
-    if (!races.length) { area.innerHTML = ''; return; }
+    allRaces.forEach(r => { racesByRid[r.rid] = r; });
+    if (!races.length) {
+        area.innerHTML = `<div class="ev-empty">${allRaces.length ? 'この条件に該当するレースはありません。' : '監視レースはまだありません。上部の「解析開始」から読み込めます。'}</div>`;
+        return;
+    }
 
     // 会場ごとの列 (初戦の発走が早い順)、行はレース番号で揃える
     const byVenue = new Map();
     for (const r of races) {
         if (!byVenue.has(r.venue)) byVenue.set(r.venue, new Map());
-        byVenue.get(r.venue).set(r.race_num, r);
+        byVenue.get(r.venue).set(Number(r.race_num), r);
     }
     const venues = [...byVenue.keys()].sort((a, b) => {
-        const first = m => Math.min(...[...m.values()].map(r => timeVal(r.start_time)));
-        return first(byVenue.get(a)) - first(byVenue.get(b));
+        const first = venue => Math.min(...allRaces.filter(r => r.venue === venue).map(r => timeVal(r.start_time)));
+        return first(a) - first(b);
     });
-    const maxR = Math.max(...races.map(r => r.race_num || 0));
-    let html = '<div style="overflow-x:auto;"><table class="ev-grid"><tr><th style="width:34px;"></th>' +
-        venues.map(v => `<th>${esc(v)}</th>`).join('') + '</tr>';
-    for (let rn = 1; rn <= maxR; rn++) {
+    const raceNumbers = [...new Set(races.map(r => Number(r.race_num)).filter(n => n > 0))].sort((a, b) => a - b);
+    let html = '<div class="table-scroll"><table class="ev-grid"><thead><tr><th style="width:34px;">R</th>' +
+        venues.map(v => `<th scope="col">${esc(v)}</th>`).join('') + '</tr></thead><tbody>';
+    for (const rn of raceNumbers) {
         html += `<tr><th>${rn}R</th>`;
         for (const v of venues) {
             const r = byVenue.get(v).get(rn);
@@ -327,7 +463,7 @@ function render() {
         }
         html += '</tr>';
     }
-    area.innerHTML = html + '</table></div>';
+    area.innerHTML = html + '</tbody></table></div>';
 }
 
 // SPEC-T74: タブシェル (iframe埋め込み) 内では、解析開始はタブバー左端の
@@ -336,6 +472,8 @@ function render() {
 if (window.parent !== window) {
     var startBtnEl = document.getElementById('startBtn');
     if (startBtnEl) { startBtnEl.style.display = 'none'; }
+} else {
+    document.getElementById('monitorSettings').open = true;
 }
 
 updateNotifState();

@@ -3,26 +3,59 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WIN5予想 (スコアリング+荒れ度配分)</title>
+    <title>WIN5予想 | JRA予想スイート</title>
     <link rel="stylesheet" href="style.css">
     <style>
-        .w5-container { max-width: 1100px; margin: 0 auto; padding: 16px; }
-        .w5-section { background: rgba(0,0,0,0.25); border: 1px solid var(--border-color);
-                      border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-        .w5-step-title { font-size: 16px; font-weight: bold; color: var(--primary);
-                         margin-bottom: 10px; }
-        .w5-progress { color: var(--text-muted); margin: 8px 0; }
-        .w5-score-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
-        .w5-score-table th, .w5-score-table td { border: 1px solid var(--border-color);
-                                                 padding: 4px 8px; text-align: center; }
+        .w5-container { width: 100%; max-width: 1440px; margin: 0 auto; padding: 28px; box-sizing: border-box; }
+        .w5-section { background: var(--panel-bg); border: 1px solid var(--border-color);
+                      border-radius: 18px; padding: 24px; margin-bottom: 20px; min-width: 0; }
+        .w5-step-title { display: flex; align-items: center; gap: 12px; margin: 0 0 8px; font-size: 18px; font-weight: 700; }
+        .w5-step-number { display: inline-grid; place-items: center; width: 30px; height: 30px; flex: 0 0 auto;
+                          border-radius: 9px; color: var(--primary); background: rgba(78,214,176,.10); font-size: 12px; }
+        .w5-section-note { color: var(--text-muted); font-size: 13px; line-height: 1.7; margin: 0 0 18px; }
+        .w5-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+        .w5-progress { color: var(--text-muted); font-size: 13px; overflow-wrap: anywhere; }
+        .w5-route { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 24px; }
+        .w5-route a { color: var(--text-muted); border: 1px solid var(--border-color); text-decoration: none;
+                      border-radius: 99px; padding: 7px 12px; font-size: 12px; }
+        .w5-route a:hover { color: var(--primary); border-color: var(--primary); }
+        .win5-app .win5-race-grid { gap: 12px; margin: 18px 0 0; grid-template-columns: repeat(5,minmax(0,1fr)); }
+        .win5-app .win5-race-card { min-width: 0; background: var(--bg-color); color: var(--text-main);
+                                  border-color: var(--border-color); border-radius: 13px; padding: 16px; }
+        .win5-app .win5-race-no { color: var(--primary); text-transform: uppercase; letter-spacing: .08em; font-size: 10px; }
+        .win5-app .win5-race-venue { color: var(--text-main); font-size: 20px; margin-top: 8px; }
+        .win5-app .win5-race-time { color: var(--text-muted); font-size: 12px; }
+        .w5-field-size { display: flex; align-items: baseline; gap: 7px; border-top: 1px solid var(--border-color);
+                         margin-top: 14px; padding-top: 12px; }
+        .w5-field-size strong { font-size: 26px; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }
+        .w5-field-size span { color: var(--text-muted); font-size: 11px; }
+        .w5-field-size.is-unknown strong { font-size: 14px; color: var(--text-muted); }
+        .w5-field-source { color: var(--text-muted); font-size: 10px; margin: 5px 0 0; min-height: 1.5em; }
+        .w5-source { margin-top: 14px; font-size: 11px; color: var(--text-muted); }
+        .w5-source summary { cursor: pointer; }
+        .win5-app .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+                             overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+        .win5-app .win5-url-input { font-size: 11px; padding: 8px; margin-top: 8px; }
+        .w5-score-panel { background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 12px; margin-top: 12px; overflow: hidden; }
+        .w5-score-panel > summary { cursor: pointer; padding: 16px; line-height: 1.7; overflow-wrap: anywhere; }
+        .w5-score-panel > summary::marker { color: var(--primary); }
+        .w5-score-panel > summary small { display: block; margin: 4px 0 0 15px; color: var(--text-muted); font-size: 12px; }
+        .w5-score-content { padding: 0 16px 16px; }
+        .w5-quality { padding: 9px 12px; margin-bottom: 12px; border-radius: 8px; color: var(--text-muted); background: rgba(154,171,192,.07); font-size: 12px; overflow-wrap: anywhere; }
+        .w5-quality.is-warning { color: var(--accent); background: rgba(240,188,103,.08); }
+        .w5-quality summary { cursor: pointer; line-height: 1.7; }
+        .w5-quality ul { display: grid; grid-template-columns: repeat(auto-fit,minmax(190px,1fr)); gap: 5px 18px; margin: 10px 0 0; padding-left: 18px; }
+        .w5-score-table { width: 100%; min-width: 660px; border-collapse: collapse; font-size: 12px; }
+        .w5-score-table th, .w5-score-table td { border-bottom: 1px solid var(--border-color); padding: 10px 12px; text-align: center; }
+        .w5-score-table th { color: var(--text-muted); font-size: 11px; font-weight: 500; }
         .w5-score-table td.name { text-align: left; }
         .upset-badge { display: inline-block; padding: 2px 10px; border-radius: 10px;
                        font-weight: bold; font-size: 12px; margin-left: 6px; }
-        .upset-S { background: #d32f2f; color: #fff; }
-        .upset-A { background: #f57c00; color: #fff; }
-        .upset-B { background: #fbc02d; color: #333; }
-        .upset-C { background: #388e3c; color: #fff; }
-        .upset-N { background: #555; color: #eee; }
+        .upset-S { background: #61303b; color: #ffc3cb; }
+        .upset-A { background: #583e29; color: #ffd49b; }
+        .upset-B { background: #454127; color: #ecdb92; }
+        .upset-C { background: #1b453b; color: #93e2c4; }
+        .upset-N { background: #293549; color: #b7c4d8; }
         .w5-pick-row { border: 1px solid var(--border-color); border-radius: 8px;
                        padding: 10px 14px; margin-bottom: 8px; }
         .w5-pick-horses { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
@@ -33,72 +66,93 @@
         .w5-est { color: var(--text-muted); font-size: 13px; }
         .w5-race-head { font-weight: bold; }
         .w5-selected-row { background: rgba(80, 200, 120, 0.10); }
-        .score-detail-btn { cursor: pointer; color: var(--primary); background: none;
-                            border: none; font-size: 12px; }
+        .win5-app button.score-detail-btn { cursor: pointer; color: var(--primary); background: none;
+                            border: none; font-size: 11px; min-height: 28px; padding: 3px 6px; }
         .w5-detail-pre { font-size: 11px; color: var(--text-muted); text-align: left;
-                         white-space: pre-wrap; margin: 2px 0 0; }
+                         white-space: pre-wrap; overflow-wrap: anywhere; margin: 2px 0 0; }
+        .w5-points { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border: 0; padding: 0; margin: 0 0 16px; }
+        .w5-points legend { color: var(--text-muted); font-size: 12px; margin-bottom: 8px; }
+        .win5-app input:is([type="radio"], [type="checkbox"]) { width: 16px; height: 16px; min-height: 0; padding: 0;
+                                                               flex: 0 0 auto; accent-color: var(--primary); }
+        .w5-points .win5-radio-label { padding: 8px 14px; border-radius: 9px; border: 1px solid var(--border-color); }
+        .w5-points .win5-radio-label:has(input:checked) { background: rgba(78,214,176,.10); border-color: var(--primary); color: var(--primary); }
+        .w5-axis { margin-bottom: 16px; }
+        .w5-axis-note { color: var(--text-muted); font-size: 11px; line-height: 1.7; margin: 7px 0 0 22px; }
+        .w5-race-state { font-size: 11px; color: var(--text-muted); }
+        .w5-race-state.is-warning { color: var(--accent); }
+        @media(max-width: 1080px) { .win5-app .win5-race-grid { grid-template-columns: repeat(3,minmax(0,1fr)); } }
+        @media(max-width: 640px) { .w5-container { padding: 16px; } .w5-section { padding: 18px; border-radius: 14px; }
+            .win5-app .win5-race-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .w5-step-title { font-size: 16px; } }
+        @media(max-width: 380px) { .win5-app .win5-race-grid { grid-template-columns: 1fr; } }
     </style>
 </head>
-<body>
+<body class="local-app win5-app">
 <div class="w5-container">
-    <h2 style="margin: 12px 0;">WIN5予想 <span style="font-size:13px;color:var(--text-muted);">スコアリング + 荒れ度配分 (ローカル専用)</span></h2>
+    <header class="app-page-header">
+        <div><div class="app-eyebrow">WIN5 PLANNER</div><h1>5レースを、ひとつの戦略に。</h1>
+        <p class="app-subtitle">対象レースの確認から採点・点数配分・締切前の再計算まで。</p></div>
+    </header>
+    <nav class="w5-route" aria-label="WIN5予想の手順">
+        <a href="#targets">01 対象レース</a><a href="#scores">02 スコア計算</a>
+        <a href="#ticket">03 買い目</a><a href="#watch">04 自動再計算</a>
+    </nav>
 
     <!-- STEP 1 -->
-    <div class="w5-section">
-        <div class="w5-step-title">STEP 1: WIN5対象レース取得</div>
-        <button class="primary-btn" id="loadBtn" onclick="loadRaces()">対象レースを取得</button>
-        <span class="w5-progress" id="loadStatus"></span>
-        <div class="win5-race-grid" id="raceGrid" style="margin-top:12px;"></div>
-    </div>
+    <section class="w5-section" id="targets">
+        <h2 class="w5-step-title"><span class="w5-step-number">01</span> 対象レース</h2>
+        <p class="w5-section-note">出走頭数は取消・除外馬を除いた取得時点の頭数です。未取得の頭数はスコア計算後に反映します。</p>
+        <div class="w5-actions"><button class="primary-btn" id="loadBtn" onclick="loadRaces()">対象レースを取得</button>
+        <span class="w5-progress" id="loadStatus" role="status" aria-live="polite"></span></div>
+        <div class="win5-race-grid" id="raceGrid"></div>
+    </section>
 
     <!-- STEP 2 -->
-    <div class="w5-section">
-        <div class="w5-step-title">STEP 2: スコア計算 (5レース順次・数分かかります)</div>
-        <button class="primary-btn" id="analyzeBtn" onclick="analyzeAll()" disabled>スコア計算開始</button>
-        <span class="w5-progress" id="analyzeStatus"></span>
+    <section class="w5-section" id="scores">
+        <h2 class="w5-step-title"><span class="w5-step-number">02</span> スコア計算</h2>
+        <p class="w5-section-note">5レースを順番に解析します。通常は数分かかります。レースを開くと馬ごとの採点結果を確認できます。</p>
+        <div class="w5-actions"><button class="primary-btn" id="analyzeBtn" onclick="analyzeAll()" disabled>スコア計算開始</button>
+        <span class="w5-progress" id="analyzeStatus" role="status" aria-live="polite"></span></div>
         <div id="scoreArea"></div>
-    </div>
+    </section>
 
     <!-- STEP 3 -->
-    <div class="w5-section">
-        <div class="w5-step-title">STEP 3: 買い目生成</div>
-        <div style="margin-bottom:10px;">
-            点数上限:
+    <section class="w5-section" id="ticket">
+        <h2 class="w5-step-title"><span class="w5-step-number">03</span> 買い目を組む</h2>
+        <p class="w5-section-note">点数上限と軸の条件を選び、5レースに配分します。全出走馬の正常なML採点が必要です。</p>
+        <fieldset class="w5-points">
+            <legend>点数上限</legend>
             <label class="win5-radio-label"><input type="radio" name="pts" value="50"> 50点</label>
             <label class="win5-radio-label"><input type="radio" name="pts" value="100" checked> 100点</label>
             <label class="win5-radio-label"><input type="radio" name="pts" value="150"> 150点</label>
             <label class="win5-radio-label"><input type="radio" name="pts" value="200"> 200点</label>
             <label class="win5-radio-label"><input type="radio" name="pts" value="500"> 500点</label>
-        </div>
-        <div style="margin-bottom:10px;">
+        </fieldset>
+        <div class="w5-axis">
             <label class="win5-radio-label">
                 <input type="checkbox" id="singleAxis">
                 最も確度が高いレースを1頭固定 (軸) — 浮いた点数を他レースに配分
             </label>
-            <span style="color:var(--text-muted);font-size:11px;">
-                ※バックテスト(2021-2025・MLスコア): 軸1頭固定が全点数で的中率優位 (軸馬勝率39.9%)。推奨ON
-            </span>
+            <p class="w5-axis-note">参考：2021–2025年のMLスコアによるバックテストでは軸馬勝率39.9%。過去の結果であり、今後の的中を保証するものではありません。</p>
         </div>
         <button class="primary-btn" id="kaimeBtn" onclick="generateKaime()" disabled>買い目を生成</button>
-        <div id="kaimeArea" style="margin-top:12px;"></div>
-    </div>
+        <div id="kaimeArea" style="margin-top:12px;" aria-live="polite"></div>
+    </section>
 
     <!-- STEP 4 -->
-    <div class="w5-section">
-        <div class="w5-step-title">STEP 4: 締切前の自動再計算 (推奨)</div>
-        <div style="color:var(--text-muted);font-size:13px;margin-bottom:8px;">
-            MLスコアの最重要因子はオッズのため、購入直前の再計算ほど精度が出ます (バックテストは確定オッズ基準)。
-            1レース目発走の15分前に全5レースのオッズを再取得して買い目を計算し直し、ブラウザ通知します。
-        </div>
-        <button class="primary-btn" onclick="armWatch()">⏰ 自動再計算を予約</button>
-        <span class="w5-progress" id="watchStatus"></span>
+    <section class="w5-section" id="watch">
+        <h2 class="w5-step-title"><span class="w5-step-number">04</span> 締切前の自動再計算</h2>
+        <p class="w5-section-note">1レース目発走の15分前に全5レースのオッズを再取得し、買い目を再計算します。
+            通知を受け取るには、このタブを開いたままにしてください。</p>
+        <div class="w5-actions"><button class="primary-btn" onclick="armWatch()">自動再計算を予約</button>
+        <span class="w5-progress" id="watchStatus" role="status" aria-live="polite"></span></div>
         <div id="watchArea" style="margin-top:12px;"></div>
-    </div>
+    </section>
 </div>
 
 <script>
 let raceList = [];      // STEP1 の5レース {venue, race_num, time, url}
 let analyzed = [];      // STEP2 の解析結果 (idx順)
+let analysisGeneration = 0; // URL編集・対象再取得前のレスポンスを表示しない
 
 function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -109,11 +163,118 @@ function upsetBadge(rank) {
     return `<span class="upset-badge ${cls}">荒れ度 ${esc(r)}</span>`;
 }
 
+function fieldSize(data) {
+    if (Number.isInteger(data?.field_size) && data.field_size >= 0) return data.field_size;
+    if (!Array.isArray(data?.horses) || !data.horses.length || data.horses.some(h => !h || typeof h !== 'object')) return null;
+    return data.horses.filter(h => !['scratched', 'cancelled', 'withdrawn', 'is_scratched'].some(key => h[key])).length;
+}
+
+function fieldSizeHtml(data) {
+    const count = fieldSize(data);
+    return `<div class="w5-field-size${count === null ? ' is-unknown' : ''}"><strong>${count === null ? '未取得' : count}</strong><span>${count === null ? '出走頭数' : '頭出走'}</span></div>
+        <p class="w5-field-source">${count === null ? 'スコア計算後に反映' : data?.field_size_source === 'ev_monitor' ? 'オッズ監視の取得済み出馬表' : '解析時点の出馬表'}</p>`;
+}
+
+function updateRaceFieldSize(i, data) {
+    const target = document.getElementById(`fieldSize${i}`);
+    if (target) target.innerHTML = fieldSizeHtml(data);
+    if (raceList[i]) {
+        raceList[i].field_size = fieldSize(data);
+        raceList[i].field_size_source = fieldSize(data) === null ? null : data.field_size_source || 'analysis';
+    }
+}
+
+function onRaceUrlChange(i, value) {
+    const race = raceList[i];
+    const nextUrl = String(value || '').trim();
+    if (!race || nextUrl === String(race.url || '').trim()) return;
+    race.url = nextUrl;
+    race.field_size = null;
+    race.field_size_source = null;
+    race.time = '';
+    race.venue = '未確認';
+    race.race_num = '?';
+    race.urlEdited = true;
+    updateRaceFieldSize(i, {});
+    const venue = document.getElementById(`raceVenue${i}`);
+    const time = document.getElementById(`raceTime${i}`);
+    if (venue) venue.textContent = 'レース未確認';
+    if (time) time.textContent = 'URL変更・再解析が必要です';
+    document.getElementById(`raceCard${i}`)?.setAttribute?.('aria-label', `WIN5-${i + 1} レース未確認`);
+    analysisGeneration++;
+    analyzed = [];
+    document.getElementById('scoreArea').innerHTML = '';
+    document.getElementById('kaimeArea').innerHTML = '';
+    document.getElementById('watchArea').innerHTML = '';
+    document.getElementById('kaimeBtn').disabled = true;
+    document.getElementById('analyzeBtn').disabled = false;
+    document.getElementById('analyzeStatus').textContent = 'URLが変更されました。5レースを再解析してください。';
+}
+
+function analysisMatchesTarget(race, data) {
+    const target = race?.target;
+    if (!target) return true; // 一覧取得失敗後の手動入力は解析結果を表示する
+    const sameDay = !target.race_date || String(data.race_date || '').replace(/\D/g, '') === target.race_date;
+    return data.venue === target.venue && String(data.race_num) === String(target.race_num) && sameDay;
+}
+
+function applyAnalyzedRace(i, data) {
+    const race = raceList[i];
+    if (!race) return;
+    race.venue = data.venue || '未確認';
+    race.race_num = data.race_num ?? '?';
+    const tm = /(\d{1,2}:\d{2})発走/.exec(data.race_info || '');
+    race.time = tm ? tm[1] : race.time || '';
+    race.urlEdited = false;
+    const venue = document.getElementById(`raceVenue${i}`);
+    const time = document.getElementById(`raceTime${i}`);
+    if (venue) venue.textContent = `${race.venue} ${race.race_num}R`;
+    if (time) time.textContent = race.time ? `${race.time} 発走` : '発走時刻未取得';
+    document.getElementById(`raceCard${i}`)?.setAttribute?.('aria-label', `WIN5-${i + 1} ${race.venue} ${race.race_num}R`);
+    updateRaceFieldSize(i, data);
+}
+
+function updateWatchFieldSizes(races) {
+    // 予約時URLを持たない旧応答や、編集中・別日・別レースのカードは更新しない。
+    if (!Array.isArray(races)) return;
+    races.forEach((race, i) => {
+        const idx = race.idx ?? i;
+        const currentUrl = (document.getElementById(`url${idx}`)?.value || '').trim();
+        if (race.source_url && String(race.source_url).trim() === currentUrl &&
+            Number.isInteger(race.field_size) && race.field_size >= 0 &&
+            analysisMatchesTarget(raceList[idx], race)) applyAnalyzedRace(idx, race);
+    });
+}
+
+function renderTargetCards() {
+    const grid = document.getElementById('raceGrid');
+    grid.innerHTML = raceList.map((race, i) => {
+        const found = !!race.url;
+        return `<article class="win5-race-card" id="raceCard${i}" aria-label="WIN5-${i + 1} ${esc(race.venue)} ${esc(race.race_num)}R">
+            <div class="win5-race-no">RACE ${String(i + 1).padStart(2, '0')} / WIN5</div>
+            <div class="win5-race-venue" id="raceVenue${i}">${esc(race.venue)} ${esc(race.race_num)}R</div>
+            <div class="win5-race-time" id="raceTime${i}">${race.time ? `${esc(race.time)} 発走` : '発走時刻未取得'}</div>
+            <div id="fieldSize${i}" aria-live="polite">${fieldSizeHtml(race)}</div>
+            <details class="w5-source" ${found ? '' : 'open'}><summary>${found ? '取得元URLを確認・変更' : 'URLを入力してください'}</summary>
+                <label class="sr-only" for="url${i}">WIN5-${i + 1} レースURL</label>
+                <input class="win5-url-input" id="url${i}" value="${esc(race.url)}" oninput="onRaceUrlChange(${i}, this.value)" placeholder="accessD.html?CNAME=..." aria-label="WIN5-${i + 1} レースURL">
+            </details>
+        </article>`;
+    }).join('');
+}
+
 // ── STEP 1 ──────────────────────────────────────────────
 async function loadRaces() {
+    analysisGeneration++;
     const st = document.getElementById('loadStatus');
     st.textContent = '取得中...';
     document.getElementById('loadBtn').disabled = true;
+    document.getElementById('analyzeBtn').disabled = true;
+    document.getElementById('kaimeBtn').disabled = true;
+    analyzed = [];
+    document.getElementById('scoreArea').innerHTML = '';
+    document.getElementById('kaimeArea').innerHTML = '';
+    document.getElementById('analyzeStatus').textContent = '';
     let ok = false;
     let notifyMessage = '';
     try {
@@ -129,23 +290,17 @@ async function loadRaces() {
             st.textContent = `対象日: ${data.date || ''}`;
             notifyMessage = `対象日: ${data.date || ''}`;
             ok = true;
-            raceList = data.races;
+            raceList = data.races.map(race => ({...race, target: {
+                venue: race.venue, race_num: race.race_num, race_date: data.date_yyyymmdd || ''}}));
         }
-        raceList.forEach((r, i) => {
-            const found = !!r.url;
-            grid.insertAdjacentHTML('beforeend', `
-                <div class="win5-race-card">
-                    <div class="win5-race-no">WIN5-${i + 1}</div>
-                    <div class="win5-race-venue">${esc(r.venue)} ${esc(r.race_num)}R</div>
-                    <div class="win5-race-time">${esc(r.time || '')}</div>
-                    <div class="win5-url-status">${found ? '✅ URL自動取得' : '⚠️ URLを入力してください'}</div>
-                    <input class="win5-url-input" id="url${i}" value="${esc(r.url)}" placeholder="accessD.html?CNAME=...">
-                </div>`);
-        });
+        renderTargetCards();
         document.getElementById('analyzeBtn').disabled = false;
     } catch (e) {
         st.textContent = 'エラー: ' + e.message;
         notifyMessage = 'エラー: ' + e.message;
+        raceList = Array.from({length: 5}, (_, i) => ({idx: i, venue: '?', race_num: '?', time: '', url: ''}));
+        renderTargetCards();
+        document.getElementById('analyzeBtn').disabled = false;
     } finally {
         document.getElementById('loadBtn').disabled = false;
         // SPEC-T74: タブシェル (iframe埋め込み) からの取得依頼に対して、
@@ -162,10 +317,13 @@ async function loadRaces() {
 
 // ── STEP 2 ──────────────────────────────────────────────
 async function analyzeAll() {
+    const generation = ++analysisGeneration;
     const st = document.getElementById('analyzeStatus');
     const area = document.getElementById('scoreArea');
     const btn = document.getElementById('analyzeBtn');
     btn.disabled = true;
+    document.getElementById('kaimeBtn').disabled = true;
+    document.getElementById('kaimeArea').innerHTML = '';
     area.innerHTML = '';
     analyzed = [];
     for (let i = 0; i < 5; i++) {
@@ -182,18 +340,14 @@ async function analyzeAll() {
                 body: JSON.stringify({idx: i, url})
             });
             const data = await res.json();
+            if (generation !== analysisGeneration) return;
             if (data.error) throw new Error(data.error);
+            if (!analysisMatchesTarget(raceList[i], data)) throw new Error('取得したレースがWIN5対象と一致しません。URLを確認してください。');
             analyzed[i] = data;
-            // 発走時刻の補完: WIN5一覧ページは時刻を持たないため、解析結果の race_info
-            // (例「【中京 6R】ダート1900m 15:01発走」) から取り、STEP4の予約に使う
-            const tm = /(\d{1,2}:\d{2})発走/.exec(data.race_info || '');
-            if (tm && raceList[i] && !raceList[i].time) {
-                raceList[i].time = tm[1];
-                const card = document.querySelectorAll('#raceGrid .win5-race-time')[i];
-                if (card) card.textContent = tm[1];
-            }
+            applyAnalyzedRace(i, data);
             renderRaceScores(area, i, data);
         } catch (e) {
+            if (generation !== analysisGeneration) return;
             st.textContent = `WIN5-${i + 1} 解析失敗: ${e.message}`;
             btn.disabled = false;
             return;
@@ -206,27 +360,35 @@ async function analyzeAll() {
 }
 
 function renderRaceScores(area, i, data) {
+    const quality = data.probability_quality;
+    const missing = quality?.missing || [];
+    const qualityLabel = quality ? `正常ML採点 ${esc(quality.scored)}/${esc(quality.total)}頭${quality.ok ? '' : '・確率判定不可'}` : '採点品質未確認';
+    const qualityHtml = quality ? missing.length ? `<details class="w5-quality is-warning">
+        <summary>${qualityLabel} — 理由を確認 (${missing.length}頭)</summary>
+        <ul>${missing.map(h => `<li>${esc(h.num)}番: ${esc(h.reason)}</li>`).join('')}</ul></details>`
+        : `<div class="w5-quality${quality.ok ? '' : ' is-warning'}">${qualityLabel}</div>` : '';
     const horses = [...(data.horses || [])].sort((a, b) => (b.score ?? -999) - (a.score ?? -999));
     const rows = horses.map((h, ri) => `
         <tr id="r${i}h${h.num}">
-            <td>${ri + 1}</td><td>${esc(h.num)}</td>
+            <td>${ri + 1}</td><td>${esc(h.num)}${h.scratched ? '<br><span class="w5-race-state">取消・除外</span>' : ''}</td>
             <td class="name">${esc(h.name)}
                 ${h.score_details?.length ? `<button class="score-detail-btn" onclick="toggleDetail(${i},${h.num})">[内訳]</button>
                 <pre class="w5-detail-pre" id="d${i}h${h.num}" style="display:none;">${esc(h.score_details.join('\n'))}</pre>` : ''}
             </td>
-            <td>${h.score ?? '-'}</td><td>${esc(h.grade || '-')}</td>
+            <td>${esc(h.score ?? '-')}</td><td>${esc(h.grade || '-')}</td>
             <td>${esc(h.odds)}</td><td>${esc(h.pop || '-')}</td><td>${esc(h.jock)}</td>
         </tr>`).join('');
     area.insertAdjacentHTML('beforeend', `
-        <div style="margin-top:14px;">
-            <div class="w5-race-head">WIN5-${i + 1}: ${esc(data.race_info)} ${upsetBadge(data.upset_rank)}
-                <span style="color:var(--text-muted);font-size:12px;">(荒れ指数 ${data.upset_score ?? '-'})</span>
-            </div>
-            <table class="w5-score-table">
-                <tr><th>順</th><th>馬番</th><th>馬名</th><th>スコア</th><th>判定</th><th>オッズ</th><th>人気</th><th>騎手</th></tr>
-                ${rows}
-            </table>
-        </div>`);
+        <details class="w5-score-panel">
+            <summary><span class="w5-race-head">WIN5-${i + 1}: ${esc(data.race_info)}</span> ${upsetBadge(data.upset_rank)}
+                <small>${fieldSize(data) === null ? '頭数未取得' : `${fieldSize(data)}頭出走`} · 荒れ指数 ${esc(data.upset_score ?? '-')}
+                <span class="w5-race-state${quality && !quality.ok ? ' is-warning' : ''}"> · ${qualityLabel}</span> · クリックで馬別スコア</small>
+            </summary>
+            <div class="w5-score-content">${qualityHtml}<div class="table-scroll"><table class="w5-score-table">
+                <thead><tr><th>順</th><th>馬番</th><th>馬名</th><th>スコア</th><th>判定</th><th>オッズ</th><th>人気</th><th>騎手</th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table></div></div>
+        </details>`);
 }
 
 function toggleDetail(i, num) {
@@ -236,6 +398,7 @@ function toggleDetail(i, num) {
 
 // ── STEP 3 ──────────────────────────────────────────────
 async function generateKaime() {
+    const generation = analysisGeneration;
     const pts = document.querySelector('input[name="pts"]:checked').value;
     const area = document.getElementById('kaimeArea');
     area.innerHTML = '生成中...';
@@ -246,7 +409,7 @@ async function generateKaime() {
             body: JSON.stringify({points: Number(pts), races: analyzed, single_axis: singleAxis})
         });
         const data = await res.json();
-        if (data.error) throw new Error(data.error);
+        if (generation !== analysisGeneration) return;
         renderKaimeData(data, area);
         if (data.logging_warning) {
             area.insertAdjacentHTML('afterbegin', `<div style="color:#ffb347;margin-bottom:8px;">⚠ ログ保存失敗: ${esc(data.logging_warning)}</div>`);
@@ -256,7 +419,18 @@ async function generateKaime() {
     }
 }
 
+function isUsableWin5Plan(data) {
+    return !!data && data.success !== false && !data.error &&
+        data.picks?.length === 5 && Number.isFinite(data.est_hit_rate) &&
+        data.est_hit_rate >= 0 && data.est_hit_rate <= 1;
+}
+
 function renderKaimeData(data, area) {
+        if (!isUsableWin5Plan(data)) {
+            area.innerHTML = `<div class="w5-quality is-warning">${esc(data?.error || '確率・買い目判定不可')}</div>`;
+            document.querySelectorAll('.w5-selected-row').forEach(el => el.classList.remove('w5-selected-row'));
+            return;
+        }
         // 選択行のハイライト
         document.querySelectorAll('.w5-selected-row').forEach(el => el.classList.remove('w5-selected-row'));
         const blocks = data.picks.map(p => {
@@ -308,6 +482,10 @@ let watchTimer = null;
 
 async function armWatch() {
     const st = document.getElementById('watchStatus');
+    if (raceList.some(race => race.urlEdited)) {
+        st.textContent = 'URL変更後はスコア計算で対象レースと発走時刻を確認してから予約してください。';
+        return;
+    }
     const urls = [];
     for (let i = 0; i < 5; i++) {
         const u = (document.getElementById(`url${i}`)?.value || '').trim();
@@ -341,8 +519,19 @@ async function pollWatch() {
         if (d.status === 'error') { st.textContent = 'エラー: ' + d.error; clearInterval(watchTimer); }
         if (d.status === 'done' && d.result) {
             clearInterval(watchTimer);
-            st.textContent = `再計算完了 (${d.updated_at} 時点のオッズ)`;
+            updateWatchFieldSizes(d.races);
             renderKaimeData(d.result, document.getElementById('watchArea'));
+            if (Array.isArray(d.races) && d.races.some((race, i) => race.source_url &&
+                String(race.source_url).trim() !== (document.getElementById(`url${race.idx ?? i}`)?.value || '').trim())) {
+                document.getElementById('watchArea').insertAdjacentHTML('afterbegin',
+                    '<p class="w5-quality is-warning">予約時のURLに基づく結果です。現在の入力URLとは異なります。対象を確認して再予約してください。</p>');
+            }
+            const usable = isUsableWin5Plan(d.result);
+            if (!usable) {
+                st.textContent = `再計算終了・判定不可 (${d.updated_at} 時点)。採点状況を確認してください。`;
+                return;
+            }
+            st.textContent = `再計算完了 (${d.updated_at} 時点のオッズ)`;
             if ('Notification' in window && Notification.permission === 'granted') {
                 new Notification('⏰ WIN5 締切前の最終買い目', {
                     body: `${d.result.formula} / 推定的中率 ${(d.result.est_hit_rate * 100).toFixed(2)}%`,

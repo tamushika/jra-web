@@ -1,14 +1,18 @@
 :root {
-    --bg-color: #0d1117;
-    --panel-bg: rgba(22, 27, 34, 0.7);
-    --border-color: rgba(255, 255, 255, 0.1);
-    --text-main: #e6edf3;
-    --text-muted: #8b949e;
-    --primary: #2f81f7;
-    --primary-hover: #1f6feb;
-    --accent: #ff8a00;
-    --table-header: rgba(48, 54, 61, 0.5);
-    --row-hover: rgba(255, 255, 255, 0.05);
+    color-scheme: dark;
+    --bg-color: #0b111b;
+    --panel-bg: #121c29;
+    --border-color: #273447;
+    --text-main: #edf3fa;
+    --text-color: var(--text-main);
+    --text-muted: #9aabc0;
+    --primary: #4ed6b0;
+    --primary-hover: #35bd99;
+    --accent: #f0bc67;
+    --table-header: #182435;
+    --row-hover: rgba(78, 214, 176, 0.045);
+    --bg-card: var(--panel-bg);
+    --border: var(--border-color);
 
     /* Venue Colors (Dark Mode Adaptations) */
     --v-nakayama: rgba(209, 234, 255, 0.2);
@@ -26,14 +30,57 @@
 }
 
 body {
-    font-family: 'Inter', 'Noto Sans JP', sans-serif;
-    background: linear-gradient(135deg, #0f172a 0%, #171717 100%);
+    font-family: 'Inter', 'Noto Sans JP', 'Yu Gothic UI', 'Meiryo', system-ui, sans-serif;
+    background: var(--bg-color);
     color: var(--text-main);
     min-height: 100vh;
     display: flex;
     justify-content: center;
     padding: 20px;
     font-size: 14px;
+    line-height: 1.55;
+}
+
+/* Local suite: shared visual system; data tables retain their own semantics. */
+body.local-app { display: block; padding: 0; }
+.local-app :is(.ev-container, .w5-container, .pf-container) {
+    width: 100%; max-width: 1560px; padding: 28px 32px 48px; margin: 0 auto; min-width: 0;
+}
+.app-page-header { display: flex; justify-content: space-between; align-items: center;
+    gap: 20px; margin-bottom: 24px; }
+.app-page-header h1, .app-page-header h2 { margin: 2px 0 6px; font-size: 26px;
+    line-height: 1.3; letter-spacing: -0.035em; font-weight: 750; }
+.app-eyebrow { color: var(--primary); font-size: 10px; font-weight: 750;
+    letter-spacing: 0.16em; text-transform: uppercase; }
+.app-subtitle { color: var(--text-muted); font-size: 12px; line-height: 1.8; }
+.app-card { border: 1px solid var(--border-color); border-radius: 14px;
+    background: var(--panel-bg); padding: 22px; }
+.local-app button, .local-app input, .local-app select { font: inherit; font-size: 13px; }
+.local-app button { background: #1c2a3c; color: var(--text-main); border: 1px solid var(--border-color);
+    min-height: 38px; border-radius: 8px; padding: 8px 14px; }
+.local-app button.primary-btn { background: var(--primary); color: #07231c; border-color: transparent; }
+.local-app button:hover { border-color: #4e647c; filter: brightness(1.08); }
+.local-app button:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+.local-app a { color: var(--primary); text-underline-offset: 3px; }
+.local-app :is(input, select) { background: #0d1622; color: var(--text-main);
+    border: 1px solid var(--border-color); border-radius: 8px; min-height: 38px; padding: 7px 10px; }
+:where(button, a, input, select, summary):focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.table-scroll { overflow-x: auto; max-width: 100%; min-width: 0; border-radius: 10px;
+    scrollbar-color: #40546b transparent; overscroll-behavior-x: contain; }
+.local-app th { color: #b2c1d3; font-size: 11px; letter-spacing: .015em; }
+.local-app td { font-variant-numeric: tabular-nums; }
+.local-app summary { cursor: pointer; }
+.local-app details > summary { list-style-position: inside; }
+.local-app .glass-container { margin: 0 auto; background: var(--panel-bg); box-shadow: none; }
+body.race-app { padding: 24px; }
+.race-app .glass-container > header { padding: 24px; }
+.race-app .badge { background: #19372f; color: var(--primary); font-size: 10px; letter-spacing: .07em; }
+@media (max-width: 760px) {
+    .local-app :is(.ev-container, .w5-container, .pf-container) { padding: 18px 14px 32px; }
+    .app-page-header { align-items: flex-start; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; }
+    .app-page-header h1, .app-page-header h2 { font-size: 22px; }
+    .app-card { padding: 16px; }
+    body.race-app { padding: 12px; }
 }
 
 .glass-container {
@@ -163,19 +210,32 @@ button {
     border-bottom: 1px solid var(--border-color);
     display: flex;
     gap: 20px;
+    min-width: 0;
+    align-items: flex-start;
 }
 .matrix-container {
-    flex: 1;
+    flex: 1 1 678px;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    padding: 4px;
+    scrollbar-color: #40546b transparent;
+    overscroll-behavior-x: contain;
     display: flex;
     flex-direction: column;
     gap: 4px;
 }
 .matrix-row {
     display: flex;
+    flex-wrap: nowrap;
+    width: max-content;
+    min-width: 100%;
     align-items: center;
     gap: 4px;
 }
 .matrix-header {
+    flex: 0 0 auto;
+    white-space: nowrap;
     font-size: 12px;
     color: var(--text-muted);
     font-weight: 600;
@@ -183,16 +243,29 @@ button {
 }
 .matrix-label {
     width: 150px;
+    flex: 0 0 150px;
+    overflow-wrap: anywhere;
     font-size: 11px;
     padding: 4px 8px;
     border-radius: 4px;
     font-weight: bold;
 }
-.r-btn {
-    width: 36px;
+.r-btn, .local-app .r-btn {
+    /* Override the shared button padding; 10R-12R must never be squeezed. */
+    flex: 0 0 40px;
+    width: 40px;
+    min-width: 40px;
+    max-width: 40px;
+    min-height: 40px;
     padding: 4px 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    white-space: nowrap;
     text-align: center;
-    font-size: 11px;
+    font-size: 12px;
+    line-height: 1.3;
+    font-variant-numeric: tabular-nums;
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid var(--border-color);
     border-radius: 3px;
@@ -203,12 +276,23 @@ button {
 .r-btn.visited-no-star { background: rgba(100, 255, 100, 0.3); border-color: rgba(100, 255, 100, 0.5); }
 
 .criteria-container {
-    width: 600px;
+    flex: 0 1 400px;
+    width: 400px;
+    min-width: 240px;
+    max-width: 100%;
+    overflow-wrap: anywhere;
     font-size: 12px;
     background: rgba(0, 0, 0, 0.2);
     padding: 10px;
     border-radius: 6px;
     border: 1px solid var(--border-color);
+}
+
+@media (max-width: 1100px) {
+    .matrix-section { flex-wrap: wrap; gap: 12px; }
+    .matrix-header { flex-basis: 100%; }
+    .matrix-container { flex: 1 1 100%; }
+    .criteria-container { flex: 1 1 100%; width: 100%; min-width: 0; }
 }
 
 /* Track Bias Section */
@@ -502,6 +586,54 @@ button {
     color: var(--text-sub);
     margin-top: 6px;
     text-align: center;
+}
+
+/* Race detail: the course and wind are visible before every data tab. */
+.race-course-overview { padding: 22px 24px; border-bottom: 1px solid var(--border-color); min-width: 0; }
+.race-ev-summary { padding: 14px 24px; border-bottom: 1px solid var(--border-color); min-width: 0; }
+.race-ev-summary > summary { font-size: 12px; font-weight: 650; }
+.race-ev-summary .table-scroll { margin-top: 12px; }
+.course-overview-heading { display: flex; justify-content: space-between; gap: 18px; flex-wrap: wrap; margin-bottom: 18px; }
+.course-overview-heading h2 { font-size: 20px; margin: 4px 0; }
+.course-map-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12px; }
+.course-wind-toggle { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+.race-app .course-wind-toggle input { min-height: 0; width: 16px; height: 16px; padding: 0; accent-color: var(--primary); }
+.course-overview-grid { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(260px, 1fr); gap: 20px; align-items: start; }
+.course-overview-map { min-width: 0; margin: 0; }
+.course-map-home { width: 100%; border: 1px solid var(--border-color); background: #fff; border-radius: 12px; overflow: hidden; line-height: 0; }
+.race-app .course-map-wrap { display: block; width: 100%; max-width: none; overflow: hidden; margin: 0 auto; }
+.race-app #courseLayoutImage { display: block; width: 100%; height: auto; max-width: none; max-height: none; }
+.race-app .course-map-wrap.fallback { max-height: none; min-height: 220px; background: #142131; }
+.race-app [hidden] { display: none !important; }
+.course-overview-map figcaption, .course-footnote { color: var(--text-muted); font-size: 11px; line-height: 1.8; margin-top: 10px; overflow-wrap: anywhere; }
+.course-overview-map figcaption[data-state="error"] { color: var(--accent); }
+.course-wind-panel { border: 1px solid var(--border-color); padding: 20px; border-radius: 12px; background: #0d1723; }
+.course-wind-panel h3 { margin: 6px 0 16px; font-size: 16px; }
+.wind-condition-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+.wind-condition-grid > div { border: 1px solid var(--border-color); padding: 12px; border-radius: 9px; }
+.wind-condition-grid span { display: block; color: var(--text-muted); font-size: 11px; margin-bottom: 6px; }
+.wind-condition-grid strong { color: var(--primary); font-size: 18px; }
+.course-wind-panel .wind-info { font-size: 12px; line-height: 1.9; overflow-wrap: anywhere; }
+.course-wind-panel .harab-info { margin-top: 18px; }
+.course-map-dialog { color: var(--text-main); background: var(--panel-bg); border: 1px solid #40546b; border-radius: 14px;
+    width: min(1200px, 96vw); max-width: 96vw; max-height: 94vh; margin: auto; padding: 18px; }
+.course-map-dialog::backdrop { background: rgba(0, 0, 0, .78); }
+.course-dialog-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.course-dialog-toolbar h2 { font-size: 18px; }
+.course-dialog-toolbar > div { display: flex; gap: 6px; flex-wrap: wrap; }
+.course-map-viewport { overflow: auto; max-height: 72vh; margin-top: 14px; border-radius: 8px; background: #fff; }
+.course-map-viewport .course-map-wrap { width: calc(100% * var(--course-zoom, 1)); }
+.race-app .wind-legend { color: var(--text-muted); }
+@media(max-width:900px) {
+    .course-overview-grid { grid-template-columns: minmax(0, 1fr); }
+    .race-course-overview { padding: 18px; }
+    .course-wind-panel { padding: 16px; }
+}
+@media(max-width:480px) {
+    .race-course-overview { padding: 14px; }
+    .course-map-actions { gap: 10px; }
+    .course-map-dialog { padding: 12px; }
+    .course-dialog-toolbar button { padding: 7px 10px; }
 }
 @keyframes wind-flow {
     to { stroke-dashoffset: -64; }
@@ -871,31 +1003,7 @@ tbody tr:hover { background: var(--row-hover); }
 
     .matrix-container {
         width: 100%;
-        overflow-x: visible; /* Disable horizontal scrolling */
-    }
-
-    .matrix-row {
-        display: flex;
-        flex-wrap: wrap; /* Allow buttons to wrap to next line */
-        gap: 8px;
-        margin-bottom: 15px; /* Add space between venue blocks */
-    }
-
-    .matrix-label {
-        width: 100%; /* Make label take full width on its own line */
-        font-size: 13px;
-        font-weight: bold;
-        text-align: center;
-        padding: 6px;
-        border-radius: 4px;
-        margin-bottom: 5px;
-    }
-
-    .r-btn {
-        flex: 1 1 calc(25% - 8px); /* 4 buttons per row max */
-        min-width: 60px; /* Wide buttons */
-        padding: 10px 0; /* Taller clickable area */
-        font-size: 13px;
+        flex-basis: auto;
     }
 
     .criteria-container {

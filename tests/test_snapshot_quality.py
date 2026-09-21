@@ -234,7 +234,8 @@ def test_analyze_one_persists_snapshot_metadata_and_race_start_time(monkeypatch)
     })
     monkeypatch.setattr(jra_ev.scoring, "load_score_weights", lambda *args: {"version": 1})
     monkeypatch.setattr(jra_ev.scoring, "load_factor_table", lambda *args: {})
-    monkeypatch.setattr(jra_ev.scoring, "compute_score_ml", lambda *args: (0.0, {}))
+    monkeypatch.setattr(jra_ev.scoring, "assess_ml_score", lambda *args:
+                        {"score": 0.0, "details": [], "source": "ml", "failure_reason": None})
     monkeypatch.setattr(
         jra_ev.scoring, "win_probs_from_ml_scores",
         lambda scores: [1.0 / len(scores)] * len(scores))

@@ -67,11 +67,7 @@ JST = timezone(timedelta(hours=9))
 HDRS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Referer": "https://www.jra.go.jp/"}
 
-# SPEC (2026-09-05 中山5R メイクデビュー不具合対応): MLスコア付き馬が少なすぎる
-# (新馬戦等でほぼ全馬が履歴ゼロ→ml_score=None) ときは softmax による確率付与を
-# スキップし、EV計算・pickedを全馬None/Falseにする縮退ガード。
-ML_MIN_SCORED_HORSES = 2
-ML_MIN_SCORED_RATIO = 0.5
+# 勝率は全出走馬の正常MLスコアが揃った場合のみ計算する (scoring共通ゲート)。
 
 app = Flask(__name__, static_folder=BASE_DIR, static_url_path="/")
 CORS(app)
@@ -118,6 +114,8 @@ STATE = {
     "started_at": "",
     "warning": "",
     "races": {},                 # rid -> race record
+    # 予測対象外のレースは監視・通知経路へ混ぜず、画面で理由を示すためだけに保持する。
+    "excluded_races": {},        # rid -> display-only excluded race record
     "alerts": [],                # {id, ts, stage, rid, label, picks}
     "params": {"ev_threshold": _load_ev_threshold_from_env(), "max_odds": 50.0, "min_prob": 0.02,
                # ワイドは2026-07-13の再検証で運用停止 (2026H1フル期間で回収66.6%。
@@ -126,6 +124,8 @@ STATE = {
                "wide_overlay": None},
 }
 _SCHEDULER_STARTED = [False]
+# Display-only observations. Never consulted by notification or experiment gates.
+_COLLECTION_HEALTH = {}  # (YYYYMMDD, URL) -> latest acquisition/storage observation
 
 
 @bp.route("/")
@@ -281,20 +281,18 @@ def _snapshot_quality(stage, scheduled_post_at, observed_at, fetch_duration_ms, 
 
 
 def _ml_coverage(horses):
-    """母数 (非取消馬) と scored (ml_score有) の数・充足可否を返す。
-    母数=0のときは不足扱い (ok=False) にする。"""
-    total = sum(1 for h in horses if not h.get("scratched"))
-    scored = sum(1 for h in horses if not h.get("scratched") and h.get("ml_score") is not None)
-    ok = (total > 0 and scored >= ML_MIN_SCORED_HORSES
-          and scored >= ML_MIN_SCORED_RATIO * total)
-    return {"scored": scored, "total": total, "ok": ok}
+    """既存表示互換の採点数。詳細な除外理由は probability_quality に保持。"""
+    quality = scoring.ml_probability_quality(horses)
+    return {key: quality[key] for key in ("scored", "total", "ok")}
 
 
 def compute_picks(horses, params):
     """slim馬リストに win_prob / ev / picked / web_value を付与し、pick数を返す"""
     coverage = _ml_coverage(horses)
     if coverage["ok"]:
-        scored = [h for h in horses if h.get("ml_score") is not None]
+        scored = [h for h in horses if not any(h.get(key) for key in
+                  ("scratched", "cancelled", "withdrawn", "is_scratched"))
+                  and h.get("score_source") == "ml"]
     else:
         scored = []
         print(f"[INFO] MLスコア付き馬が不足のためEV対象外: {coverage['scored']}/{coverage['total']}頭")
@@ -360,7 +358,28 @@ def _t62_history_available(horse):
 
 
 def analyze_one(url, params, base_date=None, day_label="", stage=None,
-                snapshot_context=None):
+                snapshot_context=None, include_excluded=False):
+    """Observe acquisition without modifying the frozen notification callers."""
+    day = _health_day(base_date) or datetime.now(JST).strftime("%Y%m%d")
+    try:
+        rec = _analyze_one_impl(url, params, base_date, day_label, stage,
+                                snapshot_context, include_excluded)
+    except Exception as exc:
+        with _LOCK:
+            health = _COLLECTION_HEALTH.setdefault((day, url), {})
+            health["fetch_error"] = type(exc).__name__
+        raise
+    if rec is not None and not rec.get("analysis_excluded"):
+        day = _health_day(rec.get("race_date")) or day
+        with _LOCK:
+            health = _COLLECTION_HEALTH.setdefault((day, url), {})
+            _merge_collection_health(health, rec.get("_collection_health") or {})
+            rec["_collection_health"] = dict(health)
+    return rec
+
+
+def _analyze_one_impl(url, params, base_date=None, day_label="", stage=None,
+                      snapshot_context=None, include_excluded=False):
     """1レースを解析して監視レコードを返す。stage は発走何分前の取得かの識別子
     (30/15/10/5/2。通常スキャン時はNone) で、odds_snapshotsに記録される
     (時点別オッズ特徴量 Phase C 用)"""
@@ -370,13 +389,37 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None,
     if result.get("analysis_excluded") or result.get("race_type") == "障害":
         race_no = result.get("race_num") or _parse_race_num(result.get("race_info")) or "?"
         print(f"[INFO] 障害レースのため監視対象外: {venue or '不明'}{race_no}R")
-        return None
+        if not include_excluded:
+            return None
+        start_dt = _parse_start_time(result.get("race_info"), base_date)
+        observed_at = datetime.now().astimezone()
+        return {
+            "url": url,
+            "venue": venue,
+            "race_num": race_no,
+            "race_info": result.get("race_info", ""),
+            "race_type": result.get("race_type") or "障害",
+            "start_time": (start_dt.strftime("%H:%M") if start_dt else
+                           str(result.get("start_time") or "")),
+            "day_label": day_label,
+            "horses": [],
+            "n_picked": 0,
+            "wide_picks": [],
+            "analysis_excluded": True,
+            "excluded_reason": "jump_race",
+            "excluded_reason_label": "障害レースのため予測対象外",
+            "race_date": result.get("race_date") or (
+                (base_date or observed_at).strftime("%Y%m%d")),
+        }
     with _RACE_ANALYSIS_CACHE_LOCK:
+        captured_at = datetime.now(JST)
         RACE_ANALYSIS_CACHE[url] = {
             "result": result,
-            "cached_at": datetime.now().strftime("%H:%M:%S"),
+            "cached_at": captured_at.strftime("%H:%M:%S"),
+            "captured_at": captured_at.isoformat(),
+            "cache_version": str(time.time_ns()),
             "stage": stage,
-            "race_date": result.get("race_date"),
+            "race_date": result.get("race_date") or (base_date or captured_at).strftime("%Y%m%d"),
         }
     race_type = result.get("race_type")
     dist_val = result.get("dist_val")
@@ -388,7 +431,8 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None,
 
     horses = []
     for h in result.get("horses", []):
-        ml, _det = scoring.compute_score_ml(h, rc, factor_table, cfg5)
+        assessment = scoring.assess_ml_score(h, rc, factor_table, cfg5)
+        ml = assessment["score"] if assessment["source"] == "ml" else None
         if ml is None and scoring.is_debut_horse(h):
             print(f"[INFO] 初出走のためML/EV対象外: {h.get('name') or '馬名不明'}")
         horses.append({
@@ -402,6 +446,9 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None,
             "scratched": bool(h.get("scratched") or h.get("cancelled")
                                or h.get("withdrawn") or h.get("is_scratched")),
             "web_score": h.get("score"), "ml_score": ml,
+            "reference_score": assessment["score"] if assessment["source"] == "fallback" else None,
+            "score_source": assessment["source"],
+            "score_failure_reason": assessment["failure_reason"],
             "history_available": _t62_history_available(h),
         })
     n_picked = compute_picks(horses, params)
@@ -414,6 +461,14 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None,
     odds_ok = bool(horses) and n_odds >= max(1, len(horses) // 2)
     start_dt = _parse_start_time(result.get("race_info"), base_date)
     observed_at = datetime.now().astimezone()
+    collection_health = {
+        "observed": True,
+        "last_fetch_at": observed_at.isoformat(),
+        "last_odds_at": observed_at.isoformat() if odds_ok and any(
+            _valid_win_odds(h.get("odds")) is not None for h in horses) else None,
+        "last_save_at": None, "fetch_error": None,
+        "save_error": "LoggingUnavailable" if LoggingStore is None else None,
+    }
     fetch_duration_ms = round((time.perf_counter() - fetch_started) * 1000)
     snapshot_quality = None
     snapshot_persisted = None if snapshot_context is None else False
@@ -458,7 +513,9 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None,
                     "race_id": race_id, "horse_id": horse_id, "predicted_at": observed_at,
                     "web_score": h.get("web_score"), "ml_score": h.get("ml_score"),
                     "calibrated_win_probability": h.get("win_prob"),
-                    "score_details": {"picked": h.get("picked"), "ev": h.get("ev")},
+                    "score_details": {"picked": h.get("picked"), "ev": h.get("ev"),
+                                      "score_source": h.get("score_source"),
+                                      "score_failure_reason": h.get("score_failure_reason")},
                     "feature_snapshot": {
                         "horse_no": h.get("num"), "horse_name": h.get("name"),
                         "current_weight": h.get("current_weight"),
@@ -489,14 +546,20 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None,
                     "field_size": (snapshot_quality or {}).get("field_size"),
                     "data_quality_flags": odds_flags,
                 })
-            store.save_predictions(run_id, prediction_rows)
+            saved_predictions = store.save_predictions(run_id, prediction_rows)
             saved_odds = store.save_odds(odds_rows)
             if snapshot_quality is not None:
                 snapshot_persisted = (
                     bool(odds_rows) and saved_odds == len(odds_rows))
             store.finish_run(run_id)
+            if (prediction_rows and saved_predictions == len(prediction_rows)
+                    and odds_rows and saved_odds == len(odds_rows)):
+                collection_health["last_save_at"] = datetime.now(JST).isoformat()
+            else:
+                collection_health["save_error"] = "IncompleteSave"
             log_context = {"prediction_run_id": run_id, "race_id": race_id}
         except Exception as exc:
+            collection_health["save_error"] = type(exc).__name__
             print(f"[WARN] common logging failed: {type(exc).__name__}: {exc}")
 
     return {
@@ -510,6 +573,7 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None,
         "odds_ok": odds_ok, "n_odds": n_odds,
         "horses": horses, "n_picked": n_picked,
         "ml_coverage": ml_coverage,
+        "probability_quality": scoring.ml_probability_quality(horses),
         "wide_picks": compute_wide_picks(horses, params),
         "checked15": False, "checked5": False, "finished": False,
         # 通知を伴わないスナップショット専用ステージ (時点別オッズ特徴量 Phase C 用蓄積)。
@@ -519,6 +583,7 @@ def analyze_one(url, params, base_date=None, day_label="", stage=None,
         "_log_context": log_context,
         "_snapshot_quality": snapshot_quality,
         "_snapshot_persisted": snapshot_persisted,
+        "_collection_health": collection_health,
         "_board_odds_entry_cname": result.get("_board_odds_entry_cname"),
         "race_date": result.get("race_date") or (
             (base_date or observed_at).strftime("%Y%m%d")),
@@ -550,7 +615,106 @@ def _rid(rec):
     return f"{rec['venue']}_{rec['race_num']}"
 
 
+def _health_day(value):
+    if isinstance(value, str) and re.fullmatch(r"\d{4}-?\d{2}-?\d{2}", value):
+        return value.replace("-", "")
+    parsed = _aware_local(value)
+    return parsed.strftime("%Y%m%d") if parsed else None
+
+
+def _merge_collection_health(current, update):
+    for key, value in update.items():
+        if key in ("last_fetch_at", "last_odds_at", "last_save_at") and not value:
+            continue  # A failed attempt must not erase the previous successful timestamp.
+        if key == "stages":
+            current.setdefault("stages", {}).update(value)
+        else:
+            current[key] = value
+
+
+def _record_collection_health(rec, update):
+    day = _health_day(rec.get("race_date")) or _health_day(rec.get("_start_dt"))
+    with _LOCK:
+        health = dict(rec.get("_collection_health") or {})
+        if day and rec.get("url"):
+            health = _COLLECTION_HEALTH.setdefault((day, rec["url"]), health)
+        _merge_collection_health(health, update)
+        rec["_collection_health"] = dict(health)
+
+
+def _begin_analysis_health():
+    now = datetime.now(JST)
+    STATE["_analysis_health"] = {
+        "date": now.strftime("%Y%m%d"), "total": 0, "succeeded": 0,
+        "failed": 0, "excluded": 0, "started_at": now.isoformat(),
+        "completed_at": None,
+    }
+
+
+def _health_summary(now=None):
+    """Read in-memory observations only; this endpoint never polls JRA or SQLite."""
+    now = _aware_local(now or datetime.now(JST))
+    today = now.strftime("%Y%m%d")
+    recs = [rec for rec in STATE["races"].values()
+            if (_health_day(rec.get("race_date")) or
+                _health_day(rec.get("_start_dt"))) == today]
+    recorded_analysis = STATE.get("_analysis_health") or {}
+    if recorded_analysis.get("date") == today:
+        analysis = dict(recorded_analysis)
+    else:
+        analysis = {"date": today, "total": None, "succeeded": len(recs),
+                    "failed": None, "excluded": None, "started_at": None,
+                    "completed_at": None}
+    observations = {url: health for (day, url), health in _COLLECTION_HEALTH.items()
+                    if day == today}
+    for rec in recs:
+        observations.setdefault(rec.get("url") or _rid(rec),
+                                rec.get("_collection_health") or {})
+    collection = {"last_fetch_at": None, "last_odds_at": None,
+                  "last_save_at": None, "fetch_errors": 0, "save_errors": 0,
+                  "error_types": []}
+    error_types = set()
+    for health in observations.values():
+        for key in ("last_fetch_at", "last_odds_at", "last_save_at"):
+            value = _aware_local(health.get(key))
+            previous = _aware_local(collection[key])
+            if value and value.strftime("%Y%m%d") == today and (not previous or value > previous):
+                collection[key] = value.isoformat()
+        fetch_error = health.get("fetch_error")
+        save_errors = [health.get(key) for key in
+                       ("save_error", "monitor_save_error", "board_save_error",
+                        "confidence_save_error")]
+        collection["fetch_errors"] += bool(fetch_error)
+        collection["save_errors"] += any(save_errors)
+        error_types.update(str(value) for value in [fetch_error, *save_errors] if value)
+    collection["error_types"] = sorted(error_types)
+    stages = {}
+    for stage, _window, giveup in _SNAPSHOT_STAGES:
+        counts = dict.fromkeys(("waiting", "saved", "quality_failed", "missing", "unknown"), 0)
+        for rec in recs:
+            health = observations.get(rec.get("url") or _rid(rec), {})
+            capture = (health.get("stages") or {}).get(str(stage))
+            start = _aware_local(rec.get("_start_dt"))
+            if capture and capture.get("persisted"):
+                status = "quality_failed" if capture.get("quality_failed") else "saved"
+            elif not start:
+                status = "unknown"
+            elif (start - now).total_seconds() > giveup:
+                status = "waiting"
+            elif health.get("observed"):
+                status = "missing"
+            else:
+                status = "unknown"  # Old checked flags prove completion, not persistence.
+            counts[status] += 1
+        stages[str(stage)] = counts
+    return {"date": today, "analysis": analysis, "collection": collection,
+            "stages": stages,
+            "monitor": {"last_iteration_at": STATE.get("_last_iteration_at")}}
+
+
 def worker_analyze_all(params):
+    with _LOCK:
+        _begin_analysis_health()
     try:
         entry = find_entry_url()
         if not entry:
@@ -605,21 +769,37 @@ def worker_analyze_all(params):
         with _LOCK:
             STATE["progress"] = {"done": 0, "total": len(targets)}
             STATE["warning"] = warning
+            dates = {_health_day(target[2]) for target in targets if target[2] is not None}
+            if len(dates) == 1:
+                STATE["_analysis_health"]["date"] = dates.pop()
+            STATE["_analysis_health"]["total"] = len(targets)
 
         def run(t):
             label, url, vdate, dlabel = t
+            outcome = "failed"
             try:
-                rec = analyze_one(url, params, base_date=vdate, day_label=dlabel)
+                rec = analyze_one(
+                    url, params, base_date=vdate, day_label=dlabel,
+                    include_excluded=True,
+                )
                 if rec is None:
+                    outcome = "excluded"
+                    return
+                if rec.get("analysis_excluded"):
+                    with _LOCK:
+                        STATE["excluded_races"][_rid(rec)] = rec
+                    outcome = "excluded"
                     return
                 with _LOCK:
                     STATE["races"][_rid(rec)] = rec
+                outcome = "succeeded"
                 _persist_monitor(rec)
             except Exception as e:
                 print(f"[WARN] 解析失敗 {label}: {e}")
             finally:
                 with _LOCK:
                     STATE["progress"]["done"] += 1
+                    STATE["_analysis_health"][outcome] += 1
 
         with ThreadPoolExecutor(max_workers=3) as ex:
             list(ex.map(run, targets))
@@ -640,6 +820,9 @@ def worker_analyze_all(params):
         with _LOCK:
             STATE["status"] = "error"
             STATE["error"] = str(e)
+    finally:
+        with _LOCK:
+            STATE["_analysis_health"]["completed_at"] = datetime.now(JST).isoformat()
 
 
 # ─── 通知の外部連携 (SQLite実測ログ / Discord) ────────────────────────────────
@@ -941,16 +1124,34 @@ def snapshot_odds(rec, stage, *, scheduler_restart=False):
         )
     except Exception as e:
         print(f"[WARN] スナップショット取得失敗 {_rid(rec)} ({stage}分前): {e}")
+        _record_collection_health(rec, {"observed": True,
+                                       "fetch_error": type(e).__name__})
         with _LOCK:
             rec["race_confidence"] = _record_race_confidence_failure(rec, stage, e)
+        return None
+    if new_rec is None:
+        _record_collection_health(rec, {"observed": True,
+                                       "fetch_error": "AnalysisExcluded"})
         return None
     quality = new_rec.get("_snapshot_quality") or {}
     persisted = new_rec.get("_snapshot_persisted") is True
     board = _capture_board_snapshot(new_rec, stage)
     confidence = _capture_race_confidence(new_rec, stage)
+    observation = dict(new_rec.get("_collection_health") or {})
+    observation.update({
+        "observed": True, "fetch_error": None,
+        "board_save_error": board.get("storage_warning"),
+        "confidence_save_error": confidence.get("storage_warning"),
+        "stages": {str(stage): {
+            "persisted": persisted,
+            "quality_failed": bool(quality.get("data_quality_flags")),
+            "observed_at": quality.get("observed_at"),
+        }},
+    })
+    _record_collection_health(rec, observation)
     with _LOCK:
         for k in ("horses", "n_picked", "wide_picks", "last_update",
-                  "odds_ok", "n_odds"):
+                  "odds_ok", "n_odds", "ml_coverage", "probability_quality"):
             rec[k] = new_rec.get(k, rec.get(k))
         rec["board"] = board
         rec["race_confidence"] = confidence
@@ -996,6 +1197,7 @@ def scheduler_loop():
         time.sleep(20)
         now = datetime.now()
         with _LOCK:
+            STATE["_last_iteration_at"] = datetime.now(JST).isoformat()
             recs = list(STATE["races"].values())
         for rec in recs:
             start = rec.get("_start_dt")
@@ -1031,8 +1233,10 @@ def scheduler_loop():
 
 def _persist_monitor(rec):
     if LoggingStore is None:
+        _record_collection_health(rec, {"monitor_save_error": "LoggingUnavailable"})
         return
     try:
+        _record_collection_health(rec, {"monitor_save_error": None})
         context = rec.get("_log_context") or {}
         LoggingStore().save_monitor_state(
             _rid(rec), rec, race_id=context.get("race_id"), start_time=rec.get("_start_dt"),
@@ -1040,6 +1244,7 @@ def _persist_monitor(rec):
             finished=rec.get("_result_synced", False),
         )
     except Exception as exc:
+        _record_collection_health(rec, {"monitor_save_error": type(exc).__name__})
         print(f"[WARN] monitor state logging failed: {type(exc).__name__}: {exc}")
 
 
@@ -1057,10 +1262,17 @@ def _restore_phase2_state():
             rec["checked15"] = item["checked15"]
             rec["checked5"] = item["checked5"]
             rec["finished"] = bool(rec.get("finished", False))
+            # Old persisted scores lack provenance; reapply the current fail-closed guard.
+            horses = rec.get("horses") or []
+            rec["n_picked"] = compute_picks(horses, STATE["params"])
+            rec["ml_coverage"] = _ml_coverage(horses)
+            rec["probability_quality"] = scoring.ml_probability_quality(horses)
+            rec["wide_picks"] = compute_wide_picks(horses, STATE["params"])
             # 結果未取得の当日・直近開催分も再起動後に復元する。従来は発走1分後を
             # 過ぎると復元対象外となり、結果取得に一度失敗したレースが永久に残った。
             if rec.get("_start_dt") and rec["_start_dt"] > datetime.now() - timedelta(days=2):
                 with _LOCK:
+                    _record_collection_health(rec, {})
                     STATE["races"][item["monitor_key"]] = rec
         if STATE["races"]:
             STATE["status"] = "ready"
@@ -1142,13 +1354,25 @@ def _slim_state():
         races.append({k: rec.get(k) for k in
                       ("venue", "race_num", "race_info", "start_time", "horses",
                        "n_picked", "wide_picks", "checked15", "checked5", "finished", "last_update",
-                       "odds_ok", "day_label", "url", "ml_coverage")}
-                     | {"rid": rid})
+                       "odds_ok", "day_label", "url", "ml_coverage", "probability_quality")}
+                     | {"rid": rid,
+                        "ml_coverage": _ml_coverage(rec.get("horses") or []),
+                        "probability_quality": scoring.ml_probability_quality(rec.get("horses") or [])})
     races.sort(key=lambda r: (r["start_time"] or "99:99", r["venue"]))
+    excluded_races = []
+    for rid, rec in STATE.get("excluded_races", {}).items():
+        excluded_races.append({k: rec.get(k) for k in
+                               ("venue", "race_num", "race_info", "race_type", "start_time",
+                                "horses", "n_picked", "wide_picks", "day_label", "url",
+                                "analysis_excluded", "excluded_reason",
+                                "excluded_reason_label")}
+                              | {"rid": rid})
+    excluded_races.sort(key=lambda r: (r["start_time"] or "99:99", r["venue"] or ""))
     return {"status": STATE["status"], "error": STATE["error"],
             "warning": STATE.get("warning", ""),
             "progress": STATE["progress"], "started_at": STATE["started_at"],
-            "params": STATE["params"], "races": races}
+            "params": STATE["params"], "races": races,
+            "excluded_races": excluded_races, "health": _health_summary()}
 
 
 @bp.route("/api/analyze_start", methods=["POST"])
@@ -1166,10 +1390,12 @@ def api_analyze_start():
         STATE["error"] = ""
         STATE["warning"] = ""
         STATE["races"] = {}
+        STATE["excluded_races"] = {}
         with _RACE_ANALYSIS_CACHE_LOCK:
             RACE_ANALYSIS_CACHE.clear()
         STATE["alerts"] = []
         STATE["started_at"] = datetime.now().strftime("%H:%M:%S")
+        _begin_analysis_health()
     threading.Thread(target=worker_analyze_all,
                      args=(STATE["params"],), daemon=True).start()
     return jsonify({"success": True})
@@ -1216,10 +1442,12 @@ def _auto_start():
         STATE["error"] = ""
         STATE["warning"] = ""
         STATE["races"] = {}
+        STATE["excluded_races"] = {}
         with _RACE_ANALYSIS_CACHE_LOCK:
             RACE_ANALYSIS_CACHE.clear()
         STATE["alerts"] = []
         STATE["started_at"] = datetime.now().strftime("%H:%M:%S")
+        _begin_analysis_health()
     threading.Thread(target=worker_analyze_all, args=(STATE["params"],), daemon=True).start()
     print("  [auto-start] 解析を自動開始しました")
 

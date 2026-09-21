@@ -164,8 +164,9 @@ def test_ev_debut_is_excluded_from_probability_and_logged(monkeypatch, capsys):
     monkeypatch.setattr(jra_ev.scoring, "load_score_weights", lambda *_args: {})
     monkeypatch.setattr(jra_ev.scoring, "load_factor_table", lambda *_args: {})
     monkeypatch.setattr(
-        jra_ev.scoring, "compute_score_ml",
-        lambda horse, *_args: ((None, ["初出走"]) if not horse["hist"] else (1.5, [])),
+        jra_ev.scoring, "assess_ml_score",
+        lambda horse, *_args: {"score": 1.5 if horse["hist"] else None, "details": [],
+            "source": "ml" if horse["hist"] else "unavailable", "failure_reason": None},
     )
     monkeypatch.setattr(jra_ev, "LoggingStore", None)
     rec = jra_ev.analyze_one("fixture://flat", dict(jra_ev.STATE["params"]))
@@ -195,8 +196,9 @@ def test_win5_keeps_debut_runner_and_other_scores(monkeypatch):
     monkeypatch.setattr(jra_win5.scoring, "load_score_weights", lambda *_args: {"use_ml": True})
     monkeypatch.setattr(jra_win5.scoring, "load_factor_table", lambda *_args: {})
     monkeypatch.setattr(
-        jra_win5.scoring, "compute_score_ml",
-        lambda horse, *_args: ((None, ["初出走"]) if not horse["hist"] else (float(horse["num"]), [])),
+        jra_win5.scoring, "assess_ml_score",
+        lambda horse, *_args: {"score": float(horse["num"]) if horse["hist"] else None,
+            "details": [], "source": "ml" if horse["hist"] else "unavailable", "failure_reason": None},
     )
     monkeypatch.setattr(jra_win5, "get_upset", lambda *_args: ("B", 0.0))
     monkeypatch.setattr(jra_win5, "log_race_prediction", lambda *_args, **_kwargs: None)

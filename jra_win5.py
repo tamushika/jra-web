@@ -161,6 +161,48 @@ def _fill_times_from_ev_monitor(races):
     return races
 
 
+def _active_field_size(horses):
+    """出馬表の出走頭数。未取得/空データと、取得済みの全頭取消を区別する。"""
+    if not isinstance(horses, list) or not horses or any(
+            not isinstance(horse, dict) for horse in horses):
+        return None
+    return sum(not any(horse.get(key) for key in
+                       ("scratched", "cancelled", "withdrawn", "is_scratched"))
+               for horse in horses)
+
+
+def _fill_field_sizes_from_ev_monitor(races, date8):
+    """同日・同レースの取得済み出馬表だけを再利用し、追加HTTPは行わない。"""
+    for race in races:
+        race["field_size"] = None
+        race["field_size_source"] = None
+    if not re.fullmatch(r"\d{8}", str(date8 or "")):
+        return races
+    try:
+        import jra_ev
+        records = jra_ev.STATE.get("races") or {}
+        records = list(records.values()) if isinstance(records, dict) else list(records)
+    except Exception:
+        return races
+    lookup = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        record_day = re.sub(r"\D", "", str(record.get("race_date") or ""))
+        if record_day != date8:
+            continue
+        lookup[(record.get("venue"), str(record.get("race_num")))] = record
+    for race in races:
+        record = lookup.get((race.get("venue"), str(race.get("race_num"))))
+        if record is None:
+            continue
+        field_size = _active_field_size(record.get("horses"))
+        if field_size is not None:
+            race["field_size"] = field_size
+            race["field_size_source"] = "ev_monitor"
+    return races
+
+
 @bp.route("/api/win5_races", methods=["GET"])
 def win5_races():
     """WIN5対象5レースの取得 + カードURL解決 (web版と同形状 + 兄弟レース補完)"""
@@ -175,6 +217,7 @@ def win5_races():
         for r in target["races"]:
             r["url"] = url_map.get(r["idx"], "")
         _fill_times_from_ev_monitor(target["races"])
+        _fill_field_sizes_from_ev_monitor(target["races"], date8)
         return jsonify({"success": True, **target})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
@@ -216,9 +259,13 @@ def _analyze_one_body(idx, url, result):
         use_ml = cfg5.get("use_ml", False)
         for h in result.get("horses", []):
             if use_ml:
-                h["score"], h["score_details"] = scoring.compute_score_ml(h, rc, factor_table, cfg5)
+                assessment = scoring.assess_ml_score(h, rc, factor_table, cfg5)
+                h["score"], h["score_details"] = assessment["score"], assessment["details"]
+                h["score_source"] = assessment["source"]
+                h["score_failure_reason"] = assessment["failure_reason"]
             else:
                 h["score"], h["score_details"] = scoring.compute_score(h, rc, factor_table, cfg5)
+                h["score_source"], h["score_failure_reason"] = "manual", "手調整スコア"
 
         rank, score = get_upset(venue, race_type, dist_val)
         horses = [{
@@ -230,16 +277,22 @@ def _analyze_one_body(idx, url, result):
             "weight_fallback": h.get("weight_source") not in ("jra_live", "jra_live_cache"),
             "pace_fit": h.get("_pace_fit"), "pace_fit_source": h.get("pace_fit_source"),
             "score": h.get("score"), "score_details": h.get("score_details", []),
+            "score_source": h.get("score_source"), "score_failure_reason": h.get("score_failure_reason"),
+            "scratched": bool(h.get("scratched") or h.get("cancelled") or h.get("withdrawn") or h.get("is_scratched")),
         } for h in result.get("horses", [])]
 
         output = {
             "success": True, "idx": idx,
+            "source_url": url,
             "race_info": result.get("race_info"),
             "race_date": result.get("race_date"), "race_num": result.get("race_num"),
             "venue": venue, "race_type": race_type, "dist_val": dist_val,
             "race_class": result.get("race_class"),
             "upset_rank": rank, "upset_score": score,
             "horses": horses,
+            "field_size": _active_field_size(horses),
+            "field_size_source": "analysis",
+            "probability_quality": scoring.ml_probability_quality(horses, "score"),
         }
         try:
             log_race_prediction(
@@ -281,18 +334,32 @@ def build_kaime(races, points, single_axis):
         alloc = cfg5.get("allocation", {})
         coverage = alloc.get("coverage", {})
         max_picks = alloc.get("max_picks_per_race", 8)
+        qualities = [scoring.ml_probability_quality(r.get("horses", []), "score") for r in races]
+        if cfg5.get("use_ml", False) and not all(q["ok"] for q in qualities):
+            labels = [f"WIN5-{i + 1}: 正常ML採点 {q['scored']}/{q['total']}頭"
+                      for i, q in enumerate(qualities) if not q["ok"]]
+            return {"success": False, "error": "確率・買い目判定不可（" + " / ".join(labels) + "）。再解析または欠損理由を確認してください。",
+                    "picks": [], "est_hit_rate": None, "est_reference": None,
+                    "alloc_method": "unavailable", "probability_quality": qualities}
 
         ranks = [r.get("upset_rank") for r in races]
         sorted_horses = []
         for race in races:
-            horses = [h for h in race.get("horses", []) if h.get("score") is not None]
+            horses = [h for h in race.get("horses", []) if h.get("score") is not None
+                      and not any(h.get(key) for key in
+                                  ("scratched", "cancelled", "withdrawn", "is_scratched"))]
             horses.sort(key=lambda h: -h["score"])
             sorted_horses.append(horses)
 
         # レース固有勝率 (conditional logit モデル時のみ算出可能)
-        prob_lists = [scoring.win_probs_from_ml_scores([h["score"] for h in hs]) if hs else None
-                      for hs in sorted_horses]
+        prob_lists = [scoring.win_probs_from_ml_scores([h["score"] for h in hs])
+                      if hs and cfg5.get("use_ml", False) and qualities[i]["ok"] else None
+                      for i, hs in enumerate(sorted_horses)]
         use_prob = all(p for p in prob_lists)
+        if cfg5.get("use_ml", False) and not use_prob:
+            return {"success": False, "error": "ML勝率を計算できないため買い目判定不可です。モデルを確認してください。",
+                    "picks": [], "est_hit_rate": None, "est_reference": None,
+                    "alloc_method": "unavailable", "probability_quality": qualities}
         alloc_method = "prob" if use_prob else "rank"
 
         # 軸レース選定
@@ -358,6 +425,7 @@ def build_kaime(races, points, single_axis):
             "alloc_method": alloc_method,
             "skip_threshold": skip_th,
             "skip_recommended": skip_recommended,
+            "probability_quality": qualities,
         }
         try:
             run_ids = [str((race.get("_logging") or {}).get("prediction_run_id") or "") for race in races]
@@ -522,6 +590,9 @@ def _watch_loop():
             kaime = build_kaime(races, points, single_axis)
             slim = [{"idx": r["idx"], "venue": r["venue"],
                      "race_info": r["race_info"], "upset_rank": r["upset_rank"],
+                     "field_size": r.get("field_size"),
+                     "source_url": r.get("source_url"),
+                     "race_date": r.get("race_date"), "race_num": r.get("race_num"),
                      "horses": [{k: h.get(k) for k in
                                  ("num", "name", "score", "odds", "pop", "grade")}
                                 for h in r["horses"]]} for r in races]
