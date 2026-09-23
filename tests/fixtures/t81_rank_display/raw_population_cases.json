@@ -1,0 +1,101 @@
+{
+  "_comment": "SPEC-T81 SS6 raw-level population fixtures for classify_raw_race(). Each case is one race's raw rows (only the fields that check reads); date/place/r form the race key.",
+
+  "good_race": [
+    {"date": "20220110", "place": "東京", "r": 5, "track_type": "芝", "total_horses": 8, "umaban": 1, "horse": "H1", "rank": 3},
+    {"date": "20220110", "place": "東京", "r": 5, "track_type": "芝", "total_horses": 8, "umaban": 2, "horse": "H2", "rank": 1},
+    {"date": "20220110", "place": "東京", "r": 5, "track_type": "芝", "total_horses": 8, "umaban": 3, "horse": "H3", "rank": 2},
+    {"date": "20220110", "place": "東京", "r": 5, "track_type": "芝", "total_horses": 8, "umaban": 4, "horse": "H4", "rank": 4},
+    {"date": "20220110", "place": "東京", "r": 5, "track_type": "芝", "total_horses": 8, "umaban": 5, "horse": "H5", "rank": 5},
+    {"date": "20220110", "place": "東京", "r": 5, "track_type": "芝", "total_horses": 8, "umaban": 6, "horse": "H6", "rank": 6},
+    {"date": "20220110", "place": "東京", "r": 5, "track_type": "芝", "total_horses": 8, "umaban": 7, "horse": "H7", "rank": 7},
+    {"date": "20220110", "place": "東京", "r": 5, "track_type": "芝", "total_horses": 8, "umaban": 8, "horse": "H8", "rank": 8}
+  ],
+
+  "tie_race": [
+    {"date": "20220111", "place": "東京", "r": 2, "track_type": "芝", "total_horses": 8, "umaban": 1, "horse": "T1", "rank": 1},
+    {"date": "20220111", "place": "東京", "r": 2, "track_type": "芝", "total_horses": 8, "umaban": 2, "horse": "T2", "rank": 2},
+    {"date": "20220111", "place": "東京", "r": 2, "track_type": "芝", "total_horses": 8, "umaban": 3, "horse": "T3", "rank": 2},
+    {"date": "20220111", "place": "東京", "r": 2, "track_type": "芝", "total_horses": 8, "umaban": 4, "horse": "T4", "rank": 4},
+    {"date": "20220111", "place": "東京", "r": 2, "track_type": "芝", "total_horses": 8, "umaban": 5, "horse": "T5", "rank": 5},
+    {"date": "20220111", "place": "東京", "r": 2, "track_type": "芝", "total_horses": 8, "umaban": 6, "horse": "T6", "rank": 6},
+    {"date": "20220111", "place": "東京", "r": 2, "track_type": "芝", "total_horses": 8, "umaban": 7, "horse": "T7", "rank": 7},
+    {"date": "20220111", "place": "東京", "r": 2, "track_type": "芝", "total_horses": 8, "umaban": 8, "horse": "T8", "rank": 8}
+  ],
+
+  "cancelled_runner_race": [
+    {"date": "20220112", "place": "中山", "r": 3, "track_type": "ダート", "total_horses": 8, "umaban": 1, "horse": "C1", "rank": 1},
+    {"date": "20220112", "place": "中山", "r": 3, "track_type": "ダート", "total_horses": 8, "umaban": 2, "horse": "C2", "rank": null},
+    {"date": "20220112", "place": "中山", "r": 3, "track_type": "ダート", "total_horses": 8, "umaban": 3, "horse": "C3", "rank": 2},
+    {"date": "20220112", "place": "中山", "r": 3, "track_type": "ダート", "total_horses": 8, "umaban": 4, "horse": "C4", "rank": 3},
+    {"date": "20220112", "place": "中山", "r": 3, "track_type": "ダート", "total_horses": 8, "umaban": 5, "horse": "C5", "rank": 4},
+    {"date": "20220112", "place": "中山", "r": 3, "track_type": "ダート", "total_horses": 8, "umaban": 6, "horse": "C6", "rank": 5},
+    {"date": "20220112", "place": "中山", "r": 3, "track_type": "ダート", "total_horses": 8, "umaban": 7, "horse": "C7", "rank": 6},
+    {"date": "20220112", "place": "中山", "r": 3, "track_type": "ダート", "total_horses": 8, "umaban": 8, "horse": "C8", "rank": 7}
+  ],
+
+  "row_count_mismatch_race": [
+    {"date": "20220113", "place": "阪神", "r": 4, "track_type": "芝", "total_horses": 10, "umaban": 1, "horse": "M1", "rank": 1},
+    {"date": "20220113", "place": "阪神", "r": 4, "track_type": "芝", "total_horses": 10, "umaban": 2, "horse": "M2", "rank": 2},
+    {"date": "20220113", "place": "阪神", "r": 4, "track_type": "芝", "total_horses": 10, "umaban": 3, "horse": "M3", "rank": 3},
+    {"date": "20220113", "place": "阪神", "r": 4, "track_type": "芝", "total_horses": 10, "umaban": 4, "horse": "M4", "rank": 4},
+    {"date": "20220113", "place": "阪神", "r": 4, "track_type": "芝", "total_horses": 10, "umaban": 5, "horse": "M5", "rank": 5},
+    {"date": "20220113", "place": "阪神", "r": 4, "track_type": "芝", "total_horses": 10, "umaban": 6, "horse": "M6", "rank": 6},
+    {"date": "20220113", "place": "阪神", "r": 4, "track_type": "芝", "total_horses": 10, "umaban": 7, "horse": "M7", "rank": 7},
+    {"date": "20220113", "place": "阪神", "r": 4, "track_type": "芝", "total_horses": 10, "umaban": 8, "horse": "M8", "rank": 8}
+  ],
+
+  "small_field_race": [
+    {"date": "20220114", "place": "小倉", "r": 1, "track_type": "芝", "total_horses": 7, "umaban": 1, "horse": "S1", "rank": 1},
+    {"date": "20220114", "place": "小倉", "r": 1, "track_type": "芝", "total_horses": 7, "umaban": 2, "horse": "S2", "rank": 2},
+    {"date": "20220114", "place": "小倉", "r": 1, "track_type": "芝", "total_horses": 7, "umaban": 3, "horse": "S3", "rank": 3},
+    {"date": "20220114", "place": "小倉", "r": 1, "track_type": "芝", "total_horses": 7, "umaban": 4, "horse": "S4", "rank": 4},
+    {"date": "20220114", "place": "小倉", "r": 1, "track_type": "芝", "total_horses": 7, "umaban": 5, "horse": "S5", "rank": 5},
+    {"date": "20220114", "place": "小倉", "r": 1, "track_type": "芝", "total_horses": 7, "umaban": 6, "horse": "S6", "rank": 6},
+    {"date": "20220114", "place": "小倉", "r": 1, "track_type": "芝", "total_horses": 7, "umaban": 7, "horse": "S7", "rank": 7}
+  ],
+
+  "duplicate_umaban_race": [
+    {"date": "20220115", "place": "京都", "r": 6, "track_type": "ダート", "total_horses": 8, "umaban": 1, "horse": "D1", "rank": 1},
+    {"date": "20220115", "place": "京都", "r": 6, "track_type": "ダート", "total_horses": 8, "umaban": 1, "horse": "D2", "rank": 2},
+    {"date": "20220115", "place": "京都", "r": 6, "track_type": "ダート", "total_horses": 8, "umaban": 3, "horse": "D3", "rank": 3},
+    {"date": "20220115", "place": "京都", "r": 6, "track_type": "ダート", "total_horses": 8, "umaban": 4, "horse": "D4", "rank": 4},
+    {"date": "20220115", "place": "京都", "r": 6, "track_type": "ダート", "total_horses": 8, "umaban": 5, "horse": "D5", "rank": 5},
+    {"date": "20220115", "place": "京都", "r": 6, "track_type": "ダート", "total_horses": 8, "umaban": 6, "horse": "D6", "rank": 6},
+    {"date": "20220115", "place": "京都", "r": 6, "track_type": "ダート", "total_horses": 8, "umaban": 7, "horse": "D7", "rank": 7},
+    {"date": "20220115", "place": "京都", "r": 6, "track_type": "ダート", "total_horses": 8, "umaban": 8, "horse": "D8", "rank": 8}
+  ],
+
+  "non_jra_venue_race": [
+    {"date": "20220116", "place": "海外", "r": 5, "track_type": "芝", "total_horses": 8, "umaban": 1, "horse": "F1", "rank": 1},
+    {"date": "20220116", "place": "海外", "r": 5, "track_type": "芝", "total_horses": 8, "umaban": 2, "horse": "F2", "rank": 2},
+    {"date": "20220116", "place": "海外", "r": 5, "track_type": "芝", "total_horses": 8, "umaban": 3, "horse": "F3", "rank": 3},
+    {"date": "20220116", "place": "海外", "r": 5, "track_type": "芝", "total_horses": 8, "umaban": 4, "horse": "F4", "rank": 4},
+    {"date": "20220116", "place": "海外", "r": 5, "track_type": "芝", "total_horses": 8, "umaban": 5, "horse": "F5", "rank": 5},
+    {"date": "20220116", "place": "海外", "r": 5, "track_type": "芝", "total_horses": 8, "umaban": 6, "horse": "F6", "rank": 6},
+    {"date": "20220116", "place": "海外", "r": 5, "track_type": "芝", "total_horses": 8, "umaban": 7, "horse": "F7", "rank": 7},
+    {"date": "20220116", "place": "海外", "r": 5, "track_type": "芝", "total_horses": 8, "umaban": 8, "horse": "F8", "rank": 8}
+  ],
+
+  "rank_gap_race": [
+    {"date": "20220117", "place": "新潟", "r": 9, "track_type": "芝", "total_horses": 8, "umaban": 1, "horse": "G1", "rank": 1},
+    {"date": "20220117", "place": "新潟", "r": 9, "track_type": "芝", "total_horses": 8, "umaban": 2, "horse": "G2", "rank": 2},
+    {"date": "20220117", "place": "新潟", "r": 9, "track_type": "芝", "total_horses": 8, "umaban": 3, "horse": "G3", "rank": 4},
+    {"date": "20220117", "place": "新潟", "r": 9, "track_type": "芝", "total_horses": 8, "umaban": 4, "horse": "G4", "rank": 5},
+    {"date": "20220117", "place": "新潟", "r": 9, "track_type": "芝", "total_horses": 8, "umaban": 5, "horse": "G5", "rank": 6},
+    {"date": "20220117", "place": "新潟", "r": 9, "track_type": "芝", "total_horses": 8, "umaban": 6, "horse": "G6", "rank": 7},
+    {"date": "20220117", "place": "新潟", "r": 9, "track_type": "芝", "total_horses": 8, "umaban": 7, "horse": "G7", "rank": 8},
+    {"date": "20220117", "place": "新潟", "r": 9, "track_type": "芝", "total_horses": 8, "umaban": 8, "horse": "G8", "rank": 9}
+  ],
+
+  "race_no_out_of_scope": [
+    {"date": "20220118", "place": "福島", "r": 13, "track_type": "芝", "total_horses": 8, "umaban": 1, "horse": "R1", "rank": 1},
+    {"date": "20220118", "place": "福島", "r": 13, "track_type": "芝", "total_horses": 8, "umaban": 2, "horse": "R2", "rank": 2},
+    {"date": "20220118", "place": "福島", "r": 13, "track_type": "芝", "total_horses": 8, "umaban": 3, "horse": "R3", "rank": 3},
+    {"date": "20220118", "place": "福島", "r": 13, "track_type": "芝", "total_horses": 8, "umaban": 4, "horse": "R4", "rank": 4},
+    {"date": "20220118", "place": "福島", "r": 13, "track_type": "芝", "total_horses": 8, "umaban": 5, "horse": "R5", "rank": 5},
+    {"date": "20220118", "place": "福島", "r": 13, "track_type": "芝", "total_horses": 8, "umaban": 6, "horse": "R6", "rank": 6},
+    {"date": "20220118", "place": "福島", "r": 13, "track_type": "芝", "total_horses": 8, "umaban": 7, "horse": "R7", "rank": 7},
+    {"date": "20220118", "place": "福島", "r": 13, "track_type": "芝", "total_horses": 8, "umaban": 8, "horse": "R8", "rank": 8}
+  ]
+}
