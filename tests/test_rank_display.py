@@ -394,7 +394,17 @@ def test_fit_pl_model_raises_on_non_convergence(monkeypatch):
         rd.fit_pl_model(features, ranks, keys, objective="pl_top3", l2=1.0)
 
 
-def test_run_historical_stops_without_a_matching_ledger_registration(tmp_path):
+def test_run_historical_stops_without_a_matching_ledger_registration(tmp_path, monkeypatch):
+    # T81-rank-display-pl3-v1 IS registered in the real eval/experiments.jsonl
+    # (Stage B was approved after this test was first written), so this test
+    # must point run_historical at an isolated, tmp_path-only ledger that
+    # carries no such row -- never the real production ledger -- to exercise
+    # the "not registered at all" refusal path in isolation.
+    ledger_path = tmp_path / "experiments.jsonl"
+    ledger_path.write_text(json.dumps({"experiment_id": "some-other-experiment-v1"}) + "\n",
+                           encoding="utf-8")
+    monkeypatch.setattr(rd, "LEDGER_PATH", str(ledger_path))
+
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps({
         "implementation_sha256": {"backtest_rank_display.py": "deadbeef"},
