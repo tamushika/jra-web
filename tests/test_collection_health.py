@@ -184,6 +184,9 @@ def test_worker_distinguishes_success_failure_and_exclusion(monkeypatch):
     persisted = []
     monkeypatch.setattr(jra_ev, "_persist_monitor", lambda rec: persisted.append(rec["url"]))
     monkeypatch.setattr(jra_ev, "_ensure_scheduler", lambda: None)
+    # SPEC-T82: 解析完了フックが実ネットワークへ問い合わせないようにする
+    # (このテストの関心はworker_analyze_all本体の集計であり、使用コース取得ではない)。
+    monkeypatch.setattr(jra_ev, "_t82_update_course_usage_hook", lambda: None)
     jra_ev.worker_analyze_all(jra_ev.STATE["params"])
     health = jra_ev.STATE["_analysis_health"]
     assert {key: health[key] for key in ("total", "succeeded", "failed", "excluded")} == {

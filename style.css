@@ -593,6 +593,21 @@ button {
 .race-ev-summary { padding: 14px 24px; border-bottom: 1px solid var(--border-color); min-width: 0; }
 .race-ev-summary > summary { font-size: 12px; font-weight: 650; }
 .race-ev-summary .table-scroll { margin-top: 12px; }
+
+/* SPEC-T82: 開催カレンダー (開幕週・使用コース・天候/降水・馬場状態) */
+.meeting-calendar-panel { padding: 14px 24px; border-bottom: 1px solid var(--border-color); min-width: 0; }
+.meeting-calendar-panel > summary { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.meeting-calendar-heading { font-size: 13px; font-weight: 650; color: var(--text-main); }
+.meeting-calendar-body { margin-top: 12px; }
+.meeting-calendar-body .course-footnote:empty,
+.meeting-calendar-body .course-footnote[style*="display: none"] { margin: 0; }
+.meeting-calendar-table th, .meeting-calendar-table td { padding: 7px 10px; font-size: 12px; white-space: nowrap; }
+.meeting-calendar-table tr.t82-today-row td { background: rgba(78, 214, 176, 0.14); font-weight: 650; }
+.meeting-calendar-table tr.t82-week-start td { border-top: 2px solid var(--border-color); }
+.t82-rain-light { color: #6db8ff; }
+.t82-rain-heavy { color: #2f7fe0; font-weight: 700; }
+.t82-course-badge { display: inline-block; margin-left: 4px; padding: 1px 6px; border-radius: 6px;
+    background: rgba(240, 188, 103, 0.18); color: var(--accent); font-size: 10px; font-weight: 700; }
 .course-overview-heading { display: flex; justify-content: space-between; gap: 18px; flex-wrap: wrap; margin-bottom: 18px; }
 .course-overview-heading h2 { font-size: 20px; margin: 4px 0; }
 .course-map-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12px; }

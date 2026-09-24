@@ -823,6 +823,20 @@ def worker_analyze_all(params):
     finally:
         with _LOCK:
             STATE["_analysis_health"]["completed_at"] = datetime.now(JST).isoformat()
+        _t82_update_course_usage_hook()
+
+
+# SPEC-T82 §1.2: 解析完了時に馬場情報ページから当週の使用コースを1回取得・保存する
+# フック。失敗しても解析自体は止めない (警告ログのみ)。通知関数・解析ロジック
+# (worker_analyze_all本体) は変更しない、完了後のこの1箇所のtry/exceptのみ追加。
+def _t82_update_course_usage_hook():
+    try:
+        import fetch_course_usage
+        result = fetch_course_usage.fetch_and_store_current_week_usage()
+        if result.get("errors"):
+            print(f"[WARN] T82 使用コース取得: {result['errors']}")
+    except Exception as e:
+        print(f"[WARN] T82 使用コース取得フック失敗: {e}")
 
 
 # ─── 通知の外部連携 (SQLite実測ログ / Discord) ────────────────────────────────

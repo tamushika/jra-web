@@ -26,7 +26,7 @@ import threading
 import urllib.error
 import urllib.request
 import webbrowser
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from flask import Flask, abort, jsonify, render_template_string, request, send_from_directory
 from flask_cors import CORS
@@ -37,11 +37,15 @@ API_DIR = os.path.join(BASE_DIR, "api")
 sys.path.insert(0, API_DIR)
 
 from api.port_guard import ensure_port_free, is_port_in_use  # noqa: E402
+from api import meeting_calendar as t82_mc  # noqa: E402 (SPEC-T82)
+from api.logging_store import LoggingStore as T82LoggingStore  # noqa: E402
 
 import jra_ev  # noqa: E402
 import jra_win5  # noqa: E402
 import jra_perf  # noqa: E402
 import jra_graded  # noqa: E402
+import fetch_course_usage  # noqa: E402 (SPEC-T82)
+import past_data_service as t82_pds  # noqa: E402 (SPEC-T82: Neon読取専用。api/index.pyと同じ接続関数)
 
 # jra_win5 が `from index import analyze_race_url, ...` で既に api/index.py を
 # import 済み (sys.modules["index"]) のため、ここでの `import index` は
@@ -128,6 +132,7 @@ def _install_race_static_guard():
         return
     index.app.before_request(_reject_denied_race_static_paths)
     index.app.before_request(_short_circuit_race_scrape_with_cache)
+    index.app.before_request(_meeting_calendar_endpoint)  # SPEC-T82
     setattr(index.app, _RACE_GUARD_ATTR, True)
 
 
@@ -196,6 +201,186 @@ def _short_circuit_race_scrape_with_cache():
     return response
 
 
+# ─── /race/api/meeting_calendar (SPEC-T82) ─────────────────────────────────
+# 開催カレンダー (開幕週・使用コース・天候/降水・馬場状態)。統合版のみ (api/index.py
+# は不変。本番Webにはこのエンドポイントが無いのでUIパネルは404で非表示になる)。
+_T82_YYMMDD_FMT = "%y%m%d"
+
+
+def _t82_load_race_rows_for_venue(conn, venue, requested_date, *, lookback_days=45):
+    """Neon races (place=venue) を直近 lookback_days 日ぶんだけ読む
+    (回次全体をカバーしつつ全期間スキャンを避けるための範囲制限)。
+    date列は YYMMDD (2桁年) 形式 (SPEC-T82 §0)。"""
+    is_pg = getattr(conn, "is_pg", False)
+    window_start = (requested_date - timedelta(days=lookback_days)).strftime(_T82_YYMMDD_FMT)
+    window_end = requested_date.strftime(_T82_YYMMDD_FMT)
+    query = "SELECT date, kaisai, track_type, condition FROM races WHERE place=? AND date BETWEEN ? AND ?"
+    if is_pg:
+        query = query.replace("?", "%s")
+    cursor = conn.cursor()
+    cursor.execute(query, (venue, window_start, window_end))
+    rows = cursor.fetchall()
+    out = []
+    for raw in rows:
+        row = dict(raw)
+        raw_date = str(row.get("date") or "")
+        if len(raw_date) != 6:
+            continue
+        try:
+            day_obj = date(2000 + int(raw_date[:2]), int(raw_date[2:4]), int(raw_date[4:6]))
+        except ValueError:
+            continue
+        out.append({"date": day_obj, "kaisai": row.get("kaisai"),
+                    "track_type": row.get("track_type"), "condition": row.get("condition")})
+    return out
+
+
+def _t82_fetch_weather_by_date(store, venue, start_date, end_date, today, now):
+    """weather_daily キャッシュを優先し、無い/失効した日だけ Open-Meteo にまとめて
+    問い合わせる (過去日はarchive-api、当日はforecast-api。SPEC-T82 §1.3)。
+    取得失敗はその日をNoneのまま返す (呼び出し側で「—」表示)。"""
+    import requests
+
+    out = {}
+    to_fetch = []
+    d = start_date
+    while d <= end_date:
+        cached = None
+        try:
+            cached = store.get_weather_daily(venue, d.strftime("%Y%m%d"))
+        except Exception as e:
+            print(f"[WARN] T82 weather_daily 読込失敗: {e}")
+        fetched_at = None
+        if cached and cached.get("fetched_at"):
+            try:
+                fetched_at = datetime.fromisoformat(cached["fetched_at"])
+            except ValueError:
+                fetched_at = None
+        if cached and not t82_mc.weather_cache_is_stale(d, today, fetched_at, now):
+            out[d] = {"weather_code": cached.get("weather_code"),
+                      "precipitation_mm": cached.get("precipitation_mm"),
+                      "precipitation_hours": cached.get("precipitation_hours")}
+        else:
+            to_fetch.append(d)
+        d += timedelta(days=1)
+
+    def _run(days, *, forecast):
+        if not days:
+            return
+        req = t82_mc.build_open_meteo_request(venue, min(days), max(days), forecast=forecast)
+        if not req:
+            return
+        try:
+            res = requests.get(req["url"], params=req["params"], timeout=10)
+            res.raise_for_status()
+            formatted = t82_mc.format_open_meteo_daily(res.json())
+        except Exception as e:
+            print(f"[WARN] T82 Open-Meteo取得失敗 ({'forecast' if forecast else 'archive'}): {e}")
+            return
+        fetched_at = now.isoformat()
+        source = "forecast" if forecast else "archive"
+        for iso, vals in formatted.items():
+            try:
+                dd = date.fromisoformat(iso)
+            except ValueError:
+                continue
+            if dd not in days:
+                continue
+            out[dd] = vals
+            try:
+                store.save_weather_daily(venue=venue, date_str=dd.strftime("%Y%m%d"),
+                                         weather_code=vals.get("weather_code"),
+                                         precipitation_mm=vals.get("precipitation_mm"),
+                                         precipitation_hours=vals.get("precipitation_hours"),
+                                         source=source, fetched_at=fetched_at)
+            except Exception as e:
+                print(f"[WARN] T82 weather_daily 保存失敗: {e}")
+
+    _run([x for x in to_fetch if x < today], forecast=False)
+    _run([x for x in to_fetch if x >= today], forecast=True)
+    return out
+
+
+def _meeting_calendar_endpoint():
+    if request.path != "/api/meeting_calendar":
+        return None
+    if request.method != "GET":
+        return jsonify({"error": "GETのみ対応"}), 405
+
+    venue = (request.args.get("venue") or "").strip()
+    date_str = (request.args.get("date") or "").strip()
+    if venue not in t82_mc.VENUES:
+        return jsonify({"error": "venueが不正です"}), 400
+    try:
+        requested_date = datetime.strptime(date_str, "%Y%m%d").date()
+    except ValueError:
+        return jsonify({"error": "dateはYYYYMMDD形式で指定してください"}), 400
+
+    now = datetime.now(jra_ev.JST)
+    today = now.date()
+    store = T82LoggingStore()
+
+    raw_usage = []
+    try:
+        raw_usage = store.list_course_usage(venue)
+    except Exception as e:
+        print(f"[WARN] T82 meeting_course_usage 読込失敗: {e}")
+    course_usage_rows = []
+    for r in raw_usage:
+        try:
+            course_usage_rows.append({
+                "week_start": date.fromisoformat(r["week_start"]),
+                "meeting_no": r.get("meeting_no"), "course": r.get("course"), "note": r.get("note"),
+            })
+        except (ValueError, TypeError):
+            continue
+
+    neon_rows = []
+    try:
+        conn = t82_pds.get_db_connection(API_DIR)
+        if conn is not None:
+            try:
+                neon_rows = _t82_load_race_rows_for_venue(conn, venue, requested_date)
+            finally:
+                conn.close()
+    except Exception as e:
+        print(f"[WARN] T82 races読込失敗: {e}")
+
+    weather_window_start = requested_date - timedelta(days=47)
+    weather_window_end = min(requested_date, today)
+    weather_by_date = {}
+    try:
+        weather_by_date = _t82_fetch_weather_by_date(
+            store, venue, weather_window_start, weather_window_end, today, now)
+    except Exception as e:
+        print(f"[WARN] T82 天候取得失敗: {e}")
+
+    recording_start = min((r["week_start"] for r in course_usage_rows), default=None)
+
+    body = t82_mc.build_meeting_calendar_response(
+        venue=venue, requested_date=requested_date, today=today,
+        neon_rows=neon_rows, course_usage_rows=course_usage_rows,
+        weather_by_date=weather_by_date, course_usage_recording_start=recording_start,
+    )
+    response = jsonify(body)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _t82_startup_course_usage_refresh():
+    """jra_suite起動時に1回だけ、馬場情報ページから当週の使用コースを取得・保存する
+    (SPEC-T82 §1.2)。ネットワークI/Oのため別スレッドで実行し起動をブロックしない。
+    失敗しても警告ログのみ (起動処理は止めない)。"""
+    def _run():
+        try:
+            result = fetch_course_usage.fetch_and_store_current_week_usage()
+            if result.get("errors"):
+                print(f"[WARN] T82 起動時使用コース取得: {result['errors']}")
+        except Exception as e:
+            print(f"[WARN] T82 起動時使用コース取得フック失敗: {e}")
+    threading.Thread(target=_run, daemon=True, name="jra-suite-t82-startup-course-usage").start()
+
+
 # ─── バックグラウンドループの一元管理 (SPEC-T38 §3.3) ──────────────────────
 _LOOPS_STARTED = threading.Event()
 _LOOPS_LOCK = threading.Lock()
@@ -226,6 +411,7 @@ def start_background_loops():
     # 既存の監視状態・未送信通知の復元 (jra_ev.py の旧__main__が起動時に行っていたのと同じ)。
     # 内部で_ensure_scheduler()を呼ぶが、上でガードを立てた後なのでno-op。
     jra_ev._restore_phase2_state()
+    _t82_startup_course_usage_refresh()  # SPEC-T82 §1.2: 起動時に1回、使用コースを取得
     return True
 
 

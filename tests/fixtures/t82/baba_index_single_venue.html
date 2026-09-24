@@ -1,0 +1,62 @@
+<!--
+SPEC-T82 テスト用フィクスチャ: 単一場開催時の馬場情報ページ (合成)。
+
+実データ確認時点 (2026-09-24) のJRA馬場情報ページ (https://www.jra.go.jp/keiba/baba/)
+は中山・阪神の2場開催で、tests/fixtures/t82/baba_index_nakayama.html /
+baba_index2_hanshin.html はそのページを実際に取得して保存したものそのもの。
+単一場開催 (kaisai_tabのタブが1つだけ) の実例は取得時点で存在しなかったため、
+このファイルは上記の実データと同じDOM構造 (kaisai_tab / 使用コース / 芝の状態の
+data_list_unit) を保った上で、タブを1つだけに削って作成した合成フィクスチャ。
+-->
+<!DOCTYPE html>
+<html lang="ja">
+<head><meta charset="UTF-8"><title>馬場情報 | JRA</title></head>
+<body>
+<div id="contentsBody">
+<div class="kaisai_tab">
+<div class="nav tab">
+<div class="current"><a href="index.html">東京競馬場</a></div>
+</div>
+</div>
+
+<div id="baba" data-current-course="A">
+<div class="unit" id="condition">
+<div class="contents_header opt">
+<div class="inner">
+<div class="main"><h2>第1回東京競馬第2日<span class="date">（2026年2月2日（月曜））</span></h2></div>
+</div>
+</div>
+</div>
+
+<div class="unit" id="turf_info">
+<div class="contents_header"><h2>芝丈・使用コース・芝の様子</h2></div>
+<div class="grid">
+<div class="cell data">
+<div class="course">
+<ul class="data_line_list wide">
+<li>
+<div class="data_list_unit">
+<div class="head"><h3>使用コース</h3></div>
+<div class="content"><p><strong>D</strong>コース（Aコースから内側に移動）</p></div>
+</div>
+</li>
+</ul>
+</div>
+<div class="turf_condition">
+<ul class="data_line_list wide">
+<li>
+<div class="data_list_unit">
+<div class="head"><h3>芝の状態</h3></div>
+<div class="content"><p>今週からDコースを使用します。開催最終週のため、内側の傷みが目立ちます。
+</p></div>
+</div>
+</li>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</body>
+</html>

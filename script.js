@@ -612,6 +612,9 @@ function applyScrapeData(data, url, mode, options = {}) {
     // Fetch Wind Data
     if (!passiveRefresh) fetchWindData(data.venue);
 
+    // SPEC-T82: 開催カレンダー (統合版のみ。本番Webはfetch404で非表示のまま)
+    if (!passiveRefresh) fetchMeetingCalendar(data.venue, data.race_date);
+
     if (IS_EMBEDDED) {
         monitorSync.url = url;
         monitorSync.version = String(data.monitor_cache_version || '');
@@ -1050,6 +1053,130 @@ async function fetchWindData(venue) {
         updateWindSummary('未取得', '未取得');
         clearWindOverlay();
     }
+}
+
+// ─── SPEC-T82: 開催カレンダー (開幕週・使用コース・天候/降水・馬場状態) ─────────
+// 統合版のみ (jra_suite.py が /race/api/meeting_calendar を提供)。本番Web (Vercel)
+// にはこのAPIが無いため fetch が404/失敗し、パネルは常に隠れたまま (IS_EMBEDDED
+// でも先にガードして無駄なリクエストを避ける)。
+
+// Open-Meteo WMO weather_code → 晴/曇/雨/雪 (api/meeting_calendar.pyのweather_code_labelと
+// 同じ分類を意図的に重複させている)。
+const T82_WMO_BANDS = [
+    [0, 1, '晴'], [2, 3, '曇'], [45, 48, '曇'],
+    [51, 67, '雨'], [71, 77, '雪'],
+    [80, 82, '雨'], [85, 86, '雪'], [95, 99, '雨'],
+];
+function t82WeatherCodeLabel(code) {
+    if (code === null || code === undefined) return '不明';
+    for (const [lo, hi, label] of T82_WMO_BANDS) {
+        if (code >= lo && code <= hi) return label;
+    }
+    return '不明';
+}
+
+// Neon races.condition の短縮表記 (良/稍/重/不) → 表示用フルラベル
+// (api/meeting_calendar.py の CONDITION_LABELS と同じ)。
+const T82_CONDITION_LABELS = { '良': '良', '稍': '稍重', '重': '重', '不': '不良' };
+function t82ConditionLabel(code) {
+    return code ? (T82_CONDITION_LABELS[code] || code) : '—';
+}
+
+function t82FmtMm(mm) {
+    return (mm === null || mm === undefined) ? '—' : `${mm}mm`;
+}
+
+function t82RainClass(mm) {
+    if (mm === null || mm === undefined) return '';
+    if (mm >= 10) return 't82-rain-heavy';
+    if (mm >= 1) return 't82-rain-light';
+    return '';
+}
+
+let t82RequestId = 0;
+
+function t82HidePanel() {
+    const panel = document.getElementById('meetingCalendar');
+    if (panel) panel.hidden = true;
+}
+
+async function fetchMeetingCalendar(venue, raceDate) {
+    const panel = document.getElementById('meetingCalendar');
+    if (!panel) return;
+    if (!IS_EMBEDDED || !venue || !raceDate) { t82HidePanel(); return; }
+    const requestId = ++t82RequestId;
+    try {
+        const res = await fetch(`api/meeting_calendar?venue=${encodeURIComponent(venue)}&date=${encodeURIComponent(raceDate)}`,
+            { cache: 'no-store' });
+        if (requestId !== t82RequestId) return;
+        if (!res.ok) { t82HidePanel(); return; }
+        const data = await res.json();
+        if (requestId !== t82RequestId) return;
+        renderMeetingCalendar(data);
+    } catch (e) {
+        if (requestId !== t82RequestId) return;
+        t82HidePanel();
+    }
+}
+
+function renderMeetingCalendar(data) {
+    const panel = document.getElementById('meetingCalendar');
+    const heading = document.getElementById('meetingCalendarHeading');
+    const notesEl = document.getElementById('meetingCalendarNotes');
+    const tbody = document.getElementById('meetingCalendarTbody');
+    if (!panel || !heading || !notesEl || !tbody) return;
+    const meeting = data.meeting || {};
+    const weeks = data.weeks || [];
+    const days = data.days || [];
+    if (!days.length) { t82HidePanel(); return; }
+
+    const latestCourse = weeks.length ? weeks[weeks.length - 1].course : null;
+    const parts = [meeting.label || meeting.venue || ''];
+    if (meeting.today_week_no) {
+        parts.push(`開幕${meeting.today_week_no}週目` + (meeting.today_day_no ? ` (第${meeting.today_day_no}日)` : ''));
+    }
+    parts.push(latestCourse ? `今週 ${latestCourse}コース` : '使用コース記録なし');
+    heading.textContent = parts.join(' ・ ');
+
+    notesEl.textContent = (data.notes || []).join(' / ');
+    notesEl.style.display = (data.notes && data.notes.length) ? '' : 'none';
+
+    let prevCourse = null;
+    let prevWeekNo = null;
+    tbody.innerHTML = '';
+    days.forEach((day) => {
+        const tr = document.createElement('tr');
+        if (day.is_today) tr.classList.add('t82-today-row');
+        if (day.week_no !== undefined && prevWeekNo !== null && day.week_no !== prevWeekNo) {
+            tr.classList.add('t82-week-start'); // 週の境目に区切り線
+        }
+        prevWeekNo = day.week_no;
+
+        const courseChanged = day.course && prevCourse && day.course !== prevCourse;
+        const courseCell = day.course
+            ? `${day.course}コース${courseChanged ? ` <span class="t82-course-badge">${prevCourse}→${day.course}</span>` : ''}`
+            : '—';
+        if (day.course) prevCourse = day.course;
+
+        const rainToday = t82RainClass(day.precipitation_mm);
+        const rainPrev = t82RainClass(day.rain_prev_day_mm);
+
+        tr.innerHTML = `
+            <td>${day.week_no ?? '—'}</td>
+            <td>${day.day_no ? `第${day.day_no}日` : '—'}</td>
+            <td>${day.date} (${day.weekday})</td>
+            <td>${courseCell}</td>
+            <td>${t82WeatherCodeLabel(day.weather_code)}</td>
+            <td><span class="${rainToday}">${t82FmtMm(day.precipitation_mm)}</span> / <span class="${rainPrev}">${t82FmtMm(day.rain_prev_day_mm)}</span></td>
+            <td>${t82ConditionLabel(day.turf_condition)}</td>
+            <td>${t82ConditionLabel(day.dirt_condition)}</td>
+            <td>${day.cushion ?? '—'}</td>
+            <td>${day.turf_moisture_goal ?? '—'} / ${day.dirt_moisture_goal ?? '—'}</td>`;
+        tbody.appendChild(tr);
+    });
+
+    panel.hidden = false;
+    panel.open = true;
 }
 
 // ─── SPEC-T76 §1.2/1.3: コース図オーバーレイ (風向・風速の矢印表示) ───────────

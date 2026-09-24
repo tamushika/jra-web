@@ -121,6 +121,9 @@ def test_start_background_loops_starts_exactly_once(monkeypatch):
     monkeypatch.setattr(jra_ev, "scheduler_loop", fake_scheduler_loop)
     monkeypatch.setattr(jra_win5, "_watch_loop", fake_watch_loop)
     monkeypatch.setattr(jra_ev, "_restore_phase2_state", fake_restore)
+    # SPEC-T82: 起動時フックが実ネットワークへ問い合わせないようにする
+    # (このテストの関心はループの1回起動保証であり、使用コース取得ではない)。
+    monkeypatch.setattr(jra_suite, "_t82_startup_course_usage_refresh", lambda: None)
 
     assert jra_suite.start_background_loops() is True
     assert jra_suite.start_background_loops() is False  # 2回目はno-op
@@ -149,6 +152,7 @@ def test_start_background_loops_noop_when_module_guards_already_set(monkeypatch)
     monkeypatch.setattr(jra_ev, "scheduler_loop", lambda: calls.__setitem__("scheduler", calls["scheduler"] + 1))
     monkeypatch.setattr(jra_win5, "_watch_loop", lambda: calls.__setitem__("watch", calls["watch"] + 1))
     monkeypatch.setattr(jra_ev, "_restore_phase2_state", lambda: None)
+    monkeypatch.setattr(jra_suite, "_t82_startup_course_usage_refresh", lambda: None)  # SPEC-T82
 
     assert jra_suite.start_background_loops() is True
     time.sleep(0.1)

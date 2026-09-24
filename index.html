@@ -70,6 +70,29 @@
             <p class="course-footnote">図は競馬場全体の公式平面図です。芝・ダート・距離の表記を確認してください。内外回りや使用柵は、距離だけでは断定しません。</p>
         </section>
 
+        <!-- SPEC-T82: 開催カレンダー (開幕週・使用コース・天候/降水・馬場状態)。統合版のみ
+             (/race/api/meeting_calendar が無い本番Webでは fetch失敗により非表示のまま)。 -->
+        <details id="meetingCalendar" class="meeting-calendar-panel" open hidden>
+            <summary>
+                <span class="app-eyebrow">MEETING CALENDAR</span>
+                <span id="meetingCalendarHeading" class="meeting-calendar-heading">開催カレンダー</span>
+            </summary>
+            <div class="meeting-calendar-body">
+                <p id="meetingCalendarNotes" class="course-footnote"></p>
+                <div class="table-scroll">
+                    <table id="meetingCalendarTable" class="meeting-calendar-table">
+                        <thead>
+                            <tr>
+                                <th>週</th><th>日</th><th>日付</th><th>使用コース</th><th>天候</th>
+                                <th>降水 (当日/前日)</th><th>芝</th><th>ダート</th><th>クッション</th><th>含水率 芝/ダ</th>
+                            </tr>
+                        </thead>
+                        <tbody id="meetingCalendarTbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </details>
+
         <details id="evSummaryPanel" class="race-ev-summary" hidden>
             <summary>オッズ監視の評価（馬別EV）</summary>
             <div id="evSummaryHost" class="table-scroll"></div>

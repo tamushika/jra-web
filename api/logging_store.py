@@ -268,6 +268,26 @@ CREATE TABLE IF NOT EXISTS virtual_bets (
 );
 CREATE INDEX IF NOT EXISTS ix_virtual_bets_date ON virtual_bets(date, race_id);
 CREATE INDEX IF NOT EXISTS ix_virtual_bets_status ON virtual_bets(status);
+CREATE TABLE IF NOT EXISTS meeting_course_usage (
+    venue TEXT NOT NULL,
+    week_start TEXT NOT NULL,
+    meeting_no INTEGER,
+    course TEXT,
+    note TEXT,
+    source_url TEXT,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (venue, week_start)
+);
+CREATE TABLE IF NOT EXISTS weather_daily (
+    venue TEXT NOT NULL,
+    date TEXT NOT NULL,
+    weather_code INTEGER,
+    precipitation_mm REAL,
+    precipitation_hours REAL,
+    source TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (venue, date)
+);
 """
 
 # T70b: SQLiteのCHECK制約は列挙値を後から追加できないため、既存DBの virtual_bets
@@ -459,6 +479,10 @@ class LoggingStore:
             if existing_virtual_bets_sql and "skipped_data" not in existing_virtual_bets_sql[0]:
                 conn.executescript(_VIRTUAL_BETS_V13_REBUILD_SQL)
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(13, ?)", (utc_now(),))
+            # version 14 (T82): meeting_course_usage (使用コースの週次append-only記録)
+            # と weather_daily (Open-Meteoの日別キャッシュ)。いずれも表示専用の
+            # ローカル蓄積で、既存の解析ロジック・通知には関与しない。
+            conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(14, ?)", (utc_now(),))
         self._write(op)
 
     def start_run(self, *, app_name: str, trigger_type: str = "manual", model_name: str | None = None,
@@ -780,6 +804,71 @@ class LoggingStore:
             start_time=COALESCE(excluded.start_time,races.start_time),updated_at=excluded.updated_at""",
             (race_id, race_date, venue, int(race_no), race_name, surface, distance_m, race_class,
              _utc(start_time), now, now)))
+
+    # ─── T82: 開催カレンダー (使用コースの週次append-only記録・天候キャッシュ) ──
+
+    def save_course_usage(self, *, venue: str, week_start: str, meeting_no: int | None,
+                           course: str | None, note: str | None = None,
+                           source_url: str | None = None, fetched_at: str | None = None) -> bool:
+        """meeting_course_usage への append-only 保存。同一 (venue, week_start) が
+        既に存在する場合は上書きしない (SPEC-T82 §1)。戻り値: 新規保存できたか。"""
+        self.initialize()
+        params = (venue, str(week_start), meeting_no, course, note, source_url,
+                  fetched_at or utc_now())
+
+        def op(conn):
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO meeting_course_usage
+                   (venue, week_start, meeting_no, course, note, source_url, fetched_at)
+                   VALUES (?,?,?,?,?,?,?)""", params)
+            return cur.rowcount > 0
+        return self._write(op)
+
+    def list_course_usage(self, venue: str) -> list[dict[str, Any]]:
+        self.initialize()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT venue, week_start, meeting_no, course, note, source_url, fetched_at
+                   FROM meeting_course_usage WHERE venue=? ORDER BY week_start""",
+                (venue,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_weather_daily(self, venue: str, date_str: str) -> dict[str, Any] | None:
+        self.initialize()
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT venue, date, weather_code, precipitation_mm, precipitation_hours,
+                          source, fetched_at
+                   FROM weather_daily WHERE venue=? AND date=?""",
+                (venue, str(date_str))).fetchone()
+        return dict(row) if row else None
+
+    def list_weather_daily(self, venue: str, start_date: str, end_date: str) -> list[dict[str, Any]]:
+        self.initialize()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT venue, date, weather_code, precipitation_mm, precipitation_hours,
+                          source, fetched_at
+                   FROM weather_daily WHERE venue=? AND date BETWEEN ? AND ? ORDER BY date""",
+                (venue, str(start_date), str(end_date))).fetchall()
+        return [dict(r) for r in rows]
+
+    def save_weather_daily(self, *, venue: str, date_str: str, weather_code: int | None,
+                            precipitation_mm: float | None, precipitation_hours: float | None,
+                            source: str, fetched_at: str | None = None) -> None:
+        """weather_daily はキャッシュ (再取得規則は meeting_calendar.weather_cache_is_stale
+        が判定する) なので、course usageとは異なり上書き保存 (UPSERT) する。"""
+        self.initialize()
+        params = (venue, str(date_str), weather_code, precipitation_mm, precipitation_hours,
+                  source, fetched_at or utc_now())
+        self._write(lambda conn: conn.execute(
+            """INSERT INTO weather_daily
+               (venue, date, weather_code, precipitation_mm, precipitation_hours, source, fetched_at)
+               VALUES (?,?,?,?,?,?,?)
+               ON CONFLICT(venue, date) DO UPDATE SET
+               weather_code=excluded.weather_code, precipitation_mm=excluded.precipitation_mm,
+               precipitation_hours=excluded.precipitation_hours, source=excluded.source,
+               fetched_at=excluded.fetched_at""", params))
 
 
 def main() -> None:
