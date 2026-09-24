@@ -636,15 +636,26 @@ button {
     .course-dialog-toolbar button { padding: 7px 10px; }
 }
 @keyframes wind-flow {
-    to { stroke-dashoffset: -64; }
+    to { stroke-dashoffset: -120; }
 }
 .wind-flow-line {
     animation-name: wind-flow;
     animation-timing-function: linear;
     animation-iteration-count: infinite;
 }
+/* 中央の大きな風向矢印: 風下へ滑って戻る (向きの強調) */
+@keyframes wind-glide {
+    0%   { transform: translateX(calc(-1 * var(--wind-glide-px, 24px))); opacity: 0.35; }
+    60%  { transform: translateX(var(--wind-glide-px, 24px)); opacity: 1; }
+    100% { transform: translateX(var(--wind-glide-px, 24px)); opacity: 0; }
+}
+.wind-glide {
+    animation-name: wind-glide;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: infinite;
+}
 @media (prefers-reduced-motion: reduce) {
-    .wind-flow-line {
+    .wind-flow-line, .wind-glide {
         animation: none;
     }
 }

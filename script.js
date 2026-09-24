@@ -1054,13 +1054,14 @@ async function fetchWindData(venue) {
 
 // ─── SPEC-T76 §1.2/1.3: コース図オーバーレイ (風向・風速の矢印表示) ───────────
 
+// 2026-09-25 ユーザー要望「矢印を以前より大きく、風向が分かるアニメーション」で線幅・矢頭を拡大
 const WIND_LINE_STYLE = {
     calm: { count: 0, width: 0, opacity: 0 },
-    light: { count: 5, width: 2, opacity: 0.65 },
-    moderate: { count: 7, width: 3, opacity: 0.62 },
-    strong: { count: 9, width: 4, opacity: 0.7 },
-    very_strong: { count: 11, width: 5, opacity: 0.78 },
-    violent: { count: 11, width: 5, opacity: 0.8 }
+    light: { count: 4, width: 4, opacity: 0.8 },
+    moderate: { count: 5, width: 5.5, opacity: 0.82 },
+    strong: { count: 6, width: 7, opacity: 0.85 },
+    very_strong: { count: 7, width: 8.5, opacity: 0.88 },
+    violent: { count: 7, width: 8.5, opacity: 0.9 }
 };
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -1189,7 +1190,7 @@ function renderWindOverlay(venue, windFromDeg, windSpeedMs) {
 
     // 矢頭は線幅に比例させる (細い微風の矢印だと8x8固定では向きが読めないため)
     const markerId = 'windArrowHead';
-    const mSize = 8 + 2.5 * style.width;
+    const mSize = 14 + 3 * style.width; // 大きめの矢頭 (微風 26 〜 猛烈 39 viewBox 単位)
     const marker = _makeSvgEl('marker', {
         id: markerId, markerWidth: mSize, markerHeight: mSize,
         refX: mSize * 0.8, refY: mSize / 2,
@@ -1204,9 +1205,9 @@ function renderWindOverlay(venue, windFromDeg, windSpeedMs) {
     if (style.count > 0) {
         const diag = Math.sqrt(width * width + height * height);
         const spacing = height / (style.count + 1);
-        const period = Math.max(0.6, 4 - windSpeedMs * 0.25);
+        const period = Math.max(0.8, 3.2 - windSpeedMs * 0.15); // 流線の周期 (速いほど短い)
         // 約110 viewBox単位ごとに頂点を打ち、marker-midで矢頭を線に沿って繰り返す
-        const segLen = 110;
+        const segLen = 160; // 矢頭の間隔 (大きくした矢頭が重ならない程度)
         const numSegs = Math.max(2, Math.round(diag / segLen));
 
         const g = _makeSvgEl('g', {
@@ -1229,7 +1230,7 @@ function renderWindOverlay(venue, windFromDeg, windSpeedMs) {
                 'stroke-width': style.width,
                 'stroke-linecap': 'round',
                 opacity: style.opacity,
-                'stroke-dasharray': '18 14',
+                'stroke-dasharray': '34 26', // 長い破線を流して向きを見せる (keyframes wind-flow は 2 周期分 = -120)
                 'marker-mid': `url(#${markerId})`,
                 'marker-end': `url(#${markerId})`
             });
@@ -1238,6 +1239,28 @@ function renderWindOverlay(venue, windFromDeg, windSpeedMs) {
             g.appendChild(path);
         }
         svg.appendChild(g);
+
+        // 中央の大きな風向矢印: 風の吹いていく向きに滑る (wind-glide) アニメーション付き。
+        // 流線だけでは向きが読みにくいという指摘 (2026-09-25) への対応。
+        const L = Math.min(width, height) * 0.34;      // 矢印の全長
+        const shaftW = Math.max(10, style.width * 2.4); // 軸の太さ
+        const headW = shaftW * 3.2, headL = L * 0.38;
+        const x0 = -L / 2, xh = L / 2 - headL;
+        const bigArrowPath = [
+            `M${x0},${-shaftW / 2}`, `L${xh},${-shaftW / 2}`, `L${xh},${-headW / 2}`,
+            `L${L / 2},0`, `L${xh},${headW / 2}`, `L${xh},${shaftW / 2}`, `L${x0},${shaftW / 2}`, 'Z'
+        ].join(' ');
+        const bigGroup = _makeSvgEl('g', { transform: `translate(${cx} ${cy}) rotate(${angles.thetaTo})` });
+        const glide = _makeSvgEl('g', {});
+        glide.classList.add('wind-glide');
+        glide.style.animationDuration = `${period * 2}s`;
+        glide.style.setProperty('--wind-glide-px', `${Math.round(L * 0.18)}px`);
+        glide.appendChild(_makeSvgEl('path', {
+            d: bigArrowPath, fill: cat.color, 'fill-opacity': 0.55,
+            stroke: 'rgba(0,0,0,0.75)', 'stroke-width': 2.5, 'stroke-linejoin': 'round'
+        }));
+        bigGroup.appendChild(glide);
+        svg.appendChild(bigGroup);
     } else {
         const chip = _makeSvgEl('g', {});
         svg.appendChild(chip);
