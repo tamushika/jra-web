@@ -381,6 +381,19 @@ def _t82_startup_course_usage_refresh():
     threading.Thread(target=_run, daemon=True, name="jra-suite-t82-startup-course-usage").start()
 
 
+def _t79c_startup_weekend_graded_refresh():
+    """jra_suite起動時に1回だけ、週末重賞の先行表示キャッシュ (weekend_graded_cards)
+    を更新する (SPEC-T79c §2.1-d)。木・金の朝 (オッズ監視の解析なし) にも重賞データ
+    タブで週末の重賞を見られるようにするためのフック。ネットワークI/Oのため別
+    スレッドで実行し起動をブロックしない。失敗しても警告ログのみ。"""
+    def _run():
+        try:
+            jra_graded._weekend_graded_background_refresh("startup")
+        except Exception as e:
+            print(f"[WARN] T79c 起動時週末重賞取得フック失敗: {e}")
+    threading.Thread(target=_run, daemon=True, name="jra-suite-t79c-startup-weekend-graded").start()
+
+
 # ─── バックグラウンドループの一元管理 (SPEC-T38 §3.3) ──────────────────────
 _LOOPS_STARTED = threading.Event()
 _LOOPS_LOCK = threading.Lock()
@@ -412,6 +425,7 @@ def start_background_loops():
     # 内部で_ensure_scheduler()を呼ぶが、上でガードを立てた後なのでno-op。
     jra_ev._restore_phase2_state()
     _t82_startup_course_usage_refresh()  # SPEC-T82 §1.2: 起動時に1回、使用コースを取得
+    _t79c_startup_weekend_graded_refresh()  # SPEC-T79c §2.1-d: 起動時に1回、週末重賞候補を取得
     return True
 
 

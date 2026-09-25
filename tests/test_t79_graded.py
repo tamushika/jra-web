@@ -17,6 +17,7 @@ import jra_ev
 import jra_graded
 import jra_suite
 from api.graded_names import match_key, normalize_race_name, race_key
+from api.logging_store import LoggingStore
 
 
 # ─── §3.1: api.graded_names ────────────────────────────────────────────────
@@ -433,8 +434,12 @@ def test_build_cache_does_not_split_key_with_year_drift_only(collision_fixture_e
 # ─── §3.3: API (jra_suite経由) ─────────────────────────────────────────────
 
 @pytest.fixture()
-def suite_client(fixture_env, monkeypatch):
+def suite_client(fixture_env, monkeypatch, tmp_path):
     monkeypatch.setattr(jra_graded, "CACHE_PATH", fixture_env["out_path"])
+    # SPEC-T79c: weekend_graded_cards の読み書きは本番の data/jra_logging.db では
+    # なく、テスト専用の一時DBに向ける (既存キャッシュに影響しない/影響されない)。
+    _store = LoggingStore(str(tmp_path / "test_logging.db"))
+    monkeypatch.setattr(jra_graded, "_weekend_store", lambda: _store)
     app = jra_suite.create_app()
     return app.test_client()
 
@@ -523,10 +528,12 @@ def test_graded_api_this_week_empty_state(suite_client, monkeypatch):
     assert resp.get_json() == {"races": [], "day_label": ""}
 
 
-def test_graded_api_this_week_resolves_split_subkey_by_place(collision_fixture_env, monkeypatch):
+def test_graded_api_this_week_resolves_split_subkey_by_place(collision_fixture_env, monkeypatch, tmp_path):
     # 「コリジョン」は分割済みなので、当日出馬表の会場(place)で正しいsub-keyへ
     # 解決できることを確認する (東京開催→3月側の"コリジョ@3")。
     monkeypatch.setattr(jra_graded, "CACHE_PATH", collision_fixture_env["out_path"])
+    monkeypatch.setattr(jra_graded, "_weekend_store",
+                        lambda: LoggingStore(str(tmp_path / "test_logging.db")))
     app = jra_suite.create_app()
     client = app.test_client()
     monkeypatch.setitem(jra_ev.STATE, "races", {

@@ -824,6 +824,7 @@ def worker_analyze_all(params):
         with _LOCK:
             STATE["_analysis_health"]["completed_at"] = datetime.now(JST).isoformat()
         _t82_update_course_usage_hook()
+        _t79c_update_weekend_graded_hook()
 
 
 # SPEC-T82 §1.2: 解析完了時に馬場情報ページから当週の使用コースを1回取得・保存する
@@ -837,6 +838,18 @@ def _t82_update_course_usage_hook():
             print(f"[WARN] T82 使用コース取得: {result['errors']}")
     except Exception as e:
         print(f"[WARN] T82 使用コース取得フック失敗: {e}")
+
+
+# SPEC-T79c §2.1-d: 解析完了時に、週末重賞の先行表示キャッシュ (weekend_graded_cards)
+# をバックグラウンドで1回更新するフック。6時間以内に取得済みなら中身はno-op
+# (jra_graded._fetch_and_store_weekend_graded 側の判定)。通知関数・解析ロジック
+# (worker_analyze_all本体) は変更しない、完了後のこの1箇所のtry/exceptのみ追加。
+def _t79c_update_weekend_graded_hook():
+    try:
+        import jra_graded
+        jra_graded._weekend_graded_background_refresh("analysis-complete")
+    except Exception as e:
+        print(f"[WARN] T79c 週末重賞取得フック失敗: {e}")
 
 
 # ─── 通知の外部連携 (SQLite実測ログ / Discord) ────────────────────────────────

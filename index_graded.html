@@ -44,7 +44,21 @@
     .gd-course-note { margin-top: 10px; font-size: 11px; color: var(--text-muted); line-height: 1.8; }
     .gd-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
     .gd-grid .pf-table th, .gd-grid .pf-table td { padding: 7px 9px; font-size: 11.5px; }
-    .gd-best-row td { background: rgba(78,214,176,.08) !important; }
+    /* SPEC-T79c §1: 傾向表の好成績セル強調 (全体との比)。 */
+    .gd-legend { font-size: 11px; color: var(--text-muted); margin-bottom: 8px; }
+    tr.gd-hl-strong td { background: rgba(78,214,176,.22) !important; }
+    tr.gd-hl-strong td.left { font-weight: 700; }
+    tr.gd-hl-mid td { background: rgba(78,214,176,.10) !important; }
+    tr.gd-hl-weak td { background: rgba(255,107,107,.08) !important; color: var(--text-muted); }
+    .gd-nfew { color: var(--text-muted); font-size: 10px; margin-left: 4px; }
+    .gd-roi-gold { color: #ffd54f; font-weight: 600; }
+    /* SPEC-T79c §2.3: 今週の重賞 (日付別グループ・枠順未確定バッジ)。 */
+    .gd-week-date { font-size: 11px; color: var(--text-muted); margin: 10px 0 4px; font-weight: 650; }
+    .gd-week-date:first-child { margin-top: 0; }
+    .gd-draw-badge { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px;
+                     font-size: 9.5px; background: rgba(255,107,107,.16); color: #ff9b9b; }
+    .gd-week-refresh-row { margin-top: 4px; }
+    .gd-week-refresh-row button { font-size: 11px; padding: 5px 10px; }
     .gd-upset-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
     .gd-upset-kpi { padding: 14px; border-radius: 10px; border: 1px solid var(--border-color); background: #0e1723; }
     .gd-upset-kpi .label { font-size: 11px; color: var(--text-muted); }
@@ -81,7 +95,11 @@
     <div class="pf-section" id="thisWeekSection">
         <div class="pf-title">今週の重賞</div>
         <div id="thisWeekChips" class="gd-chips"></div>
-        <div id="thisWeekEmpty" class="pf-meta" hidden>解析済みの出馬表に重賞はありません。統合サーバーの「解析開始」で出馬表を取得すると表示されます。</div>
+        <div id="thisWeekEmpty" class="pf-meta" hidden>今週末の重賞はまだ見つかっていません。統合サーバーの「解析開始」で出馬表を取得するか、下の「週末の重賞を再取得」をお試しください。</div>
+        <div class="gd-week-refresh-row">
+            <button type="button" id="weekendRefreshBtn">週末の重賞を再取得</button>
+            <span id="weekendRefreshStatus" class="pf-meta" style="margin-left:8px;"></span>
+        </div>
     </div>
 
     <div class="gd-controls">
@@ -144,6 +162,7 @@
 
         <div class="pf-section" id="trendsSection">
             <div class="pf-title">傾向</div>
+            <div class="gd-legend">★強: 複勝率または勝率が全体の1.5倍以上 (勝率は2.0倍以上) / 中: 1.2倍以上 (勝率1.5倍以上) / 赤: 複勝率が0.6倍以下 (いずれもn≥8) ・ 金文字: 単勝または複勝の回収率120%以上 (n≥8)</div>
             <div class="gd-grid" id="trendsGrid"></div>
         </div>
 
@@ -163,6 +182,8 @@
         content: document.getElementById("content"),
         thisWeekChips: document.getElementById("thisWeekChips"),
         thisWeekEmpty: document.getElementById("thisWeekEmpty"),
+        weekendRefreshBtn: document.getElementById("weekendRefreshBtn"),
+        weekendRefreshStatus: document.getElementById("weekendRefreshStatus"),
         raceFilter: document.getElementById("raceFilter"),
         raceSelect: document.getElementById("raceSelect"),
         yearButtons: document.getElementById("yearButtons"),
@@ -181,7 +202,8 @@
         pickSortPop: document.getElementById("pickSortPop"),
     };
 
-    var state = { master: [], key: null, years: "10", sameCourse: false, url: null, pickData: null };
+    var state = { master: [], key: null, years: "10", sameCourse: false, url: null, pickData: null,
+                 drawFixed: true };
 
     function setStatus(text) { els.status.textContent = text; }
 
@@ -245,6 +267,16 @@
         });
     }
 
+    // SPEC-T79c §2.3: 日付ごとにグループ表示 ("9/26(土)" 等)。dateが無い
+    // (万一の解析データ) ものは末尾の「その他」グループにまとめる。
+    function weekdayLabel(iso) {
+        if (!iso) { return "その他"; }
+        var parts = iso.split("-").map(Number);
+        var d = new Date(parts[0], parts[1] - 1, parts[2]);
+        var wd = ["日", "月", "火", "水", "木", "金", "土"][d.getDay()];
+        return parts[1] + "/" + parts[2] + "(" + wd + ")";
+    }
+
     function renderThisWeek(races) {
         els.thisWeekChips.innerHTML = "";
         if (!races.length) {
@@ -252,19 +284,60 @@
             return;
         }
         els.thisWeekEmpty.hidden = true;
+        var groups = [];
+        var byDate = {};
         races.forEach(function (r) {
-            var btn = document.createElement("button");
-            btn.type = "button";
-            btn.className = "gd-chip";
-            btn.textContent = (r.venue || "") + " " + (r.display_name || r.key);
-            if (r.grade_latest) {
-                var tag = document.createElement("span");
-                tag.className = "grade-tag";
-                tag.textContent = r.grade_latest;
-                btn.appendChild(tag);
-            }
-            btn.addEventListener("click", function () { selectKey(r.key, r.url); });
-            els.thisWeekChips.appendChild(btn);
+            var label = weekdayLabel(r.date);
+            if (!byDate[label]) { byDate[label] = []; groups.push(label); }
+            byDate[label].push(r);
+        });
+        groups.forEach(function (label) {
+            var dateEl = document.createElement("div");
+            dateEl.className = "gd-week-date";
+            dateEl.textContent = label;
+            els.thisWeekChips.appendChild(dateEl);
+            var row = document.createElement("div");
+            row.className = "gd-chips";
+            byDate[label].forEach(function (r) {
+                var btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "gd-chip";
+                var venueRace = (r.venue || "") + (r.race_num != null ? " " + r.race_num + "R" : "");
+                btn.textContent = (venueRace ? venueRace + " " : "") + (r.display_name || r.key);
+                if (r.grade_latest) {
+                    var tag = document.createElement("span");
+                    tag.className = "grade-tag";
+                    tag.textContent = r.grade_latest;
+                    btn.appendChild(tag);
+                }
+                if (r.draw_fixed === false) {
+                    var badge = document.createElement("span");
+                    badge.className = "gd-draw-badge";
+                    badge.textContent = "枠順未確定";
+                    btn.appendChild(badge);
+                }
+                btn.addEventListener("click", function () {
+                    selectKey(r.key, r.url, r.draw_fixed !== false);
+                });
+                row.appendChild(btn);
+            });
+            els.thisWeekChips.appendChild(row);
+        });
+    }
+
+    function refreshWeekendGraded() {
+        els.weekendRefreshBtn.disabled = true;
+        els.weekendRefreshStatus.textContent = "取得中…(数十秒かかることがあります)";
+        fetch("api/weekend_graded?refresh=1", { cache: "no-store" }).then(function (res) {
+            if (!res.ok) { throw new Error("HTTP " + res.status); }
+            return res.json();
+        }).then(function (data) {
+            els.weekendRefreshStatus.textContent = "更新しました (" + (data.races || []).length + "件)";
+            loadThisWeek();
+        }).catch(function (err) {
+            els.weekendRefreshStatus.textContent = "取得に失敗しました: " + err.message;
+        }).finally(function () {
+            els.weekendRefreshBtn.disabled = false;
         });
     }
 
@@ -288,9 +361,10 @@
             });
     }
 
-    function selectKey(key, url) {
+    function selectKey(key, url, drawFixed) {
         state.key = key;
         state.url = url || null;
+        state.drawFixed = drawFixed !== false;
         setKeyInUrl(key);
         renderRaceSelect(els.raceFilter.value);
         loadHistory();
@@ -325,6 +399,7 @@
     function hidePick() {
         els.pickSection.hidden = true;
         state.pickData = null;
+        state.drawFixed = true;
         els.pickBody.innerHTML = "";
         els.pickStatus.textContent = "";
     }
@@ -332,8 +407,15 @@
     function loadPick() {
         if (!state.url || !state.key) { hidePick(); return; }
         els.pickSection.hidden = false;
-        els.pickStatus.textContent = "取得中…";
         els.pickBody.innerHTML = "";
+        if (!state.drawFixed) {
+            // SPEC-T79c §2.3: 枠順未確定のレースは出馬表がまだ揃っていないため
+            // スクレイプを試みず、確定後の再取得を促すだけにする
+            // (枠・馬番列は表自体が空になるので「―」表示相当)。
+            els.pickStatus.textContent = "枠順未確定のため出走馬の照合はまだできません。枠順確定後に再取得してください。";
+            return;
+        }
+        els.pickStatus.textContent = "取得中…";
         var params = new URLSearchParams({
             key: state.key, url: state.url, years: state.years,
             same_course: state.sameCourse ? "1" : "0",
@@ -360,12 +442,26 @@
 
     function pickChip(item, cls) {
         var prefix = PICK_FACTOR_PREFIX.hasOwnProperty(item.factor) ? PICK_FACTOR_PREFIX[item.factor] : "";
-        return "<span class=\"gd-pick-chip" + (cls ? " " + cls : "") + "\">" + prefix + item.label +
+        var star = item._strong ? "★ " : "";
+        return "<span class=\"gd-pick-chip" + (cls ? " " + cls : "") + "\">" + star + prefix + item.label +
             "(複勝" + Math.round((item.fuku_rate || 0) * 100) + "%・n" + item.n + ")</span>";
+    }
+
+    // SPEC-T79c §1.4: hitsのうち「強」(傾向表の強調と同じ基準=複勝率が全体の
+    // 1.5倍以上、n>=8は既にhits自体の条件で保証済み) を★付きで先頭に並べる。
+    // hitsには勝率が含まれないため、複勝率比のみで判定する (簡易版)。
+    function markAndSortStrongHits(hits, overallFukuRate) {
+        var list = (hits || []).map(function (h) {
+            var ratio = overallFukuRate ? (h.fuku_rate / overallFukuRate) : 0;
+            return Object.assign({}, h, { _strong: ratio >= 1.5 });
+        });
+        list.sort(function (a, b) { return (b._strong ? 1 : 0) - (a._strong ? 1 : 0); });
+        return list;
     }
 
     function renderPick(data) {
         var entries = (data.entries || []).slice();
+        var overallFukuRate = data.overall_fuku_rate;
         var sortPop = !!(els.pickSortPop && els.pickSortPop.checked);
         entries.sort(function (a, b) {
             var av = sortPop ? a.score : a.score_ex_pop;
@@ -381,6 +477,7 @@
         var picks = data.picks || [];
         entries.forEach(function (e, idx) {
             var scoreVal = sortPop ? e.score : e.score_ex_pop;
+            var hits = markAndSortStrongHits(e.hits, overallFukuRate);
             var tr = document.createElement("tr");
             tr.className = "gd-result-row" + (picks.indexOf(e.num) !== -1 ? " gd-pick" : "");
             tr.innerHTML =
@@ -389,7 +486,7 @@
                 "<td class=\"left\">" + (e.name || "-") + "</td>" +
                 "<td>" + (e.pop != null ? e.pop + "番人気" : "-") + "</td>" +
                 "<td>" + (scoreVal != null ? scoreVal.toFixed(2) : "-") + "</td>" +
-                "<td class=\"left\">" + (e.hits || []).map(function (h) { return pickChip(h); }).join(" ") + "</td>" +
+                "<td class=\"left\">" + hits.map(function (h) { return pickChip(h); }).join(" ") + "</td>" +
                 "<td class=\"left\">" + (e.misses || []).map(function (m) { return pickChip(m, "gd-pick-miss"); }).join(" ") + "</td>";
             els.pickBody.appendChild(tr);
 
@@ -508,6 +605,16 @@
         { key: "interval", title: "間隔別" },
     ];
 
+    // SPEC-T79c §1.1: highlight ("strong"/"mid"/"weak"/null) はAPI (jra_graded.
+    // classify_highlight) が付与済み。UI側は単にCSSクラス・★・「n少」表示を
+    // 出すだけ (閾値の再実装はしない)。
+    var HIGHLIGHT_CLASS = { strong: "gd-hl-strong", mid: "gd-hl-mid", weak: "gd-hl-weak" };
+
+    function roiCell(v, gold) {
+        var text = v != null ? (v * 100).toFixed(0) + "%" : "-";
+        return gold ? "<span class=\"gd-roi-gold\">" + text + "</span>" : text;
+    }
+
     function renderTrendTable(rows) {
         var wrap = document.createElement("div");
         wrap.className = "pf-table-scroll";
@@ -516,17 +623,17 @@
         table.innerHTML = "<thead><tr><th class=\"left\">区分</th><th>n</th><th>1-2-3-外</th>" +
             "<th>勝率</th><th>連対率</th><th>複勝率</th><th>単回収</th><th>複回収</th></tr></thead>";
         var tbody = document.createElement("tbody");
-        var maxFuku = -1;
-        (rows || []).forEach(function (r) { if (r.n > 0 && r.fuku_rate > maxFuku) { maxFuku = r.fuku_rate; } });
         (rows || []).forEach(function (r) {
             var tr = document.createElement("tr");
-            if (r.n > 0 && r.fuku_rate === maxFuku) { tr.className = "gd-best-row"; }
-            tr.innerHTML = "<td class=\"left\">" + r.label + "</td><td>" + r.n + "</td>" +
+            if (r.highlight && HIGHLIGHT_CLASS[r.highlight]) { tr.className = HIGHLIGHT_CLASS[r.highlight]; }
+            var label = (r.highlight === "strong" ? "★ " : "") + r.label +
+                (r.n > 0 && r.n < 8 ? "<span class=\"gd-nfew\">n少</span>" : "");
+            tr.innerHTML = "<td class=\"left\">" + label + "</td><td>" + r.n + "</td>" +
                 "<td>" + r.c1 + "-" + r.c2 + "-" + r.c3 + "-" + r.out + "</td>" +
                 "<td>" + fmtPct(r.win_rate) + "</td><td>" + fmtPct(r.ren_rate) + "</td>" +
                 "<td>" + fmtPct(r.fuku_rate) + "</td>" +
-                "<td>" + (r.roi_win != null ? (r.roi_win * 100).toFixed(0) + "%" : "-") + "</td>" +
-                "<td>" + (r.roi_fuku != null ? (r.roi_fuku * 100).toFixed(0) + "%" : "-") + "</td>";
+                "<td>" + roiCell(r.roi_win, r.roi_win_gold) + "</td>" +
+                "<td>" + roiCell(r.roi_fuku, r.roi_fuku_gold) + "</td>";
             tbody.appendChild(tr);
         });
         table.appendChild(tbody);
@@ -591,6 +698,7 @@
     els.pickSortPop.addEventListener("change", function () {
         if (state.pickData) { renderPick(state.pickData); }
     });
+    els.weekendRefreshBtn.addEventListener("click", refreshWeekendGraded);
 
     window.addEventListener("message", function (event) {
         if (event.origin !== window.location.origin) { return; }

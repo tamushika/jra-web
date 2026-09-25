@@ -16,6 +16,7 @@ import jra_graded
 import jra_suite
 from api import graded_pick
 from api.graded_pick import derive_entry_attrs, score_entry
+from api.logging_store import LoggingStore
 from test_t79_graded import _build_fixture_ability_db
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -257,11 +258,15 @@ def fixture_cache(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
-def suite_client(fixture_cache, monkeypatch):
+def suite_client(fixture_cache, monkeypatch, tmp_path):
     monkeypatch.setattr(jra_graded, "CACHE_PATH", fixture_cache)
     # /api/pick のスクレイプ結果TTLキャッシュ (レビュー対応) はプロセス内グローバル
     # なので、テスト間の汚染を防ぐため毎回空の辞書に差し替える。
     monkeypatch.setattr(jra_graded, "_SCRAPE_CACHE", {})
+    # SPEC-T79c: weekend_graded_cards は本番の data/jra_logging.db ではなく
+    # テスト専用の一時DBに向ける。
+    monkeypatch.setattr(jra_graded, "_weekend_store",
+                        lambda: LoggingStore(str(tmp_path / "test_logging.db")))
     app = jra_suite.create_app()
     return app.test_client()
 

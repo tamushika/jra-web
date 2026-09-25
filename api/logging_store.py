@@ -288,6 +288,21 @@ CREATE TABLE IF NOT EXISTS weather_daily (
     fetched_at TEXT NOT NULL,
     PRIMARY KEY (venue, date)
 );
+CREATE TABLE IF NOT EXISTS weekend_graded_cards (
+    url TEXT PRIMARY KEY,
+    date TEXT,
+    venue TEXT,
+    race_num INTEGER,
+    race_name TEXT,
+    key TEXT,
+    display_name TEXT,
+    grade_latest TEXT,
+    start_time TEXT,
+    draw_fixed INTEGER,
+    source TEXT,
+    fetched_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_weekend_graded_cards_date ON weekend_graded_cards(date);
 """
 
 # T70b: SQLiteのCHECK制約は列挙値を後から追加できないため、既存DBの virtual_bets
@@ -483,6 +498,9 @@ class LoggingStore:
             # と weather_daily (Open-Meteoの日別キャッシュ)。いずれも表示専用の
             # ローカル蓄積で、既存の解析ロジック・通知には関与しない。
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(14, ?)", (utc_now(),))
+            # version 15 (T79c): weekend_graded_cards (週末重賞の先行表示キャッシュ。
+            # 表示専用・6時間キャッシュ。既存の解析ロジック・通知には関与しない)。
+            conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(15, ?)", (utc_now(),))
         self._write(op)
 
     def start_run(self, *, app_name: str, trigger_type: str = "manual", model_name: str | None = None,
@@ -869,6 +887,75 @@ class LoggingStore:
                weather_code=excluded.weather_code, precipitation_mm=excluded.precipitation_mm,
                precipitation_hours=excluded.precipitation_hours, source=excluded.source,
                fetched_at=excluded.fetched_at""", params))
+
+    # ─── T79c: 週末重賞の先行表示 (6時間キャッシュ) ──────────────────────────
+
+    def save_weekend_graded_cards(self, cards: Iterable[Mapping[str, Any]], *,
+                                   fetched_at: str | None = None) -> int:
+        """weekend_graded_cards へ UPSERT (url PK)。表示専用のローカルキャッシュ
+        なので、再取得時は既存行を新しい内容で上書きする (SPEC-T79c §2.1-d)。
+        戻り値: 保存した件数。"""
+        self.initialize()
+        now = fetched_at or utc_now()
+        rows = []
+        for c in cards:
+            url = c.get("url")
+            if not url:
+                continue
+            rows.append((
+                url, c.get("date"), c.get("venue"), c.get("race_num"), c.get("race_name"),
+                c.get("key"), c.get("display_name"), c.get("grade_latest"), c.get("start_time"),
+                1 if c.get("draw_fixed") else 0, c.get("source"), now,
+            ))
+        if not rows:
+            return 0
+
+        def op(conn):
+            conn.executemany(
+                """INSERT INTO weekend_graded_cards
+                   (url, date, venue, race_num, race_name, key, display_name, grade_latest,
+                    start_time, draw_fixed, source, fetched_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(url) DO UPDATE SET
+                   date=excluded.date, venue=excluded.venue, race_num=excluded.race_num,
+                   race_name=excluded.race_name, key=excluded.key, display_name=excluded.display_name,
+                   grade_latest=excluded.grade_latest, start_time=excluded.start_time,
+                   draw_fixed=excluded.draw_fixed, source=excluded.source,
+                   fetched_at=excluded.fetched_at""", rows)
+            return len(rows)
+        return self._write(op)
+
+    def list_weekend_graded_cards(self, *, min_date: str | None = None) -> list[dict[str, Any]]:
+        """保存済みの週末重賞カードを日付・発走時刻順で返す (SPEC-T79c §2.1)。
+        `min_date` (YYYY-MM-DD) を指定すると、それより前の日付は除く
+        (過去の週末の残骸を今週の一覧に混ぜないためのフィルタ)。"""
+        self.initialize()
+        with self._connect() as conn:
+            if min_date:
+                rows = conn.execute(
+                    """SELECT url, date, venue, race_num, race_name, key, display_name,
+                              grade_latest, start_time, draw_fixed, source, fetched_at
+                       FROM weekend_graded_cards WHERE date >= ?
+                       ORDER BY date, start_time""", (min_date,)).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT url, date, venue, race_num, race_name, key, display_name,
+                              grade_latest, start_time, draw_fixed, source, fetched_at
+                       FROM weekend_graded_cards ORDER BY date, start_time""").fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["draw_fixed"] = bool(d.get("draw_fixed"))
+            out.append(d)
+        return out
+
+    def weekend_graded_cards_fetched_at(self) -> str | None:
+        """直近の取得時刻 (無ければNone)。6時間キャッシュの鮮度判定に使う。"""
+        self.initialize()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT MAX(fetched_at) AS latest FROM weekend_graded_cards").fetchone()
+        return row["latest"] if row else None
 
 
 def main() -> None:

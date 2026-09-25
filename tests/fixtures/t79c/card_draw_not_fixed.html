@@ -1,0 +1,25 @@
+<!--
+SPEC-T79c 検証用の合成フィクスチャ (実データではない)。
+
+実装時 (2026-09-25) にJRAへ実際にアクセスして取得した9/26・9/27の重賞候補
+(card_hanshin_09_26_11_sirius.html / card_nakayama_09_27_11_sprinters.html 等) は
+いずれも取得時点で既に枠順確定済みだったため、「枠順未確定」のケースを実データで
+確認できなかった。extract_card_meta() の draw_fixed=False 判定 (馬番セルが数字で
+読めない行が大半) をテストするため、実際の出馬表ページのテーブル構造 (枠/馬番/
+馬名/性齢/前走の5列、ヘッダ行に「馬名」を含む) を模した最小限のHTMLをこの1件だけ
+手書きで用意した。
+-->
+<!doctype html>
+<html>
+<body>
+<div class="race_name">サンプル特別</div>
+<div class="time">発走時刻：11時00分</div>
+<div>コース：1600メートル（芝・右）</div>
+<table>
+<tr><th>枠</th><th>馬番</th><th>馬名</th><th>性齢</th><th>前走</th></tr>
+<tr><td></td><td>―</td><td>サンプルウマイチ 単勝オッズ</td><td>牡3</td><td>-</td></tr>
+<tr><td></td><td>―</td><td>サンプルウマニ 単勝オッズ</td><td>牝3</td><td>-</td></tr>
+<tr><td></td><td>―</td><td>サンプルウマサン 単勝オッズ</td><td>牡3</td><td>-</td></tr>
+</table>
+</body>
+</html>

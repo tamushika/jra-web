@@ -21,7 +21,7 @@ def scalar(store, sql):
 
 
 def test_initialize_is_one_command_and_enables_wal(store):
-    assert scalar(store, "SELECT count(*) FROM schema_migrations") == 14  # T82: +meeting_course_usage/weather_daily
+    assert scalar(store, "SELECT count(*) FROM schema_migrations") == 15  # T79c: +weekend_graded_cards
     with sqlite3.connect(store.db_path) as conn:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 

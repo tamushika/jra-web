@@ -18,14 +18,34 @@ import time
 from collections import defaultdict
 from datetime import date as _date
 from datetime import datetime
+from urllib.parse import urljoin
 
+import requests
+from bs4 import BeautifulSoup
 from flask import Blueprint, jsonify, request, send_from_directory
 
-from api import graded_pick
+from api import graded_pick, graded_weekend
 from api.graded_names import load_aliases, load_sponsors, match_key, normalize_race_name
+from api.logging_store import LoggingStore
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(BASE_DIR, "data", "graded_cache.sqlite")
+
+# SPEC-T79c §2.1: 週末重賞の先行表示。JRAへのアクセス頻度制限 (0.5秒間隔・
+# 9〜12Rのみ・6時間キャッシュ) はこの節の定数で一元管理する。
+_WEEKEND_HDRS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                 "Referer": "https://www.jra.go.jp/"}
+_WEEKEND_GRADED_TTL_SEC = 6 * 3600
+_WEEKEND_GRADED_MAX_FETCHES = 36  # 3場 x 3日 x 4R (9〜12R)
+_WEEKEND_GRADED_SLEEP_SEC = 0.5
+_WEEKEND_GRADED_TIMEOUT_SEC = 10
+
+
+def _weekend_store():
+    """weekend_graded_cards の読み書きに使う LoggingStore (既定: data/jra_logging.db)。
+    呼び出し箇所を1つに揃えることで、テストが monkeypatch で差し替えて本番の
+    ログDBを汚さないようにできる (SPEC-T79c §2.1-d)。"""
+    return LoggingStore()
 
 _CURRENT_YEAR = datetime.now().year
 
@@ -251,6 +271,20 @@ def _extract_name_from_race_info(race_info):
     return name, track_type, distance
 
 
+def _date_from_day_label(day_label, today=None):
+    """rec['day_label'] ('9/26(土)' 等) から日付 (ISO文字列) を推定する。
+    解析できなければ today (省略時は本日) を返す (SPEC-T79c §2.2: EV分にも
+    weekend分と同じ形式の date を持たせ、統合後の並び替えに使う)。"""
+    today = today or datetime.now().date()
+    m = re.match(r"(\d{1,2})/(\d{1,2})", str(day_label or ""))
+    if not m:
+        return today.isoformat()
+    try:
+        return _date(today.year, int(m.group(1)), int(m.group(2))).isoformat()
+    except ValueError:
+        return today.isoformat()
+
+
 @bp.route("/api/this_week")
 def api_this_week():
     if not _cache_available():
@@ -259,8 +293,6 @@ def api_this_week():
 
     races = list(jra_ev.STATE.get("races", {}).values())
     day_label = next((r.get("day_label") for r in races if r.get("day_label")), "")
-    if not races:
-        return jsonify({"races": [], "day_label": day_label})
 
     conn = _conn()
     try:
@@ -270,7 +302,7 @@ def api_this_week():
         master_by_key = {row["key"]: row for row in conn.execute(
             "SELECT key, display_name, grade_latest FROM master")}
 
-        out = []
+        ev_out = []
         for rec in races:
             name, track_type, distance = _extract_name_from_race_info(rec.get("race_info"))
             if not name:
@@ -287,17 +319,196 @@ def api_this_week():
             if not key:
                 continue
             master_row = master_by_key.get(key)
-            out.append({
+            ev_out.append({
+                "date": _date_from_day_label(rec.get("day_label")),
                 "venue": rec.get("venue"), "race_num": rec.get("race_num"),
                 "race_info": rec.get("race_info"), "start_time": rec.get("start_time"),
                 "url": rec.get("url"),
                 "key": key, "display_name": master_row["display_name"] if master_row else key,
                 "grade_latest": master_row["grade_latest"] if master_row else None,
                 "how": how,
+                # EV監視で既に解析済み = 出馬表を取得できた = 枠順確定済み。
+                "draw_fixed": True, "source": "ev_state",
             })
-        return jsonify({"races": out, "day_label": day_label})
+
+        # SPEC-T79c §2.2: this_week (EV分) と weekend_graded (JRA出馬表からの
+        # 先行取得分、木・金の解析なし期間にも使える) を url で dedupe して結合する。
+        # ここではネットワークアクセスはしない (取得済みキャッシュを読むだけ)。
+        today_iso = datetime.now().date().isoformat()
+        weekend_cards = _weekend_store().list_weekend_graded_cards(min_date=today_iso)
+        merged = graded_weekend.merge_this_week(ev_out, weekend_cards)
+        return jsonify({"races": merged, "day_label": day_label})
     finally:
         conn.close()
+
+
+# ─── SPEC-T79c §2.1: 週末重賞の先行表示 ────────────────────────────────────
+
+def _weekend_graded_fresh(store):
+    """weekend_graded_cards の最新取得時刻が6時間以内かどうか。"""
+    latest = store.weekend_graded_cards_fetched_at()
+    if not latest:
+        return False
+    try:
+        fetched = datetime.fromisoformat(str(latest).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    now = datetime.now(fetched.tzinfo) if fetched.tzinfo else datetime.now()
+    return (now - fetched).total_seconds() < _WEEKEND_GRADED_TTL_SEC
+
+
+def _collect_weekend_candidates(matrix, target_dates):
+    """出馬表ページのnavから得た matrix (venue x day の全レースURL) から、
+    今週末 (target_dates) の9〜12Rだけを候補として抜き出す
+    (SPEC-T79c §2.1-a/b)。戻り値: [(cname_meta, url), ...] (url で重複無し)。"""
+    seen = set()
+    out = []
+    for v in matrix or []:
+        for r in v.get("races", []):
+            url = r.get("url")
+            if not url or url in seen:
+                continue
+            meta_cname = graded_weekend.parse_cname(url)
+            if not meta_cname or meta_cname["date"] not in target_dates:
+                continue
+            if not (9 <= meta_cname["race_num"] <= 12):
+                continue
+            seen.add(url)
+            out.append((meta_cname, url))
+    return out
+
+
+def _collect_thisweek_page_candidates(target_dates, seen_urls):
+    """https://www.jra.go.jp/keiba/thisweek/ (今週の注目レース) のリンクを候補に
+    追加する (SPEC-T79c §2.1-c: 注目レースに無いG3等の取りこぼし対策)。
+    失敗しても空リストを返す (呼び出し側は警告ログのみ)。"""
+    out = []
+    try:
+        res = requests.get("https://www.jra.go.jp/keiba/thisweek/", headers=_WEEKEND_HDRS,
+                           timeout=_WEEKEND_GRADED_TIMEOUT_SEC)
+        res.encoding = "shift_jis"
+        soup = BeautifulSoup(res.text, "html.parser")
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if "accessD.html" not in href or "CNAME=" not in href:
+                continue
+            full = urljoin("https://www.jra.go.jp/", href)
+            if full in seen_urls:
+                continue
+            meta_cname = graded_weekend.parse_cname(full)
+            if not meta_cname or meta_cname["date"] not in target_dates:
+                continue
+            seen_urls.add(full)
+            out.append((meta_cname, full))
+    except Exception as e:
+        print(f"[WARN] T79c 今週の注目レースページの取得に失敗: {e}")
+    return out
+
+
+def _fetch_and_store_weekend_graded(conn, *, force=False):
+    """SPEC-T79c §2.1: 今週末 (次の土・日・月曜開催があればそれも) の重賞候補を
+    JRAから取得し weekend_graded_cards に保存する。6時間以内に取得済みなら
+    再取得しない (force=Trueで強制)。JRAへのアクセスは0.5秒間隔・9〜12Rのみ・
+    最大36件 (3場x3日x4R) に制限する (SPEC §2.1-b)。
+
+    戻り値: 新たに保存したカードのリスト (再取得しなかった場合・失敗時は空)。"""
+    store = _weekend_store()
+    if not force and _weekend_graded_fresh(store):
+        return []
+    import jra_ev
+
+    try:
+        entry = jra_ev.find_entry_url()
+        if not entry:
+            print("[WARN] T79c 週末重賞: 出馬表の起点URLが見つかりません")
+            return []
+        res = requests.get(entry, headers=_WEEKEND_HDRS, timeout=_WEEKEND_GRADED_TIMEOUT_SEC)
+        res.encoding = "shift_jis"
+        matrix = jra_ev.build_matrix_data(BeautifulSoup(res.text, "html.parser"))
+    except Exception as e:
+        print(f"[WARN] T79c 週末重賞: 出馬表ナビの取得に失敗: {e}")
+        return []
+
+    target_dates = set(graded_weekend.weekend_target_dates())
+    candidates = _collect_weekend_candidates(matrix, target_dates)
+    seen_urls = {url for _meta, url in candidates}
+    candidates.extend(_collect_thisweek_page_candidates(target_dates, seen_urls))
+    candidates = candidates[:_WEEKEND_GRADED_MAX_FETCHES]
+
+    known_keys = _known_keys_dict(conn)
+    sponsors = load_sponsors()
+    aliases = load_aliases()
+    master_by_key = {row["key"]: row for row in conn.execute(
+        "SELECT key, display_name, grade_latest FROM master")}
+
+    cards = []
+    for i, (meta_cname, url) in enumerate(candidates):
+        if i > 0:
+            time.sleep(_WEEKEND_GRADED_SLEEP_SEC)
+        try:
+            r = requests.get(url, headers=_WEEKEND_HDRS, timeout=_WEEKEND_GRADED_TIMEOUT_SEC)
+            r.encoding = "shift_jis"
+        except Exception as e:
+            print(f"[WARN] T79c 週末重賞: 出馬表取得失敗 {url}: {e}")
+            continue
+        meta = graded_weekend.extract_card_meta(r.text)
+        base_key, _grade, _how = graded_weekend.classify_card(
+            meta.get("race_name"), known_keys, place=meta_cname.get("venue"),
+            track_type=meta.get("track_type"), distance=meta.get("distance"),
+            sponsors=sponsors, aliases=aliases)
+        if not base_key:
+            continue
+        key = _resolve_final_key(conn, base_key, place=meta_cname.get("venue"),
+                                 distance=meta.get("distance"))
+        if not key:
+            continue
+        master_row = master_by_key.get(key)
+        cards.append({
+            "date": meta_cname["date"], "venue": meta_cname.get("venue"),
+            "race_num": meta_cname["race_num"], "race_name": meta.get("race_name"),
+            "url": url, "key": key,
+            "display_name": master_row["display_name"] if master_row else key,
+            "grade_latest": master_row["grade_latest"] if master_row else None,
+            "start_time": meta.get("start_time"), "draw_fixed": meta.get("draw_fixed"),
+            "source": "jra_card",
+        })
+
+    if cards:
+        store.save_weekend_graded_cards(cards)
+    return cards
+
+
+@bp.route("/api/weekend_graded")
+def api_weekend_graded():
+    if not _cache_available():
+        return _missing_cache_response()
+    refresh = request.args.get("refresh") == "1"
+    conn = _conn()
+    try:
+        fetched = _fetch_and_store_weekend_graded(conn, force=refresh)
+    finally:
+        conn.close()
+    store = _weekend_store()
+    today_iso = datetime.now().date().isoformat()
+    cards = store.list_weekend_graded_cards(min_date=today_iso)
+    return jsonify({"races": cards, "fetched_now": len(fetched)})
+
+
+def _weekend_graded_background_refresh(label):
+    """起動時/解析完了時にバックグラウンドで週末重賞候補を1回更新する
+    (SPEC-T79c §2.1-d)。失敗しても警告ログのみ (呼び出し元の処理は止めない)。"""
+    def _run():
+        try:
+            if not _cache_available():
+                return
+            conn = _conn()
+            try:
+                _fetch_and_store_weekend_graded(conn, force=False)
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[WARN] T79c 週末重賞バックグラウンド更新失敗 ({label}): {e}")
+    threading.Thread(target=_run, daemon=True, name=f"jra-graded-t79c-weekend-{label}").start()
 
 
 def _course_history(race_rows_year_asc):
@@ -349,6 +560,47 @@ def _group_summary(label, group):
         "roi_win": round(win_ret / (n * 100), 3) if n else None,
         "roi_fuku": round(fuku_ret / (n * 100), 3) if n else None,
     }
+
+
+_HIGHLIGHT_MIN_N = 8
+_ROI_GOLD_THRESHOLD = 1.2
+
+
+def classify_highlight(n, fuku_rate, win_rate, overall_fuku_rate, overall_win_rate):
+    """SPEC-T79c §1.1: 傾向表の1行を、全体との比で「強/中/弱/なし」に分類する純関数。
+    n>=8 が前提 (n<8は色を付けず「n少」表示にするのは呼び出し側=UIの責務)。
+
+    - 複勝率比>=1.5 または 勝率比>=2.0 -> 'strong' (★・緑濃)
+    - 複勝率比>=1.2 または 勝率比>=1.5 -> 'mid' (緑薄。strongの次に判定)
+    - 複勝率比<=0.6 -> 'weak' (赤)
+    - それ以外 (n<8、全体値が無い、比が中間帯) -> None
+    """
+    if not n or n < _HIGHLIGHT_MIN_N or not overall_fuku_rate or not overall_win_rate:
+        return None
+    fuku_ratio = (fuku_rate / overall_fuku_rate) if fuku_rate is not None else None
+    win_ratio = (win_rate / overall_win_rate) if win_rate is not None else None
+    if (fuku_ratio is not None and fuku_ratio >= 1.5) or (win_ratio is not None and win_ratio >= 2.0):
+        return "strong"
+    if (fuku_ratio is not None and fuku_ratio >= 1.2) or (win_ratio is not None and win_ratio >= 1.5):
+        return "mid"
+    if fuku_ratio is not None and fuku_ratio <= 0.6:
+        return "weak"
+    return None
+
+
+def _annotate_aggregates(aggregates, overall_fuku_rate, overall_win_rate):
+    """SPEC-T79c §1.1-2: aggregatesの各行に highlight (strong/mid/weak/None) と、
+    単/複回収が120%以上のときの roi_win_gold/roi_fuku_gold (bool, n>=8のみ) を
+    その場に追加する (副作用ありのヘルパー。テストはclassify_highlight側で行う)。"""
+    for rows in aggregates.values():
+        for row in rows:
+            n = row.get("n") or 0
+            row["highlight"] = classify_highlight(
+                n, row.get("fuku_rate"), row.get("win_rate"), overall_fuku_rate, overall_win_rate)
+            row["roi_win_gold"] = bool(n >= _HIGHLIGHT_MIN_N and row.get("roi_win") is not None
+                                       and row["roi_win"] >= _ROI_GOLD_THRESHOLD)
+            row["roi_fuku_gold"] = bool(n >= _HIGHLIGHT_MIN_N and row.get("roi_fuku") is not None
+                                        and row["roi_fuku"] >= _ROI_GOLD_THRESHOLD)
 
 
 def _group_by_key(rows, key_fn, min_n=1, top=None):
@@ -466,9 +718,14 @@ def _load_key_history(conn, key, years_param, same_course):
     }
 
     # SPEC-T79b §2.2: score_entry の lift 計算で使う「この履歴全体の複勝率」。
+    # SPEC-T79c §1.1: 傾向表の色分けは、この overall_fuku_rate / overall_win_rate
+    # (Σ1着/Σ出走) との比で行う。
     n_all = len(numeric_runs)
+    c1_all = sum(1 for r in numeric_runs if r["rank"] == 1)
     c123_all = sum(1 for r in numeric_runs if r["rank"] is not None and r["rank"] <= 3)
     overall_fuku_rate = round(c123_all / n_all, 4) if n_all else None
+    overall_win_rate = round(c1_all / n_all, 4) if n_all else None
+    _annotate_aggregates(aggregates, overall_fuku_rate, overall_win_rate)
 
     fav = next((g for g in aggregates["popularity"] if g["label"] == "1番人気"), None)
     winner_pops = [r["winner_pop"] for r in selected if r["winner_pop"] is not None]
@@ -507,6 +764,7 @@ def _load_key_history(conn, key, years_param, same_course):
         "years_range": f"{years_used[0]}〜{years_used[-1]}" if years_used else None,
         "same_course_filter": same_course,
         "overall_fuku_rate": overall_fuku_rate,
+        "overall_win_rate": overall_win_rate,
     }
 
 
