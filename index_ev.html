@@ -92,6 +92,7 @@
         <p class="app-subtitle">レースごとの予測とデータ品質を、ひと目で確認。</p></div>
         <a href="boards" class="app-subtitle">確率・オッズボード ↗</a>
     </div>
+    <div id="viewerBanner" style="display:none;background:#2d4a6b;color:#fff;font-size:13px;text-align:center;border-radius:8px;padding:8px 12px;margin-bottom:12px;">閲覧モード — 監視ループと通知は停止しています (このPCでは記録・通知を行いません)</div>
     <div class="ev-stats" id="raceStats" aria-label="監視サマリー"></div>
 
     <div class="ev-options">
@@ -245,6 +246,8 @@ async function poll() {
         const wb = document.getElementById('warnBanner');
         if (st.warning) { wb.style.display = 'block'; wb.textContent = st.warning; }
         else { wb.style.display = 'none'; }
+        const vb = document.getElementById('viewerBanner');
+        if (vb) { vb.style.display = st.viewer_mode ? 'block' : 'none'; }
         render();
 
         const al = await (await fetch('api/alerts?after=' + lastAlertId)).json();

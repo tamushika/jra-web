@@ -39,6 +39,7 @@ sys.path.insert(0, API_DIR)
 from api.port_guard import ensure_port_free, is_port_in_use  # noqa: E402
 from api import meeting_calendar as t82_mc  # noqa: E402 (SPEC-T82)
 from api.logging_store import LoggingStore as T82LoggingStore  # noqa: E402
+from api.run_mode import viewer_mode, viewer_mode_reason  # noqa: E402 (SPEC-T83)
 
 import jra_ev  # noqa: E402
 import jra_win5  # noqa: E402
@@ -403,26 +404,36 @@ def start_background_loops():
     """scheduler_loop (ev) と _watch_loop (win5) をプロセス内でちょうど1回だけ起動する。
     2回目以降の呼び出しはno-op (Falseを返す)。各モジュール既存の再入ガード
     (jra_ev._SCHEDULER_STARTED / jra_win5._WATCH_THREAD) はそのまま維持し、
-    ここではその起動を統合エントリに一元化するだけ (起動主体を1箇所に絞る)。"""
+    ここではその起動を統合エントリに一元化するだけ (起動主体を1箇所に絞る)。
+
+    SPEC-T83: 閲覧モードではEV/WIN5の監視スレッド起動だけを止める。T82使用コース・
+    T79c週末重賞の起動時キャッシュ先読みは、JRAを読んでローカルキャッシュに書くだけ
+    (通知・prospective契約に無関係) のため閲覧モードでも従来どおり実行する。"""
     with _LOOPS_LOCK:
         if _LOOPS_STARTED.is_set():
             return False
         _LOOPS_STARTED.set()
 
-    with jra_ev._LOCK:
-        if not jra_ev._SCHEDULER_STARTED[0]:
-            jra_ev._SCHEDULER_STARTED[0] = True
-            threading.Thread(target=jra_ev.scheduler_loop, daemon=True,
-                             name=_EV_LOOP_THREAD_NAME).start()
+    if viewer_mode():
+        print(f"[INFO] {viewer_mode_reason()} "
+              "(EV/WIN5監視ループを起動しません。T82/T79cの起動時キャッシュ先読みは実行します)")
+    else:
+        with jra_ev._LOCK:
+            if not jra_ev._SCHEDULER_STARTED[0]:
+                jra_ev._SCHEDULER_STARTED[0] = True
+                threading.Thread(target=jra_ev.scheduler_loop, daemon=True,
+                                 name=_EV_LOOP_THREAD_NAME).start()
 
-    with jra_win5._WATCH_LOCK:
-        if not jra_win5._WATCH_THREAD[0]:
-            jra_win5._WATCH_THREAD[0] = True
-            threading.Thread(target=jra_win5._watch_loop, daemon=True,
-                             name=_WIN5_LOOP_THREAD_NAME).start()
+        with jra_win5._WATCH_LOCK:
+            if not jra_win5._WATCH_THREAD[0]:
+                jra_win5._WATCH_THREAD[0] = True
+                threading.Thread(target=jra_win5._watch_loop, daemon=True,
+                                 name=_WIN5_LOOP_THREAD_NAME).start()
 
     # 既存の監視状態・未送信通知の復元 (jra_ev.py の旧__main__が起動時に行っていたのと同じ)。
-    # 内部で_ensure_scheduler()を呼ぶが、上でガードを立てた後なのでno-op。
+    # 内部で_ensure_scheduler()を呼ぶが、通常モードでは上でガードを立てた後なのでno-op。
+    # 閲覧モードでは_restore_phase2_state自身が未送信通知の再送をスキップする
+    # (jra_ev._restore_phase2_state内のviewer_mode()ガード)。
     jra_ev._restore_phase2_state()
     _t82_startup_course_usage_refresh()  # SPEC-T82 §1.2: 起動時に1回、使用コースを取得
     _t79c_startup_weekend_graded_refresh()  # SPEC-T79c §2.1-d: 起動時に1回、週末重賞候補を取得
@@ -497,6 +508,8 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
     .collection-panel > summary { padding: 8px 14px; }
     #collectionHealth { padding: 8px 14px 14px; columns: 1; max-height: 32vh; overflow-y: auto; }
   }
+  #viewerBanner { background: #2d4a6b; color: #fff; font-size: 12px; text-align: center;
+                  padding: 7px 24px; flex: 0 0 auto; }
 </style>
 </head>
 <body>
@@ -513,11 +526,14 @@ _PORTAL_TEMPLATE = """<!DOCTYPE html>
     <div class="suite-loops">
     {% for b in loop_badges %}
     <span class="loop-badge {{ 'alive' if b.alive else 'dead' }}" data-loop="{{ b.loop }}">
-      {{ b.label }}: {{ '稼働中' if b.alive else '未起動' }}
+      {{ b.label }}: {% if viewer %}停止中 (閲覧モード){% else %}{{ '稼働中' if b.alive else '未起動' }}{% endif %}
     </span>
     {% endfor %}
     </div>
   </div>
+  {% if viewer %}
+  <div id="viewerBanner">閲覧モード — 監視ループと通知は停止しています (このPCでは記録・通知を行いません)</div>
+  {% endif %}
   <details class="collection-panel" id="healthPanel">
     <summary><span class="health-label">収集状況</span><span id="healthSummary" role="status">確認中…</span></summary>
     <div id="collectionHealth">収集状態を確認中…</div>
@@ -822,7 +838,8 @@ def create_app():
     def portal():
         return render_template_string(_PORTAL_TEMPLATE, port=PORT,
                                       tabs=_portal_tabs(),
-                                      loop_badges=_portal_loop_badges())
+                                      loop_badges=_portal_loop_badges(),
+                                      viewer=viewer_mode())
 
     return app
 
@@ -850,6 +867,12 @@ def delegate_auto_start_to_running_server(port, timeout=5.0):
 
 
 if __name__ == "__main__":
+    if "--viewer" in sys.argv:
+        # SPEC-T83: 閲覧モード。プロセス先頭で環境変数を立て、以降の
+        # viewer_mode() 判定 (このモジュール・jra_ev・jra_win5) に効かせる。
+        os.environ["JRA_VIEWER_MODE"] = "1"
+        print(f"[INFO] {viewer_mode_reason()}")
+
     # 週末タスクスケジューラ (--auto-start) で、既に手動起動プロセスがポートを
     # 占有している場合は新規起動をあきらめ、稼働中プロセスへ解析開始を依頼する
     # (SPEC-T78: ポートガードでexit 1すると開催日の解析が誰も始めない事故になる)。

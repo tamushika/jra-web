@@ -30,6 +30,7 @@ from scoring import VENUE_SLUG_MAP  # noqa: E402
 from index import analyze_race_url, _scrape_win5_target, _find_win5_urls  # noqa: E402
 from logging_store import LoggingStore, config_hash  # noqa: E402
 from api.port_guard import ensure_port_free  # noqa: E402
+from api.run_mode import viewer_mode, viewer_mode_reason  # noqa: E402 (SPEC-T83)
 from prediction_logging import log_race_prediction  # noqa: E402
 
 PORT = 5002
@@ -561,6 +562,10 @@ _WATCH_THREAD = [False]
 
 
 def _watch_loop():
+    if viewer_mode():
+        # SPEC-T83: 閲覧モードではWIN5締切前監視を起動しない (多重防御)。
+        print(f"[INFO] {viewer_mode_reason()} (_watch_loop)")
+        return
     from datetime import datetime, timedelta
     import time as _time
     while True:
@@ -597,7 +602,11 @@ def _watch_loop():
                                  ("num", "name", "score", "odds", "pop", "grade")}
                                 for h in r["horses"]]} for r in races]
             # SPEC-T68: 締切前監視の再計算完了時のみ確信度通知を判定 (手動STEP3では呼ばない)
-            line_notify = _notify_win5_confidence(kaime, points, races)
+            # SPEC-T83: 閲覧モードでは呼ばない (多重防御。_watch_loop冒頭で既に即returnしている)。
+            if viewer_mode():
+                line_notify = "suppressed"
+            else:
+                line_notify = _notify_win5_confidence(kaime, points, races)
             with _WATCH_LOCK:
                 WATCH["status"] = "done"
                 WATCH["result"] = kaime

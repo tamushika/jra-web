@@ -54,6 +54,7 @@ import virtual_betting  # noqa: E402 (T70: paper-trading harness, hooked after T
 from index import analyze_race_url, build_matrix_data  # noqa: E402
 from combo_probs import wide_candidates  # noqa: E402
 from api.port_guard import ensure_port_free  # noqa: E402
+from api.run_mode import viewer_mode, viewer_mode_reason  # noqa: E402 (SPEC-T83)
 from result_service import ResultNotReady, fetch_and_save_result  # noqa: E402
 try:
     from logging_store import LoggingStore, config_hash  # noqa: E402
@@ -1219,6 +1220,11 @@ def _notification_due_and_pending(rec, remain):
 
 
 def scheduler_loop():
+    if viewer_mode():
+        # SPEC-T83: 多重防御。_ensure_scheduler/start_background_loopsで既に
+        # 起動を止めているはずだが、万一呼ばれても即returnする。
+        print(f"[INFO] {viewer_mode_reason()} (scheduler_loop)")
+        return
     first_scan_cycle = True
     while True:
         time.sleep(20)
@@ -1304,21 +1310,26 @@ def _restore_phase2_state():
         if STATE["races"]:
             STATE["status"] = "ready"
             _ensure_scheduler()
-        for pending in store.retryable_notifications():
-            payload = pending["payload"]
-            if pending["channel"] == "browser":
-                with _LOCK:
-                    payload["id"] = next(_ALERT_SEQ)
-                    STATE["alerts"].append(payload)
-                result = ("sent", None, None)
-            elif pending["channel"] == "discord":
-                result = _send_discord(payload)
-            elif pending["channel"] == "line":
-                result = _send_line(payload)
-            else:
-                result = ("suppressed", None, "unknown channel")
-            store.mark_notification(pending["notification_id"], status=result[0],
-                                    response_code=result[1], error_message=result[2])
+        if viewer_mode():
+            # SPEC-T83: 未送信通知の再送はブロックごとスキップする。DBの行は
+            # pendingのまま触らず、記録先PC(デスクトップ)側で送れるようにする。
+            print(f"[INFO] {viewer_mode_reason()} (未送信通知の再送をスキップ)")
+        else:
+            for pending in store.retryable_notifications():
+                payload = pending["payload"]
+                if pending["channel"] == "browser":
+                    with _LOCK:
+                        payload["id"] = next(_ALERT_SEQ)
+                        STATE["alerts"].append(payload)
+                    result = ("sent", None, None)
+                elif pending["channel"] == "discord":
+                    result = _send_discord(payload)
+                elif pending["channel"] == "line":
+                    result = _send_line(payload)
+                else:
+                    result = ("suppressed", None, "unknown channel")
+                store.mark_notification(pending["notification_id"], status=result[0],
+                                        response_code=result[1], error_message=result[2])
     except Exception as exc:
         print(f"[WARN] phase2 state restore failed: {type(exc).__name__}: {exc}")
 
@@ -1366,6 +1377,10 @@ def _maybe_sync_result(rec):
 
 
 def _ensure_scheduler():
+    if viewer_mode():
+        # SPEC-T83: 閲覧モードでは監視スケジューラをどの経路からも起動しない。
+        print(f"[INFO] {viewer_mode_reason()} (_ensure_scheduler)")
+        return
     with _LOCK:
         if _SCHEDULER_STARTED[0]:
             return
@@ -1431,7 +1446,9 @@ def api_analyze_start():
 @bp.route("/api/state")
 def api_state():
     with _LOCK:
-        return jsonify(_slim_state())
+        state = _slim_state()
+    state["viewer_mode"] = viewer_mode()  # SPEC-T83: 既存キーは変更せず追加のみ
+    return jsonify(state)
 
 
 @bp.route("/api/boards")
@@ -1498,6 +1515,10 @@ if __name__ == "__main__":
     # 並行監視確認) が完了したら、このブリッジを削除して案内終了だけにする。
     if "--test-line" in sys.argv:
         # LINE設定後の疎通確認: python jra_ev.py --test-line
+        if viewer_mode():
+            # SPEC-T83: 閲覧モードでは疎通テストも送信しない。
+            print(f"{viewer_mode_reason()}。閲覧モードでは送信できません")
+            sys.exit(1)
         stage = int(os.environ.get("EV_LINE_STAGE", "5"))
         _send_line({"stage": stage, "label": "テスト送信 (疎通確認)",
                     "picks": [{"num": 7, "name": "テスト馬", "ev": 9.9,
