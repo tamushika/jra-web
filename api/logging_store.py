@@ -152,6 +152,10 @@ CREATE TABLE IF NOT EXISTS race_result_revisions (
     UNIQUE (race_id, horse_id, source_hash)
 );
 CREATE INDEX IF NOT EXISTS ix_results_fetched ON race_results(result_fetched_at, official_status);
+CREATE TABLE IF NOT EXISTS resync_runs (
+    kind TEXT PRIMARY KEY,
+    last_run_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS win5_predictions (
     win5_prediction_id TEXT PRIMARY KEY,
     idempotency_key TEXT NOT NULL UNIQUE,
@@ -501,6 +505,10 @@ class LoggingStore:
             # version 15 (T79c): weekend_graded_cards (週末重賞の先行表示キャッシュ。
             # 表示専用・6時間キャッシュ。既存の解析ロジック・通知には関与しない)。
             conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(15, ?)", (utc_now(),))
+            # version 16 (T84b): resync_runs (部分取り込みレース結果の再同期を
+            # 1日1回までに制限するための、直近実行時刻だけを持つ小テーブル。
+            # race_results の決定ロジック・通知には関与しない)。
+            conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(16, ?)", (utc_now(),))
         self._write(op)
 
     def start_run(self, *, app_name: str, trigger_type: str = "manual", model_name: str | None = None,
@@ -755,6 +763,27 @@ class LoggingStore:
                     JOIN race_results r ON r.race_id=p.race_id AND r.horse_id=p.horse_id {where})""", params
             ).fetchone()[0]
         return {"predicted": predicted, "matched": matched, "unmatched": predicted - matched}
+
+    def get_resync_last_run(self, kind: str) -> str | None:
+        """SPEC-T84b §2: 直近の再同期実行時刻 (UTC ISO文字列) を返す。未実行ならNone。"""
+        self.initialize()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT last_run_at FROM resync_runs WHERE kind=?", (kind,)
+            ).fetchone()
+        return row[0] if row else None
+
+    def mark_resync_run(self, kind: str, *, run_at: datetime | str | None = None) -> None:
+        """SPEC-T84b §2: 再同期を実行した時刻を記録する (1日1回ガード用)。"""
+        self.initialize()
+        value = _utc(run_at) or utc_now()
+        def op(conn):
+            conn.execute(
+                """INSERT INTO resync_runs(kind, last_run_at) VALUES(?, ?)
+                   ON CONFLICT(kind) DO UPDATE SET last_run_at=excluded.last_run_at""",
+                (kind, value),
+            )
+        self._write(op)
 
     def save_win5_prediction(self, *, prediction_run_ids: list[str], race_ids: list[str],
                              budget: int, total_points: int, selections: Any, coverage: Any,

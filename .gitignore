@@ -57,3 +57,6 @@ api/data_files/common/factor_snapshot.json
 # T79: 重賞データページの表示専用キャッシュ (ability.dbから毎回ローカル生成する。
 # build_graded_cache.py で再生成できるため配布・コミットしない)。
 data/graded_cache.sqlite
+
+# SPEC-T84b: 穴埋め実行時のバックアップ (320MB・DBのコピーなのでコミットしない)
+/backups/

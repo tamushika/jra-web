@@ -10,7 +10,7 @@ import re
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urljoin, urlsplit
@@ -218,6 +218,155 @@ def _save_parsed(parsed: dict[str, Any], target: LoggingStore) -> dict[str, Any]
     parsed["save_stats"] = target.save_race_results(parsed["rows"])
     parsed["match_summary"] = target.result_match_summary(parsed["race_id"])
     return parsed
+
+
+# ─── 部分取り込みレース結果の再同期 (T84b: T84 Stage A/B の後続) ───────────────
+# T84 Stage A で確定した真因: 発走16分後では約5%のレースでJRAの全着順が
+# まだ上位5頭しか出ておらず、結果は一度しか取得しないのでその5%が永久に
+# 部分データのまま残る。ここでは決定ロジック・通知・仮想購入には一切触れず、
+# 保存済みのsource_urlを後から1回だけ取り直して行を補う入口だけを追加する。
+
+DAILY_RESYNC_KIND = "t84b_result_resync"
+
+
+def find_incomplete_results(db_path: str | Path, *, max_age_days: int = 60) -> list[dict[str, Any]]:
+    """race_results を読み、取り直す価値がある (欠落している可能性が高い)
+    レースを列挙する (読み取り専用・SPEC-T84b §1-1)。
+
+    対象にする条件 (いずれか):
+      - 保存済み行の data_quality_flags_json に partial_result_rows を含む
+      - 保存行数が同レースの odds_snapshots.field_size に対して明らかに少ない
+        (field_size>=8 かつ rows<=field_size-3。T84 §2 の検知式と同一)
+    source_url が保存されていないレース (取り直し先が特定できない) は対象外
+    にし、件数だけ警告ログへ出す。max_age_days より古いレースは対象外 (日々の
+    定期実行が無限に古いデータを掘り返さないようにする既定のガード)。
+    """
+    store = LoggingStore(db_path)
+    store.initialize()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)) \
+        .isoformat(timespec="microseconds").replace("+00:00", "Z")
+    with sqlite3.connect(store.db_path) as conn:
+        rows = conn.execute(
+            """SELECT race_id, COUNT(*) AS n_rows, MAX(source_url) AS source_url,
+                      MAX(result_fetched_at) AS result_fetched_at,
+                      MAX(CASE WHEN data_quality_flags_json LIKE '%partial_result_rows%'
+                               THEN 1 ELSE 0 END) AS has_flag
+               FROM race_results
+               GROUP BY race_id
+               HAVING MAX(result_fetched_at) >= ?
+               ORDER BY result_fetched_at""",
+            (cutoff,),
+        ).fetchall()
+    targets = []
+    skipped_no_source = 0
+    for race_id, n_rows, source_url, result_fetched_at, has_flag in rows:
+        field_size = _known_field_size(race_id, store)
+        row_count_low = field_size is not None and field_size >= 8 and n_rows <= field_size - 3
+        if not (has_flag or row_count_low):
+            continue
+        if not source_url:
+            skipped_no_source += 1
+            continue
+        targets.append({
+            "race_id": race_id, "rows": n_rows, "field_size": field_size,
+            "source_url": source_url, "result_fetched_at": result_fetched_at,
+        })
+    if skipped_no_source:
+        _LOGGER.warning(
+            "find_incomplete_results: %d incomplete race(s) have no source_url on file "
+            "and cannot be re-fetched", skipped_no_source,
+        )
+    return targets
+
+
+def resync_result(race_id: str, *, db_path: str | Path, sleep_seconds: float = 1.5,
+                  timeout: int = 20) -> dict[str, Any]:
+    """1レースの保存済み source_url を1回だけ取り直し、行を upsert する
+    (SPEC-T84b §1-2)。決定ロジック・通知・仮想購入には触れない。
+
+    同一horse_idの既存行は上書き (着順・払戻が確定後の値に揃う)、無い行は
+    追加する (save_race_results のON CONFLICT upsertに委ねる)。再取得後の
+    行数が取り直し前と同じかそれ以下なら何も書き込まない ("no_change")。
+    取得・解析に失敗した場合も何も書き込まない ("failed")。
+    """
+    target = LoggingStore(db_path)
+    target.initialize()
+    with sqlite3.connect(target.db_path) as conn:
+        row = conn.execute(
+            "SELECT source_url FROM race_results WHERE race_id=? AND source_url IS NOT NULL LIMIT 1",
+            (race_id,),
+        ).fetchone()
+        existing_rows = conn.execute(
+            "SELECT COUNT(*) FROM race_results WHERE race_id=?", (race_id,)
+        ).fetchone()[0]
+    if not row or not row[0]:
+        return {"status": "failed", "race_id": race_id, "error": "no source_url on file"}
+    url = row[0]
+    # netkeiba/JRAへの連続アクセスは1秒以上空ける (プロジェクト規約)。単体で
+    # 呼ばれても間隔を守れるよう、この関数自身がリクエスト前にスリープする。
+    time.sleep(max(sleep_seconds, 0))
+    try:
+        response = _get(url, timeout)
+        parsed = parse_result_html(response.text, source_url=response.url)
+    except (requests.RequestException, ValueError) as exc:
+        return {"status": "failed", "race_id": race_id, "error": f"{type(exc).__name__}: {exc}"}
+    new_row_count = len(parsed["rows"])
+    if new_row_count <= existing_rows:
+        return {"status": "no_change", "race_id": race_id,
+                "rows_before": existing_rows, "rows_after": new_row_count}
+    saved = _save_parsed(parsed, target)
+    return {"status": "resynced", "race_id": race_id, "rows_before": existing_rows,
+            "rows_after": new_row_count, "save_stats": saved["save_stats"],
+            "partial_result_rows_flagged": saved["partial_result_rows_flagged"]}
+
+
+def resync_incomplete_results(db_path: str | Path, *, limit: int = 50, sleep_seconds: float = 1.5,
+                              max_age_days: int = 60, timeout: int = 20) -> dict[str, Any]:
+    """find_incomplete_results で対象を列挙し、古い順に最大 limit 件まで
+    resync_result を実行する (SPEC-T84b §1-3)。各 resync_result 呼び出しが
+    自前でリクエスト前に sleep_seconds 秒待つため、呼び出し間隔は自動的に
+    最低 sleep_seconds 秒空く。
+    """
+    targets = find_incomplete_results(db_path, max_age_days=max_age_days)
+    targets = sorted(targets, key=lambda item: item["result_fetched_at"] or "")
+    targets = targets[:max(0, limit)]
+    details = []
+    counts = {"resynced": 0, "no_change": 0, "failed": 0}
+    for item in targets:
+        outcome = resync_result(item["race_id"], db_path=db_path, sleep_seconds=sleep_seconds, timeout=timeout)
+        counts[outcome["status"]] = counts.get(outcome["status"], 0) + 1
+        details.append(outcome)
+    return {"targets": len(targets), "resynced": counts["resynced"], "no_change": counts["no_change"],
+            "failed": counts["failed"], "details": details}
+
+
+def resync_incomplete_results_daily(db_path: str | Path | None = None, *, kind: str = DAILY_RESYNC_KIND,
+                                    limit: int = 20, sleep_seconds: float = 1.5,
+                                    max_age_hours: float = 24.0) -> dict[str, Any]:
+    """resync_incomplete_results を1日1回までに制限して呼び出す (SPEC-T84b §2)。
+    直近実行時刻は resync_runs(kind) に記録する。max_age_hours 以内に実行済み
+    なら何もせず {"skipped": True, ...} を返す (ネットワークアクセスなし)。
+    viewer_mode() の判定は呼び出し元 (jra_ev.worker_analyze_all の完了フック)
+    の責務で、この関数自体は行わない (単体/CLIからも使えるようにするため)。
+    """
+    target = LoggingStore(db_path) if db_path else LoggingStore()
+    target.initialize()
+    last_run_at = target.get_resync_last_run(kind)
+    if last_run_at:
+        try:
+            last_dt = datetime.fromisoformat(str(last_run_at).replace("Z", "+00:00"))
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            elapsed_hours = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
+        except ValueError:
+            elapsed_hours = max_age_hours  # 壊れた値は実行済みとみなさない (安全側)
+        if elapsed_hours < max_age_hours:
+            return {"skipped": True, "reason": "already run within max_age_hours",
+                    "last_run_at": last_run_at}
+    result = resync_incomplete_results(target.db_path, limit=limit, sleep_seconds=sleep_seconds)
+    target.mark_resync_run(kind)
+    result["skipped"] = False
+    return result
 
 
 def fetch_and_save_result(url: str, *, store: LoggingStore | None = None,

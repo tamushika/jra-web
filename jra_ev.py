@@ -826,6 +826,7 @@ def worker_analyze_all(params):
             STATE["_analysis_health"]["completed_at"] = datetime.now(JST).isoformat()
         _t82_update_course_usage_hook()
         _t79c_update_weekend_graded_hook()
+        _t84b_resync_incomplete_results_hook()
 
 
 # SPEC-T82 §1.2: 解析完了時に馬場情報ページから当週の使用コースを1回取得・保存する
@@ -851,6 +852,23 @@ def _t79c_update_weekend_graded_hook():
         jra_graded._weekend_graded_background_refresh("analysis-complete")
     except Exception as e:
         print(f"[WARN] T79c 週末重賞取得フック失敗: {e}")
+
+
+# SPEC-T84b §2: 解析完了時に、部分取り込み (上位数頭で止まった) レース結果を
+# 1日1回まで取り直すフック。閲覧モード (T83) ではこのPCから二重に取りに行か
+# ないよう実行しない。失敗しても解析自体は止めない (警告ログのみ)。通知関数
+# 3つ・解析ロジック (worker_analyze_all本体) は変更しない、完了後のこの1箇所
+# のtry/exceptのみ追加。1回あたりlimit=20件に制限 (最大30秒程度)。
+def _t84b_resync_incomplete_results_hook():
+    if viewer_mode():
+        return
+    try:
+        import result_service
+        result = result_service.resync_incomplete_results_daily(limit=20)
+        if not result.get("skipped") and result.get("failed"):
+            print(f"[WARN] T84b 結果再同期: {result.get('failed')} 件失敗")
+    except Exception as e:
+        print(f"[WARN] T84b 結果再同期フック失敗: {e}")
 
 
 # ─── 通知の外部連携 (SQLite実測ログ / Discord) ────────────────────────────────
