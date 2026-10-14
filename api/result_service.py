@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import re
 import sqlite3
 import time
@@ -25,6 +26,7 @@ except ImportError:  # direct execution from api/
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
            "Referer": "https://www.jra.go.jp/"}
 VENUES = ("札幌", "函館", "福島", "新潟", "東京", "中山", "中京", "京都", "阪神", "小倉")
+_LOGGER = logging.getLogger(__name__)
 
 
 class ResultNotReady(ValueError):
@@ -48,8 +50,9 @@ def _payouts(soup: BeautifulSoup, css_class: str) -> dict[int, int]:
 
 def parse_result_html(html: str, *, source_url: str = "") -> dict[str, Any]:
     soup = BeautifulSoup(html, "html.parser")
-    table = soup.select_one("#race_result table")
-    if table is None:
+    container = soup.select_one("#race_result")
+    tables = container.select("table") if container else []
+    if not tables:
         raise ResultNotReady("official race result table is not available")
     opt = soup.select_one("span.opt")
     info = opt.get_text(" ", strip=True) if opt else soup.get_text(" ", strip=True)[:500]
@@ -68,29 +71,51 @@ def parse_result_html(html: str, *, source_url: str = "") -> dict[str, Any]:
     source_hash = hashlib.sha256(html.encode("utf-8")).hexdigest()
     fetched_at = datetime.now().astimezone()
     rows = []
-    for tr in table.select("tbody tr") or table.select("tr")[1:]:
-        position_text = tr.select_one("td.place")
-        number_text = tr.select_one("td.num")
-        horse_text = tr.select_one("td.horse")
-        horse_no = _integer(number_text.get_text(" ", strip=True) if number_text else None)
-        if horse_no is None:
-            continue
-        position = _integer(position_text.get_text(" ", strip=True) if position_text else None)
-        horse_name = horse_text.get_text(" ", strip=True) if horse_text else None
-        flags = []
-        if position is None:
-            flags.append("non_numeric_finish_status")
-        final_odds = win.get(horse_no) / 100.0 if horse_no in win else None
-        if final_odds is None:
-            flags.append("final_win_odds_unavailable")
-        rows.append({
-            "race_id": race_id, "horse_id": f"{race_id}:{horse_no:02d}", "horse_name": horse_name,
-            "finish_position": position, "official_status": official_status,
-            "final_win_odds": final_odds, "win_payout": win.get(horse_no),
-            "place_payout": place.get(horse_no), "result_fetched_at": fetched_at,
-            "source_url": source_url, "source_hash": source_hash,
-            "data_quality_flags": flags,
-        })
+    seen_horse_numbers: set[int] = set()
+    duplicate_count = 0
+    # #race_result wraps the runner-result table alongside unrelated tables
+    # (lap time, corner-passage order) that share the container but carry no
+    # td.num/td.horse cells. JRA has also been observed splitting the runner
+    # rows themselves across more than one <tbody>, or more than one <table>,
+    # under the same container (T84: rows past 5th place silently dropped
+    # because only the first <table>'s rows were read). Every table and every
+    # tbody under the container is therefore scanned; a <tr> is only treated
+    # as a result row when a horse number AND a horse name can both be read
+    # from it -- that alone is enough to skip header rows, empty rows, and
+    # the unrelated tables, without depending on table/tbody position.
+    for result_table in tables:
+        for tr in result_table.select("tbody tr") or result_table.select("tr"):
+            position_text = tr.select_one("td.place")
+            number_text = tr.select_one("td.num")
+            horse_text = tr.select_one("td.horse")
+            horse_no = _integer(number_text.get_text(" ", strip=True) if number_text else None)
+            horse_name = horse_text.get_text(" ", strip=True) if horse_text else None
+            if horse_no is None or not horse_name:
+                continue
+            if horse_no in seen_horse_numbers:
+                duplicate_count += 1
+                continue
+            seen_horse_numbers.add(horse_no)
+            position = _integer(position_text.get_text(" ", strip=True) if position_text else None)
+            flags = []
+            if position is None:
+                flags.append("non_numeric_finish_status")
+            final_odds = win.get(horse_no) / 100.0 if horse_no in win else None
+            if final_odds is None:
+                flags.append("final_win_odds_unavailable")
+            rows.append({
+                "race_id": race_id, "horse_id": f"{race_id}:{horse_no:02d}", "horse_name": horse_name,
+                "finish_position": position, "official_status": official_status,
+                "final_win_odds": final_odds, "win_payout": win.get(horse_no),
+                "place_payout": place.get(horse_no), "result_fetched_at": fetched_at,
+                "source_url": source_url, "source_hash": source_hash,
+                "data_quality_flags": flags,
+            })
+    if duplicate_count:
+        _LOGGER.warning(
+            "parse_result_html: race %s had %d duplicate horse row(s) collapsed to the first occurrence",
+            race_id, duplicate_count,
+        )
     if not rows:
         raise ResultNotReady("official result contains no runners")
     return {"race_id": race_id, "official_status": official_status, "rows": rows,
@@ -148,7 +173,48 @@ def _get(url: str, timeout: int, *, encoding: str = "cp932"):
     return response
 
 
+def _known_field_size(race_id: str, target: LoggingStore) -> int | None:
+    """Best-effort lookup of the most recently observed odds_snapshots.field_size
+    for a race (T84 §2 health check). Queried directly with sqlite3 -- same
+    pattern already used by monitored_result_sources() below -- rather than
+    adding a LoggingStore method, since this fix is scoped to this file only.
+    """
+    try:
+        target.initialize()
+        with sqlite3.connect(target.db_path) as conn:
+            row = conn.execute(
+                """SELECT field_size FROM odds_snapshots
+                   WHERE race_id=? AND field_size IS NOT NULL
+                   ORDER BY observed_at DESC LIMIT 1""",
+                (race_id,),
+            ).fetchone()
+    except sqlite3.DatabaseError:
+        return None
+    return int(row[0]) if row and row[0] is not None else None
+
+
+def _flag_partial_result_rows(parsed: dict[str, Any], target: LoggingStore) -> bool:
+    """Mark every row with a 'partial_result_rows' quality flag when the row
+    count about to be saved looks suspiciously low next to the field size
+    recorded in odds_snapshots (T84 §2, e.g. 5 rows while field_size>=8). This
+    never blocks the save: the payout figures already parsed from the page
+    stay correct even when some runner rows are missing, so the flag only
+    marks the race for a later re-fetch (T84 Stage C) rather than discarding
+    anything.
+    """
+    rows = parsed["rows"]
+    field_size = _known_field_size(parsed["race_id"], target)
+    if field_size is None or field_size < 8 or len(rows) > field_size - 3:
+        return False
+    for row in rows:
+        flags = row.setdefault("data_quality_flags", [])
+        if "partial_result_rows" not in flags:
+            flags.append("partial_result_rows")
+    return True
+
+
 def _save_parsed(parsed: dict[str, Any], target: LoggingStore) -> dict[str, Any]:
+    parsed["partial_result_rows_flagged"] = _flag_partial_result_rows(parsed, target)
     parsed["save_stats"] = target.save_race_results(parsed["rows"])
     parsed["match_summary"] = target.result_match_summary(parsed["race_id"])
     return parsed
@@ -382,9 +448,7 @@ def save_result_html(path: str | Path, *, source_url: str = "fixture://local",
     html = Path(path).read_text(encoding="utf-8")
     parsed = parse_result_html(html, source_url=source_url)
     target = store or LoggingStore()
-    parsed["save_stats"] = target.save_race_results(parsed["rows"])
-    parsed["match_summary"] = target.result_match_summary(parsed["race_id"])
-    return parsed
+    return _save_parsed(parsed, target)
 
 
 def main() -> None:
