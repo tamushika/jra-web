@@ -340,7 +340,47 @@ def build_bet_decisions_p3(snapshot: Mapping[str, Any], *, main_budget_used_yen:
 
 # ─── 純関数: 精算 (race_results → payout) ───────────────────────────────────
 
-def compute_settlement(bet: Mapping[str, Any], result_row: Mapping[str, Any] | None) -> dict[str, Any] | None:
+def _safety_net_required_ranks(race_rows: Iterable[Mapping[str, Any]]) -> set[int] | None:
+    """SPEC-T70d §1: 賭けた馬自身の行が race_results に存在しない場合の安全網。
+    同一レースの他の行 (official_status='official') から、上位着順が『確定的に
+    揃っている』かどうかを判定する。揃っていれば、その中に賭けた馬がいない
+    ことは複勝圏外 (=外れ) が確定している。
+
+    判定は race_results の実データだけで行う (odds_snapshots.field_size には
+    依存しない。2件で欠落していることをDB調査で確認済み)。複勝払戻は出走
+    7頭以下では1・2着のみに付く (3着行自体は存在するがplace_payoutがNULL)
+    ため、3着行のpayout有無で『8頭以上』と『7頭以下』を区別する:
+      - 1・2・3着の行があり、3着にplace_payoutがある → 8頭以上。1-3着が対照。
+      - 1・2・3着の行があり、3着のplace_payoutがNone → 7頭以下。1-2着が対照。
+      - 3着の行自体が存在しない → 判定不能 (従来どおり保留)。
+    official_status が 'official' 以外の行は『揃っている』とみなさない
+    (SPEC-T70d §1の文言どおり。'corrected'は対象外=より保守的に保留側へ)。
+    """
+    def _has(pos: int, *, require_payout: bool = False) -> bool:
+        for row in race_rows:
+            if row.get("official_status") != "official":
+                continue
+            if row.get("finish_position") != pos:
+                continue
+            if require_payout and row.get("place_payout") is None:
+                continue
+            return True
+        return False
+
+    has1 = _has(1)
+    has2 = _has(2)
+    has3 = _has(3)
+    has3_paid = _has(3, require_payout=True)
+    if has1 and has2 and has3_paid:
+        return {1, 2, 3}
+    if has1 and has2 and has3 and not has3_paid:
+        return {1, 2}
+    return None
+
+
+def compute_settlement(bet: Mapping[str, Any], result_row: Mapping[str, Any] | None, *,
+                        race_rows: Iterable[Mapping[str, Any]] | None = None
+                        ) -> dict[str, Any] | None:
     """純関数: pendingなvirtual_bets 1行 + race_resultsの該当馬1行 (無ければNone)
     → 更新後 status/payout_yen。未確定 (結果未取得・複勝払戻未取得) はNoneを返し
     据え置く (pendingのまま。呼び出し側は次回精算で再試行する)。
@@ -349,8 +389,16 @@ def compute_settlement(bet: Mapping[str, Any], result_row: Mapping[str, Any] | N
     payout_yen=stake_yen)。着順3着以内なら公式複勝払戻 (100円あたり) から
     payout = stake/100*place_payout。4着以下は的中なし (settled・payout=0)。
     パリミュチュエル自票影響は無視 (SPEC-T70 §2、¥2,000規模)。
+
+    race_rows (SPEC-T70d §1の安全網): result_row が None (賭けた馬の行が
+    race_results に無い) の場合のみ参照する同一レースの全行。1-3着 (7頭以下
+    なら1-2着) が official に揃っているのに賭けた馬の行が無ければ、確定的に
+    複勝圏外 (外れ) と判定し settled/payout=0 を返す。それ以外は従来どおり
+    None (保留) を返す。result_row が None でない通常系の判定は変更しない。
     """
     if result_row is None:
+        if race_rows is not None and _safety_net_required_ranks(race_rows) is not None:
+            return {"status": "settled", "payout_yen": 0}
         return None
     official_status = result_row.get("official_status")
     if official_status not in ("official", "corrected"):
@@ -614,7 +662,11 @@ def settle_pending_bets(*, date: str | None = None, db_path: str | Path | None =
     perfダッシュボード表示時のlazy精算として呼ぶ冪等な精算エントリ (SPEC-T70
     §4-2、実装が単純な方=lazy精算を採用)。書き込みは virtual_bets の UPDATEの
     みで race_results は読み取り専用。status='pending' の行のみ対象にし、
-    UPDATEもWHERE status='pending'を維持するため、再実行しても二重精算しない。"""
+    UPDATEもWHERE status='pending'を維持するため、再実行しても二重精算しない。
+    賭けた馬の行が race_results に無い場合は、SPEC-T70d §1 の安全網
+    (compute_settlement の race_rows 判定) により、1-3着 (7頭以下は1-2着)
+    が official で揃っていれば外れ確定として settled/payout=0 にする。
+    それ以外はstill_pendingのまま次回精算に回す (従来どおり)。"""
     LoggingStore(db_path).initialize()
 
     def op(conn: sqlite3.Connection):
@@ -632,7 +684,16 @@ def settle_pending_bets(*, date: str | None = None, db_path: str | Path | None =
                 "SELECT finish_position, official_status, place_payout FROM race_results "
                 "WHERE race_id=? AND horse_id=?", (race_id, horse_id),
             ).fetchone()
-            outcome = compute_settlement(bet, dict(result) if result is not None else None)
+            race_rows = None
+            if result is None:
+                # SPEC-T70d §1: 賭けた馬の行が無い場合のみ、安全網判定のために
+                # 同一レースの他の行を読む (通常系では追加クエリを発生させない)。
+                race_rows = [dict(r) for r in conn.execute(
+                    "SELECT finish_position, official_status, place_payout FROM race_results "
+                    "WHERE race_id=?", (race_id,),
+                ).fetchall()]
+            outcome = compute_settlement(
+                bet, dict(result) if result is not None else None, race_rows=race_rows)
             if outcome is None:
                 still_pending += 1
                 continue

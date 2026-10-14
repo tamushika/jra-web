@@ -1,92 +1,29 @@
 {
-  "generated_at_utc": "2026-10-14T14:30:37.831648+00:00",
+  "generated_at_utc": "2026-10-14T14:55:49.070640+00:00",
   "generator": "backtest_t70c_gate.py",
   "spec": "docs/codex/SPEC-T70c-gate-aggregation.md",
-  "db_path": "data\\jra_logging.db",
+  "db_path": "C:\\Users\\owner\\project\\.venv\\jra-web\\data\\jra_logging.db",
   "bootstrap_resamples": 2000,
   "bootstrap_seed": 70,
   "pending_share_warn_threshold": 0.2,
-  "elapsed_seconds": 0.03310159999819007,
+  "elapsed_seconds": 0.027433800001745112,
   "gate": {
     "policy_version": "v1",
     "as_of_date": "20261012",
     "population": {
       "main_by_status": {
-        "settled": 24,
-        "pending": 3
+        "settled": 27
       },
       "control_by_status": {
-        "settled": 24,
-        "pending": 3
+        "settled": 27
       }
     },
     "pending_detail": {
-      "count_main": 3,
-      "count_control": 3,
-      "share_of_main_population_pre_exclusion": 0.1111111111111111,
+      "count_main": 0,
+      "count_control": 0,
+      "share_of_main_population_pre_exclusion": 0.0,
       "warning_pending_share_high": false,
-      "rows": [
-        {
-          "race_id": "20260829:新潟:11",
-          "date": "20260829",
-          "bet_type": "fukusho",
-          "horse_number": 15,
-          "is_control": false,
-          "gap_days_from_as_of": 44,
-          "reason": "stale_pending_unexplained",
-          "reason_note": "同期後も長期間保留 (取消・除外等による返還待ち、または精算ロジックの異常の可能性。virtual_betsのみでは断定不可=要人力調査)"
-        },
-        {
-          "race_id": "20261012:京都:09",
-          "date": "20261012",
-          "bet_type": "fukusho",
-          "horse_number": 12,
-          "is_control": false,
-          "gap_days_from_as_of": 0,
-          "reason": "sync_pending_recent",
-          "reason_note": "直近 (3日以内) のため結果同期待ちの可能性 (virtual_betsの`date`列のみから推定。確定診断にはrace_results等の追加照会が必要=本ハーネスのスコープ外)"
-        },
-        {
-          "race_id": "20261012:京都:10",
-          "date": "20261012",
-          "bet_type": "fukusho",
-          "horse_number": 5,
-          "is_control": false,
-          "gap_days_from_as_of": 0,
-          "reason": "sync_pending_recent",
-          "reason_note": "直近 (3日以内) のため結果同期待ちの可能性 (virtual_betsの`date`列のみから推定。確定診断にはrace_results等の追加照会が必要=本ハーネスのスコープ外)"
-        },
-        {
-          "race_id": "20260829:新潟:11",
-          "date": "20260829",
-          "bet_type": "fukusho",
-          "horse_number": 15,
-          "is_control": true,
-          "gap_days_from_as_of": 44,
-          "reason": "stale_pending_unexplained",
-          "reason_note": "同期後も長期間保留 (取消・除外等による返還待ち、または精算ロジックの異常の可能性。virtual_betsのみでは断定不可=要人力調査)"
-        },
-        {
-          "race_id": "20261012:京都:09",
-          "date": "20261012",
-          "bet_type": "fukusho",
-          "horse_number": 12,
-          "is_control": true,
-          "gap_days_from_as_of": 0,
-          "reason": "sync_pending_recent",
-          "reason_note": "直近 (3日以内) のため結果同期待ちの可能性 (virtual_betsの`date`列のみから推定。確定診断にはrace_results等の追加照会が必要=本ハーネスのスコープ外)"
-        },
-        {
-          "race_id": "20261012:京都:10",
-          "date": "20261012",
-          "bet_type": "fukusho",
-          "horse_number": 5,
-          "is_control": true,
-          "gap_days_from_as_of": 0,
-          "reason": "sync_pending_recent",
-          "reason_note": "直近 (3日以内) のため結果同期待ちの可能性 (virtual_betsの`date`列のみから推定。確定診断にはrace_results等の追加照会が必要=本ハーネスのスコープ外)"
-        }
-      ]
+      "rows": []
     },
     "n_check": {
       "pre_exclusion": {
@@ -94,8 +31,8 @@
         "main_bets": 27
       },
       "post_exclusion_settled_only": {
-        "event_days": 15,
-        "main_bets": 24
+        "event_days": 16,
+        "main_bets": 27
       },
       "threshold": {
         "event_days_min": 12,
@@ -109,8 +46,8 @@
         "id": 1,
         "name": "n: >=12 event days and >=30 main bets (settled-only)",
         "observed": {
-          "event_days": 15,
-          "main_bets": 24
+          "event_days": 16,
+          "main_bets": 27
         },
         "threshold": {
           "event_days_min": 12,
@@ -121,25 +58,25 @@
       {
         "id": 2,
         "name": "main fukusho ROI point estimate >= 100%",
-        "observed_roi": 0.8708333333333333,
+        "observed_roi": 0.8666666666666667,
         "threshold": 1.0,
-        "main_settled_n": 24,
-        "main_stake_yen": 48000,
-        "main_payout_yen": 41800,
+        "main_settled_n": 27,
+        "main_stake_yen": 54000,
+        "main_payout_yen": 46800,
         "passed": false
       },
       {
         "id": 3,
         "name": "event-day block bootstrap (2000 resamples, seed=70): lower 5th percentile of ROI >= 85%",
         "bootstrap": {
-          "n_blocks": 15,
+          "n_blocks": 16,
           "n_resamples": 2000,
           "seed": 70,
           "lower_quantile": 0.05,
-          "lower_quantile_value": 0.7041583333333334,
+          "lower_quantile_value": 0.7,
           "ci95": [
-            0.6624851190476191,
-            1.0800588235294115
+            0.669556856187291,
+            1.0650054347826086
           ]
         },
         "threshold": 0.85,
@@ -148,9 +85,9 @@
       {
         "id": 4,
         "name": "main ROI exceeds control ROI (selected-race favorite fukusho)",
-        "roi_main": 0.8708333333333333,
-        "roi_control": 0.8708333333333333,
-        "control_settled_n": 24,
+        "roi_main": 0.8666666666666667,
+        "roi_control": 0.8666666666666667,
+        "control_settled_n": 27,
         "paired_bootstrap_difference": {
           "observed_difference": 0.0,
           "ci95": [
@@ -158,11 +95,11 @@
             0.0
           ],
           "n_resamples": 2000,
-          "n_blocks": 15,
+          "n_blocks": 16,
           "seed": 70
         },
         "control_pairing": {
-          "paired": 24,
+          "paired": 27,
           "main_missing_control": [],
           "control_missing_main": [],
           "fully_paired": true
@@ -179,7 +116,7 @@
           "payout_yen": 3200,
           "stake_yen": 2000
         },
-        "observed_roi": 0.8391304347826087,
+        "observed_roi": 0.8384615384615385,
         "threshold": 0.9,
         "passed": false
       }
@@ -187,7 +124,7 @@
     "reviewer_adjudication": null,
     "machine_judgment": "INVALID",
     "invalid_reasons": [
-      "settled-only population does not meet the n condition after excluding pending rows (event_days=15 < 12 and/or main_bets=24 < 30; pre-exclusion was event_days=16, main_bets=27)"
+      "settled-only population does not meet the n condition after excluding pending rows (event_days=16 < 12 and/or main_bets=27 < 30; pre-exclusion was event_days=16, main_bets=27)"
     ],
     "conditions_note": "上記conditionsはINVALID判定の根拠を示す診断値であり、移行ゲートの成否判定そのものではない (fail-closedのINVALID規則が優先)。"
   },
@@ -198,25 +135,23 @@
       "migration_eligible": false,
       "disclaimer": "検定ではなく参考値 (estimation-only)。実マネー移行の資格はない (SPEC-T70b)。",
       "population_main_by_status": {
-        "settled": 134,
-        "skipped_budget": 5,
-        "pending": 9
+        "settled": 143,
+        "skipped_budget": 5
       },
       "population_control_by_status": {
-        "settled": 139,
-        "pending": 9
+        "settled": 148
       },
       "main_settled_roi": {
-        "n": 134,
-        "stake_yen": 134000,
-        "payout_yen": 115900,
-        "roi": 0.8649253731343284
+        "n": 143,
+        "stake_yen": 143000,
+        "payout_yen": 123800,
+        "roi": 0.8657342657342657
       },
       "control_settled_roi": {
-        "n": 139,
-        "stake_yen": 139000,
-        "payout_yen": 111700,
-        "roi": 0.8035971223021583
+        "n": 148,
+        "stake_yen": 148000,
+        "payout_yen": 119600,
+        "roi": 0.8081081081081081
       }
     },
     "p3-v1": {
