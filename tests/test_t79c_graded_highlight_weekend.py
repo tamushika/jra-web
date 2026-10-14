@@ -327,8 +327,11 @@ def test_weekend_graded_fresh_false_when_no_rows(weekend_store):
 def test_api_weekend_graded_uses_cache_without_refetch_when_fresh(suite_client, monkeypatch):
     client, store = suite_client
     now = datetime.now(timezone.utc)
+    # 日付は実行日基準にする (endpoint が min_date=today で絞るため、固定日付だと
+    # その日を過ぎたテストが腐る。2026-10-14 に実際に落ちたので相対化した)
+    today_iso = datetime.now().date().isoformat()
     store.save_weekend_graded_cards(
-        [{"url": "https://a", "date": "2026-09-26", "venue": "阪神", "race_num": 11,
+        [{"url": "https://a", "date": today_iso, "venue": "阪神", "race_num": 11,
           "race_name": "シリウスステークス", "key": "シリウス",
           "display_name": "シリウスステークス", "grade_latest": "G3",
           "start_time": "15:45", "draw_fixed": True, "source": "jra_card"}],
