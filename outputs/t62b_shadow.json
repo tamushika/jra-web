@@ -1,0 +1,91 @@
+{
+  "experiment_id": "T62b-race-selection-shadow-v1",
+  "adjudication": null,
+  "gate": {
+    "event_days": 24,
+    "races": 219,
+    "ready": true
+  },
+  "joined_result_races": 219,
+  "selection_rate": 0.1780821917808219,
+  "selected": {
+    "races": 39,
+    "model_logloss": 1.8185221798134812,
+    "market_logloss": 1.8018107792180553,
+    "difference": 0.016711400595425863,
+    "bootstrap": {
+      "ci_low": -0.01998414419827288,
+      "ci_high": 0.05148796711626735,
+      "resamples": 2000,
+      "seed": 6202
+    },
+    "popularity_bands": {
+      "1-3": {
+        "races": 27,
+        "difference": -0.03825302074088843
+      },
+      "4-8": {
+        "races": 10,
+        "difference": 0.125052263067849
+      },
+      "9+": {
+        "races": 2,
+        "difference": 0.21702677627355182
+      }
+    }
+  },
+  "unselected": {
+    "races": 180,
+    "model_logloss": 2.2122695183424974,
+    "market_logloss": 2.2073469027930717,
+    "difference": 0.004922615549425746,
+    "bootstrap": {
+      "ci_low": -0.019679900311276644,
+      "ci_high": 0.029089070221556934,
+      "resamples": 2000,
+      "seed": 6202
+    },
+    "popularity_bands": {
+      "1-3": {
+        "races": 103,
+        "difference": -0.029380207570334216
+      },
+      "4-8": {
+        "races": 55,
+        "difference": 0.04406109048311091
+      },
+      "9+": {
+        "races": 22,
+        "difference": 0.06767600918499816
+      }
+    }
+  },
+  "selected_market_topk_floor": {
+    "1": {
+      "model_rate": 0.41025641025641024,
+      "market_rate": 0.41025641025641024,
+      "floor_pass": true
+    },
+    "2": {
+      "model_rate": 0.5897435897435898,
+      "market_rate": 0.5641025641025641,
+      "floor_pass": true
+    },
+    "3": {
+      "model_rate": 0.6923076923076923,
+      "market_rate": 0.6923076923076923,
+      "floor_pass": true
+    },
+    "4": {
+      "model_rate": 0.7435897435897436,
+      "market_rate": 0.7435897435897436,
+      "floor_pass": true
+    }
+  },
+  "cutoff_final_odds": {
+    "races": 220,
+    "mean_relative_change": -0.02205155808075893,
+    "min_relative_change": -0.6397849462365592,
+    "max_relative_change": 1.4919786096256686
+  }
+}
